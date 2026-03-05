@@ -362,8 +362,57 @@ async def scrape_zillow(request: Request):
 
 @app.post("/api/analyze-ai")
 async def analyze_ai(request: Request):
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return JSONResponse(
+            {"error": "ANTHROPIC_API_KEY not set in .env file"},
+            status_code=400,
+        )
+
     body = await request.json()
-    return JSONResponse({"status": "not implemented"})
+    metrics = body.get("metrics", "")
+    if not metrics:
+        return JSONResponse(
+            {"error": "Missing 'metrics' in request body."},
+            status_code=400,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 1024,
+                    "system": (
+                        "You are a real estate investment analyst. Analyze this rental "
+                        "property deal and provide a plain-English investment summary "
+                        "with: 1) Overall Assessment, 2) Key Strengths, 3) Key Risks, "
+                        "4) Recommendation. Be concise but thorough."
+                    ),
+                    "messages": [{"role": "user", "content": metrics}],
+                },
+            )
+    except (httpx.RequestError, httpx.TimeoutException) as exc:
+        return JSONResponse(
+            {"error": f"Failed to reach Anthropic API: {exc}"},
+            status_code=502,
+        )
+
+    if resp.status_code != 200:
+        return JSONResponse(
+            {"error": f"Anthropic API error (HTTP {resp.status_code}): {resp.text}"},
+            status_code=502,
+        )
+
+    data = resp.json()
+    text = data.get("content", [{}])[0].get("text", "")
+    return JSONResponse({"analysis": text})
 
 
 def open_browser():
