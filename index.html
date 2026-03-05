@@ -238,7 +238,17 @@
   .metric-card .value {
     font-size: 1.35rem;
     font-weight: 700;
-    transition: color 0.3s;
+    transition: color 0.3s, transform 0.15s;
+  }
+
+  .metric-card .value.flash {
+    animation: flash-value 0.35s ease;
+  }
+
+  @keyframes flash-value {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.08); }
+    100% { transform: scale(1); }
   }
 
   .metric-card .value.positive { color: var(--green); }
@@ -710,21 +720,27 @@
       propertyType
     };
 
-    // --- Update DOM ---
-    $('metricPITI').textContent = fmtDollar(piti);
-    const cfEl = $('metricMonthlyCF');
-    cfEl.textContent = fmtDollar(monthlyCF);
-    cfEl.className = 'value ' + (monthlyCF >= 0 ? 'positive' : 'negative');
+    // --- Update DOM with flash animation ---
+    function setMetric(id, text, extraClass) {
+      const el = $(id);
+      const changed = el.textContent !== text;
+      el.textContent = text;
+      el.className = 'value' + (extraClass ? ' ' + extraClass : '');
+      if (changed) {
+        el.classList.remove('flash');
+        void el.offsetWidth; // reflow to restart animation
+        el.classList.add('flash');
+      }
+    }
 
-    const acfEl = $('metricAnnualCF');
-    acfEl.textContent = fmtDollar(annualCF);
-    acfEl.className = 'value ' + (annualCF >= 0 ? 'positive' : 'negative');
-
-    $('metricCoC').textContent = fmtPct(coc);
-    $('metricCapRate').textContent = fmtPct(capRate);
-    $('metricGRM').textContent = fmtGRM(grm);
-    $('metricBreakeven').textContent = fmtPct(breakeven);
-    $('metricCashClose').textContent = fmtDollar(totalCashClose);
+    setMetric('metricPITI', fmtDollar(piti));
+    setMetric('metricMonthlyCF', fmtDollar(monthlyCF), monthlyCF >= 0 ? 'positive' : 'negative');
+    setMetric('metricAnnualCF', fmtDollar(annualCF), annualCF >= 0 ? 'positive' : 'negative');
+    setMetric('metricCoC', fmtPct(coc));
+    setMetric('metricCapRate', fmtPct(capRate));
+    setMetric('metricGRM', fmtGRM(grm));
+    setMetric('metricBreakeven', fmtPct(breakeven));
+    setMetric('metricCashClose', fmtDollar(totalCashClose));
 
     // --- Deal Score ---
     const scoreEl = $('dealScore');
@@ -797,7 +813,21 @@
 
   // --- Event listeners ---
   const allInputs = document.querySelectorAll('.input-grid input, .input-grid select');
-  allInputs.forEach(inp => inp.addEventListener('input', calculate));
+  allInputs.forEach(inp => {
+    inp.addEventListener('input', calculate);
+    // Clamp values on blur
+    if (inp.type === 'number') {
+      inp.addEventListener('blur', () => {
+        let v = parseFloat(inp.value);
+        if (isNaN(v)) { inp.value = inp.min || 0; calculate(); return; }
+        const min = inp.min !== '' ? parseFloat(inp.min) : undefined;
+        const max = inp.max !== '' ? parseFloat(inp.max) : undefined;
+        if (min !== undefined && v < min) inp.value = min;
+        if (max !== undefined && v > max) inp.value = max;
+        calculate();
+      });
+    }
+  });
 
   // Initial calculation
   calculate();
