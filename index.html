@@ -41,76 +41,93 @@
   }
 
   /* Header */
-  header {
-    text-align: center;
-    margin-bottom: 32px;
-  }
+  header { text-align: center; margin-bottom: 32px; }
+  header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 4px; }
+  header p { color: var(--text-muted); font-size: 0.9rem; }
 
-  header h1 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    margin-bottom: 4px;
-  }
-
-  header p {
-    color: var(--text-muted);
-    font-size: 0.9rem;
-  }
-
-  /* API Key bar */
-  .api-key-bar {
+  /* ---- Wizard Navigation ---- */
+  .wizard-nav {
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px 16px;
-    margin-bottom: 28px;
-    flex-wrap: wrap;
-  }
-
-  .api-key-bar label {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-
-  .api-key-bar .input-wrap {
-    flex: 1;
-    min-width: 200px;
+    justify-content: center;
+    gap: 0;
+    margin-bottom: 36px;
     position: relative;
+    padding: 0 10px;
   }
 
-  .api-key-bar input {
-    width: 100%;
-    padding: 7px 36px 7px 10px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 0.85rem;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  .api-key-bar input:focus { border-color: var(--accent); }
-
-  .toggle-vis {
-    position: absolute;
-    right: 6px;
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    color: var(--text-muted);
+  .wizard-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     cursor: pointer;
-    font-size: 0.8rem;
-    padding: 2px 4px;
+    position: relative;
+    z-index: 1;
+    flex: 0 0 auto;
+    min-width: 80px;
+    user-select: none;
   }
 
-  /* Section titles */
+  .wizard-step .circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.95rem;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    color: var(--text-muted);
+    transition: all 0.3s;
+    margin-bottom: 6px;
+  }
+
+  .wizard-step.active .circle {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .wizard-step.completed .circle {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+  }
+
+  .wizard-step .step-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    transition: color 0.3s;
+  }
+
+  .wizard-step.active .step-label { color: var(--accent); }
+  .wizard-step.completed .step-label { color: var(--green); }
+  .wizard-step.disabled { cursor: not-allowed; opacity: 0.5; }
+
+  .wizard-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    margin: 0 -4px;
+    margin-bottom: 22px;
+    position: relative;
+    z-index: 0;
+    transition: background 0.3s;
+  }
+
+  .wizard-line.filled { background: var(--green); }
+
+  /* ---- Step Panels ---- */
+  .step-panel { display: none; animation: fadeIn 0.25s ease; }
+  .step-panel.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ---- Common Form Styles ---- */
   .section-title {
     font-size: 1.1rem;
     font-weight: 600;
@@ -119,11 +136,152 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .input-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .input-group label {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .input-group .helper {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .input-group input, .input-group select {
+    padding: 9px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+  }
+
+  .input-group input:focus, .input-group select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.15); }
+
+  .input-group select { cursor: pointer; }
+  .input-group select option { background: var(--card); color: var(--text); }
+
+  .full-width { grid-column: 1 / -1; }
+
+  /* URL input row */
+  .url-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .url-row input {
+    flex: 1;
+    padding: 10px 14px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .url-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.15); }
+
+  .url-error {
+    color: var(--red);
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+    display: none;
+  }
+
+  .url-error.visible { display: block; }
+
+  /* Property info card */
+  .property-card {
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 20px;
+    gap: 16px;
+  }
+
+  .property-card.visible { display: flex; }
+
+  .property-card img {
+    width: 180px;
+    height: 130px;
+    object-fit: cover;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+
+  .property-card .info { flex: 1; }
+  .property-card .info h3 { font-size: 1rem; margin-bottom: 6px; }
+  .property-card .info .details { font-size: 0.85rem; color: var(--text-muted); line-height: 1.8; }
+
+  /* Toggle switch */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .toggle-row label { font-size: 0.9rem; font-weight: 500; cursor: pointer; }
+
+  .toggle-switch {
+    position: relative;
+    width: 48px;
+    height: 26px;
+    cursor: pointer;
+  }
+
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-slider {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--border);
+    border-radius: 13px;
+    transition: background 0.3s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    left: 3px;
+    bottom: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+
+  .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(22px); }
+
   /* Property type toggle */
   .prop-type-toggle {
     display: flex;
     gap: 0;
-    margin-bottom: 24px;
+    margin-bottom: 20px;
     background: var(--surface);
     border-radius: var(--radius);
     border: 1px solid var(--border);
@@ -142,60 +300,9 @@
     transition: all 0.2s;
   }
 
-  .prop-type-toggle button.active {
-    background: var(--accent);
-    color: #fff;
-  }
+  .prop-type-toggle button.active { background: var(--accent); color: #fff; }
 
-  /* Input grid */
-  .input-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 32px;
-  }
-
-  .input-group {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .input-group label {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    font-weight: 500;
-  }
-
-  .input-group input, .input-group select {
-    padding: 9px 12px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 0.95rem;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  .input-group input:focus, .input-group select:focus {
-    border-color: var(--accent);
-  }
-
-  .input-group select {
-    cursor: pointer;
-  }
-
-  .input-group select option {
-    background: var(--card);
-    color: var(--text);
-  }
-
-  .multifamily-inputs {
-    grid-column: 1 / -1;
-    display: none;
-  }
-
+  .multifamily-inputs { display: none; margin-bottom: 16px; }
   .multifamily-inputs.visible { display: block; }
 
   .unit-rents-grid {
@@ -205,8 +312,67 @@
     margin-top: 8px;
   }
 
-  /* Results dashboard */
-  .results-grid {
+  /* ---- Buttons ---- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 24px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  .btn:hover { background: var(--accent-hover); }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .btn-secondary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .btn-secondary:hover { background: var(--card); border-color: var(--accent); }
+
+  .btn-large {
+    padding: 14px 36px;
+    font-size: 1rem;
+  }
+
+  .btn-green { background: var(--green); }
+  .btn-green:hover { background: #16a34a; }
+
+  .step-buttons {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .step-buttons .left { display: flex; gap: 10px; }
+  .step-buttons .right { display: flex; gap: 10px; }
+
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Results Dashboard ---- */
+  .overview-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 14px;
@@ -222,10 +388,7 @@
     transition: transform 0.15s, box-shadow 0.15s;
   }
 
-  .metric-card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow);
-  }
+  .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 
   .metric-card .label {
     font-size: 0.75rem;
@@ -238,21 +401,58 @@
   .metric-card .value {
     font-size: 1.35rem;
     font-weight: 700;
-    transition: color 0.3s, transform 0.15s;
-  }
-
-  .metric-card .value.flash {
-    animation: flash-value 0.35s ease;
-  }
-
-  @keyframes flash-value {
-    0% { transform: scale(1); }
-    40% { transform: scale(1.08); }
-    100% { transform: scale(1); }
   }
 
   .metric-card .value.positive { color: var(--green); }
   .metric-card .value.negative { color: var(--red); }
+
+  /* Rules cards */
+  .rules-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+
+  .rule-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+
+  .rule-card .rule-title {
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rule-card .rule-desc { font-size: 0.84rem; color: var(--text-muted); line-height: 1.5; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .badge-pass { background: var(--green-bg); color: var(--green); }
+  .badge-fail { background: var(--red-bg); color: var(--red); }
+  .badge-zillow { background: rgba(0,106,255,0.15); color: #3b82f6; font-size: 0.68rem; }
+
+  /* Detailed metrics grid */
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 28px;
+  }
 
   /* Deal score banner */
   .deal-score {
@@ -264,61 +464,39 @@
     transition: background 0.3s, border-color 0.3s;
   }
 
-  .deal-score.great {
-    background: var(--green-bg);
-    border-color: var(--green);
-  }
+  .deal-score.great { background: var(--green-bg); border-color: var(--green); }
+  .deal-score.borderline { background: var(--yellow-bg); border-color: var(--yellow); }
+  .deal-score.pass { background: var(--red-bg); border-color: var(--red); }
 
-  .deal-score.borderline {
-    background: var(--yellow-bg);
-    border-color: var(--yellow);
-  }
-
-  .deal-score.pass {
-    background: var(--red-bg);
-    border-color: var(--red);
-  }
-
-  .deal-score .verdict {
-    font-size: 1.3rem;
-    font-weight: 700;
-    margin-bottom: 4px;
-  }
-
+  .deal-score .verdict { font-size: 1.3rem; font-weight: 700; margin-bottom: 4px; }
   .deal-score.great .verdict { color: var(--green); }
   .deal-score.borderline .verdict { color: var(--yellow); }
   .deal-score.pass .verdict { color: var(--red); }
+  .deal-score .explanation { font-size: 0.88rem; color: var(--text-muted); }
 
-  .deal-score .explanation {
-    font-size: 0.88rem;
-    color: var(--text-muted);
-  }
+  /* ---- Tables ---- */
+  .table-section { margin-bottom: 32px; }
 
-  /* Amortization table */
-  .amort-section {
-    margin-bottom: 32px;
-  }
-
-  .amort-wrap {
+  .table-wrap {
     max-height: 420px;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
   }
 
-  .amort-wrap::-webkit-scrollbar { width: 6px; }
-  .amort-wrap::-webkit-scrollbar-track { background: var(--surface); }
-  .amort-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .table-wrap::-webkit-scrollbar { width: 6px; }
+  .table-wrap::-webkit-scrollbar-track { background: var(--surface); }
+  .table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  .amort-table {
+  .data-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.85rem;
   }
 
-  .amort-table thead { position: sticky; top: 0; z-index: 1; }
+  .data-table thead { position: sticky; top: 0; z-index: 1; }
 
-  .amort-table th {
+  .data-table th {
     background: var(--surface);
     color: var(--text-muted);
     font-weight: 600;
@@ -329,59 +507,94 @@
     letter-spacing: 0.3px;
   }
 
-  .amort-table th:first-child { text-align: center; }
+  .data-table th:first-child { text-align: center; }
 
-  .amort-table td {
+  .data-table td {
     padding: 8px 14px;
     text-align: right;
     border-top: 1px solid var(--border);
   }
 
-  .amort-table td:first-child { text-align: center; color: var(--text-muted); }
+  .data-table td:first-child { text-align: center; color: var(--text-muted); }
+  .data-table tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  .data-table tbody tr:hover { background: rgba(99,102,241,0.06); }
 
-  .amort-table tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
-  .amort-table tbody tr:hover { background: rgba(99,102,241,0.06); }
-
-  .amort-table tfoot td {
+  .data-table tfoot td {
     background: var(--surface);
     font-weight: 700;
     border-top: 2px solid var(--border);
   }
 
-  /* AI Analysis section */
-  .ai-section { margin-bottom: 32px; }
+  /* ---- Equity Chart (CSS bars) ---- */
+  .equity-chart { margin-bottom: 32px; }
 
-  .ai-btn {
-    display: inline-flex;
+  .equity-bar-row {
+    display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 11px 24px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 0.92rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.2s, transform 0.1s;
+    margin-bottom: 8px;
+    gap: 12px;
+  }
+
+  .equity-bar-row .bar-label {
+    width: 60px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .equity-bar-row .bar-track {
+    flex: 1;
+    height: 28px;
+    background: var(--surface);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .equity-bar-row .bar-value {
+    height: 100%;
+    border-radius: 4px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    transition: width 0.5s;
+  }
+
+  .equity-bar-row .bar-value.property-val { background: rgba(99,102,241,0.3); }
+  .equity-bar-row .bar-value.loan-bal { background: rgba(239,68,68,0.4); }
+
+  .equity-bar-row .bar-amount {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    width: 100px;
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  .equity-legend {
+    display: flex;
+    gap: 20px;
     margin-bottom: 16px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
   }
 
-  .ai-btn:hover { background: var(--accent-hover); }
-  .ai-btn:active { transform: scale(0.98); }
-  .ai-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-  .spinner {
+  .equity-legend span::before {
+    content: '';
     display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
   }
 
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .equity-legend .leg-value::before { background: rgba(99,102,241,0.3); }
+  .equity-legend .leg-loan::before { background: rgba(239,68,68,0.4); }
+
+  /* ---- AI Section ---- */
+  .ai-section { margin-bottom: 32px; }
 
   .ai-output {
     background: var(--card);
@@ -406,21 +619,97 @@
 
   .ai-error.visible { display: block; }
 
-  /* Responsive */
+  /* ---- Review Step ---- */
+  .review-section { margin-bottom: 24px; }
+
+  .review-section .review-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .review-section .review-header h3 { font-size: 1rem; font-weight: 600; }
+
+  .review-section .edit-link {
+    font-size: 0.82rem;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: none;
+    border: none;
+    background: none;
+    font-weight: 500;
+  }
+
+  .review-section .edit-link:hover { text-decoration: underline; }
+
+  .review-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 24px;
+  }
+
+  .review-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.88rem;
+  }
+
+  .review-item .review-label { color: var(--text-muted); }
+  .review-item .review-value { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+
+  /* ---- Responsive ---- */
   @media (max-width: 900px) {
-    .results-grid { grid-template-columns: repeat(2, 1fr); }
+    .overview-grid, .detail-grid { grid-template-columns: repeat(2, 1fr); }
+    .rules-grid { grid-template-columns: 1fr; }
+    .property-card { flex-direction: column; }
+    .property-card img { width: 100%; height: 180px; }
   }
 
   @media (max-width: 600px) {
     .input-grid { grid-template-columns: 1fr; }
-    .results-grid { grid-template-columns: 1fr 1fr; }
+    .overview-grid, .detail-grid { grid-template-columns: 1fr 1fr; }
     .container { padding: 16px 12px 40px; }
     header h1 { font-size: 1.35rem; }
-    .api-key-bar { flex-direction: column; align-items: stretch; }
+    .wizard-step { min-width: 50px; }
+    .wizard-step .step-label { font-size: 0.6rem; }
+    .wizard-step .circle { width: 32px; height: 32px; font-size: 0.8rem; }
+    .review-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 420px) {
-    .results-grid { grid-template-columns: 1fr; }
+    .overview-grid, .detail-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---- Print Styles ---- */
+  @media print {
+    body { background: #fff; color: #000; }
+    .container { padding: 0; max-width: 100%; }
+    header h1 { color: #000; }
+    header p { color: #555; }
+    .wizard-nav, .step-buttons, .url-row, .url-error, .property-card,
+    .btn, .ai-section .btn, #aiBtn, .toggle-row, #downloadBtn { display: none !important; }
+    .step-panel { display: none !important; }
+    .step-panel[data-step="6"] { display: block !important; }
+    .metric-card, .rule-card, .deal-score, .data-table, .equity-chart,
+    .ai-output.visible, .table-section { break-inside: avoid; }
+    .metric-card { border: 1px solid #ccc; background: #f9f9f9; }
+    .metric-card .label { color: #555; }
+    .metric-card .value { color: #000; }
+    .metric-card .value.positive { color: #16a34a; }
+    .metric-card .value.negative { color: #dc2626; }
+    .deal-score { border: 2px solid #ccc; }
+    .deal-score.great { background: #f0fdf4; border-color: #16a34a; }
+    .deal-score.borderline { background: #fefce8; border-color: #ca8a04; }
+    .deal-score.pass { background: #fef2f2; border-color: #dc2626; }
+    .data-table th { background: #eee; color: #333; }
+    .data-table td { color: #000; }
+    .data-table tfoot td { background: #eee; }
+    .table-wrap { max-height: none; overflow: visible; }
+    .ai-output { background: #f9f9f9; border: 1px solid #ccc; color: #000; }
+    .section-title { color: #000; border-bottom-color: #ccc; }
   }
 </style>
 </head>
@@ -432,56 +721,162 @@
     <p>Real-time investment metrics &amp; AI-powered analysis</p>
   </header>
 
-  <!-- API Key -->
-  <div class="api-key-bar">
-    <label for="apiKey">Anthropic API Key</label>
-    <div class="input-wrap">
-      <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off">
-      <button class="toggle-vis" id="toggleApiKey" type="button">show</button>
+  <!-- Wizard Navigation -->
+  <div class="wizard-nav" id="wizardNav">
+    <div class="wizard-step active" data-step="1" onclick="wizardClick(1)">
+      <div class="circle">1</div>
+      <div class="step-label">Property</div>
+    </div>
+    <div class="wizard-line" data-line="1"></div>
+    <div class="wizard-step" data-step="2" onclick="wizardClick(2)">
+      <div class="circle">2</div>
+      <div class="step-label">Loan</div>
+    </div>
+    <div class="wizard-line" data-line="2"></div>
+    <div class="wizard-step" data-step="3" onclick="wizardClick(3)">
+      <div class="circle">3</div>
+      <div class="step-label">Income</div>
+    </div>
+    <div class="wizard-line" data-line="3"></div>
+    <div class="wizard-step" data-step="4" onclick="wizardClick(4)">
+      <div class="circle">4</div>
+      <div class="step-label">Expenses</div>
+    </div>
+    <div class="wizard-line" data-line="4"></div>
+    <div class="wizard-step" data-step="5" onclick="wizardClick(5)">
+      <div class="circle">5</div>
+      <div class="step-label">Review</div>
+    </div>
+    <div class="wizard-line" data-line="5"></div>
+    <div class="wizard-step" data-step="6" onclick="wizardClick(6)">
+      <div class="circle">6</div>
+      <div class="step-label">Results</div>
     </div>
   </div>
 
-  <!-- Property Type Toggle -->
-  <div class="prop-type-toggle">
-    <button class="active" data-type="sfh">Single Family</button>
-    <button data-type="multi">Multifamily (2-4)</button>
+  <!-- ============ STEP 1: Property URL & Purchase ============ -->
+  <div class="step-panel active" data-step="1" id="step1">
+    <div class="section-title">Property URL &amp; Purchase Details</div>
+
+    <div class="url-row">
+      <input type="text" id="zillowUrl" placeholder="Paste a Zillow listing URL...">
+      <button class="btn" id="fetchBtn" type="button" onclick="fetchZillow()">
+        <span id="fetchBtnText">Fetch Data</span>
+      </button>
+    </div>
+    <div class="url-error" id="urlError"></div>
+
+    <div class="property-card" id="propertyCard">
+      <img id="propImage" src="" alt="Property photo">
+      <div class="info">
+        <h3 id="propAddress">--</h3>
+        <div class="details" id="propDetails">--</div>
+      </div>
+    </div>
+
+    <div class="input-grid">
+      <div class="input-group">
+        <label for="purchasePrice">Purchase Price ($)</label>
+        <input type="number" id="purchasePrice" value="200000" min="0" step="1000">
+      </div>
+      <div class="input-group">
+        <label for="arv">After Repair Value / ARV ($)</label>
+        <input type="number" id="arv" value="" min="0" step="1000" placeholder="Optional">
+      </div>
+      <div class="input-group">
+        <label for="closingCosts">Closing Costs ($)</label>
+        <input type="number" id="closingCosts" value="6000" min="0" step="100">
+      </div>
+      <div class="input-group">
+        <label for="rehabBudget">Rehab / Repair Budget ($)</label>
+        <input type="number" id="rehabBudget" value="0" min="0" step="500">
+      </div>
+      <div class="input-group">
+        <label for="valueGrowth">Property Value Growth (%/yr)</label>
+        <input type="number" id="valueGrowth" value="3" min="0" max="50" step="0.5">
+      </div>
+    </div>
+
+    <div class="step-buttons">
+      <div class="left"></div>
+      <div class="right">
+        <button class="btn" type="button" onclick="goToStep(2)">Next &rarr;</button>
+      </div>
+    </div>
   </div>
 
-  <!-- Inputs -->
-  <div class="section-title">Property Details</div>
-  <div class="input-grid">
-    <div class="input-group">
-      <label for="purchasePrice">Purchase Price ($)</label>
-      <input type="number" id="purchasePrice" value="200000" min="0" step="1000">
-    </div>
-    <div class="input-group">
-      <label for="downPayment">Down Payment (%)</label>
-      <input type="number" id="downPayment" value="20" min="0" max="100" step="0.5">
-    </div>
-    <div class="input-group">
-      <label for="interestRate">Interest Rate (%)</label>
-      <input type="number" id="interestRate" value="7" min="0" max="30" step="0.125">
-    </div>
-    <div class="input-group">
-      <label for="loanTerm">Loan Term (years)</label>
-      <input type="number" id="loanTerm" value="30" min="1" max="50" step="1">
+  <!-- ============ STEP 2: Loan Details ============ -->
+  <div class="step-panel" data-step="2" id="step2">
+    <div class="section-title">Loan Details</div>
+
+    <div class="toggle-row">
+      <label class="toggle-switch">
+        <input type="checkbox" id="cashPurchase" onchange="toggleCashPurchase()">
+        <span class="toggle-slider"></span>
+      </label>
+      <label for="cashPurchase">Cash Purchase (no loan)</label>
     </div>
 
-    <!-- SFH rent -->
-    <div class="input-group" id="sfhRentGroup">
-      <label for="monthlyRent">Monthly Rent ($)</label>
-      <input type="number" id="monthlyRent" value="1800" min="0" step="50">
+    <div id="loanFields">
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="downPayment">Down Payment (%)</label>
+          <input type="number" id="downPayment" value="20" min="0" max="100" step="0.5">
+          <div class="helper" id="dpHelper">$40,000</div>
+        </div>
+        <div class="input-group">
+          <label for="interestRate">Interest Rate (%)</label>
+          <input type="number" id="interestRate" value="7" min="0" max="30" step="0.125">
+        </div>
+        <div class="input-group">
+          <label for="loanTerm">Loan Term (years)</label>
+          <input type="number" id="loanTerm" value="30" min="1" max="50" step="1">
+        </div>
+        <div class="input-group">
+          <label for="points">Loan Points</label>
+          <input type="number" id="points" value="0" min="0" max="10" step="0.25">
+        </div>
+      </div>
     </div>
 
-    <!-- Multifamily inputs -->
+    <div class="step-buttons">
+      <div class="left">
+        <button class="btn btn-secondary" type="button" onclick="goToStep(1)">&larr; Previous</button>
+      </div>
+      <div class="right">
+        <button class="btn" type="button" onclick="goToStep(3)">Next &rarr;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STEP 3: Rental Income ============ -->
+  <div class="step-panel" data-step="3" id="step3">
+    <div class="section-title">Rental Income</div>
+
+    <div class="prop-type-toggle" id="propTypeToggle">
+      <button class="active" data-type="sfh" onclick="setPropertyType('sfh')">Single Family</button>
+      <button data-type="multi" onclick="setPropertyType('multi')">Multifamily (2-4)</button>
+    </div>
+
+    <div id="sfhRentGroup">
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="monthlyRent">Monthly Rent ($)</label>
+          <input type="number" id="monthlyRent" value="1800" min="0" step="50">
+        </div>
+      </div>
+    </div>
+
     <div class="multifamily-inputs" id="multifamilyInputs">
-      <div class="input-group" style="margin-bottom: 12px;">
-        <label for="unitCount">Number of Units</label>
-        <select id="unitCount">
-          <option value="2">2 Units</option>
-          <option value="3">3 Units</option>
-          <option value="4">4 Units</option>
-        </select>
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="unitCount">Number of Units</label>
+          <select id="unitCount" onchange="updateUnitVisibility()">
+            <option value="2">2 Units</option>
+            <option value="3">3 Units</option>
+            <option value="4">4 Units</option>
+          </select>
+        </div>
       </div>
       <div class="unit-rents-grid" id="unitRentsGrid">
         <div class="input-group"><label>Unit 1 Rent ($)</label><input type="number" class="unit-rent" value="900" min="0" step="25"></div>
@@ -491,303 +886,665 @@
       </div>
     </div>
 
-    <div class="input-group">
-      <label for="propertyTaxes">Property Taxes / yr ($)</label>
-      <input type="number" id="propertyTaxes" value="3000" min="0" step="100">
+    <div class="input-grid">
+      <div class="input-group">
+        <label for="otherIncome">Other Monthly Income ($)</label>
+        <input type="number" id="otherIncome" value="0" min="0" step="25">
+      </div>
+      <div class="input-group">
+        <label for="incomeGrowth">Annual Income Growth (%)</label>
+        <input type="number" id="incomeGrowth" value="2" min="0" max="50" step="0.5">
+      </div>
     </div>
-    <div class="input-group">
-      <label for="insurance">Insurance / yr ($)</label>
-      <input type="number" id="insurance" value="1200" min="0" step="50">
-    </div>
-    <div class="input-group">
-      <label for="maintenance">Maintenance (% of rent)</label>
-      <input type="number" id="maintenance" value="5" min="0" max="100" step="0.5">
-    </div>
-    <div class="input-group">
-      <label for="vacancy">Vacancy Rate (%)</label>
-      <input type="number" id="vacancy" value="8" min="0" max="100" step="0.5">
-    </div>
-    <div class="input-group">
-      <label for="management">Property Management (%)</label>
-      <input type="number" id="management" value="10" min="0" max="100" step="0.5">
+
+    <div class="step-buttons">
+      <div class="left">
+        <button class="btn btn-secondary" type="button" onclick="goToStep(2)">&larr; Previous</button>
+      </div>
+      <div class="right">
+        <button class="btn" type="button" onclick="goToStep(4)">Next &rarr;</button>
+      </div>
     </div>
   </div>
 
-  <!-- Results Dashboard -->
-  <div class="section-title">Investment Metrics</div>
-  <div class="results-grid">
-    <div class="metric-card"><div class="label">Monthly Mortgage (PITI)</div><div class="value" id="metricPITI">—</div></div>
-    <div class="metric-card"><div class="label">Monthly Cash Flow</div><div class="value" id="metricMonthlyCF">—</div></div>
-    <div class="metric-card"><div class="label">Annual Cash Flow</div><div class="value" id="metricAnnualCF">—</div></div>
-    <div class="metric-card"><div class="label">Cash-on-Cash Return</div><div class="value" id="metricCoC">—</div></div>
-    <div class="metric-card"><div class="label">Cap Rate</div><div class="value" id="metricCapRate">—</div></div>
-    <div class="metric-card"><div class="label">Gross Rent Multiplier</div><div class="value" id="metricGRM">—</div></div>
-    <div class="metric-card"><div class="label">Break-even Occupancy</div><div class="value" id="metricBreakeven">—</div></div>
-    <div class="metric-card"><div class="label">Total Cash to Close</div><div class="value" id="metricCashClose">—</div></div>
-  </div>
+  <!-- ============ STEP 4: Expenses ============ -->
+  <div class="step-panel" data-step="4" id="step4">
+    <div class="section-title">Operating Expenses</div>
 
-  <!-- Deal Score -->
-  <div class="deal-score" id="dealScore">
-    <div class="verdict" id="dealVerdict">Enter property details above</div>
-    <div class="explanation" id="dealExplanation">Metrics will calculate automatically as you type.</div>
-  </div>
+    <div class="input-grid">
+      <div class="input-group">
+        <label for="propertyTaxes">Property Taxes / yr ($)</label>
+        <input type="number" id="propertyTaxes" value="3000" min="0" step="100">
+      </div>
+      <div class="input-group">
+        <label for="insurance">Insurance / yr ($)</label>
+        <input type="number" id="insurance" value="1000" min="0" step="50">
+      </div>
+      <div class="input-group">
+        <label for="maintenance">Repairs &amp; Maintenance (% of rent)</label>
+        <input type="number" id="maintenance" value="5" min="0" max="100" step="0.5">
+      </div>
+      <div class="input-group">
+        <label for="vacancy">Vacancy Rate (%)</label>
+        <input type="number" id="vacancy" value="8" min="0" max="100" step="0.5">
+      </div>
+      <div class="input-group">
+        <label for="capex">CapEx Reserve (% of rent)</label>
+        <input type="number" id="capex" value="5" min="0" max="100" step="0.5">
+      </div>
+      <div class="input-group">
+        <label for="management">Property Management (%)</label>
+        <input type="number" id="management" value="10" min="0" max="100" step="0.5">
+      </div>
+      <div class="input-group">
+        <label for="hoa">HOA / month ($)</label>
+        <input type="number" id="hoa" value="0" min="0" step="25">
+      </div>
+      <div class="input-group">
+        <label for="utilities">Utilities / month ($)</label>
+        <input type="number" id="utilities" value="0" min="0" step="25">
+      </div>
+      <div class="input-group">
+        <label for="otherExpenses">Other Expenses / month ($)</label>
+        <input type="number" id="otherExpenses" value="0" min="0" step="25">
+      </div>
+      <div class="input-group">
+        <label for="expenseGrowth">Annual Expense Growth (%)</label>
+        <input type="number" id="expenseGrowth" value="2" min="0" max="50" step="0.5">
+      </div>
+    </div>
 
-  <!-- Amortization -->
-  <div class="amort-section">
-    <div class="section-title">Amortization Summary</div>
-    <div class="amort-wrap">
-      <table class="amort-table">
-        <thead>
-          <tr>
-            <th>Year</th>
-            <th>Annual Payment</th>
-            <th>Principal</th>
-            <th>Interest</th>
-            <th>Remaining Balance</th>
-            <th>Total Equity</th>
-          </tr>
-        </thead>
-        <tbody id="amortBody"></tbody>
-        <tfoot id="amortFoot"></tfoot>
-      </table>
+    <div class="step-buttons">
+      <div class="left">
+        <button class="btn btn-secondary" type="button" onclick="goToStep(3)">&larr; Previous</button>
+      </div>
+      <div class="right">
+        <button class="btn" type="button" onclick="goToStep(5)">Next &rarr;</button>
+      </div>
     </div>
   </div>
 
-  <!-- AI Analysis -->
-  <div class="ai-section">
-    <div class="section-title">AI Investment Analysis</div>
-    <button class="ai-btn" id="aiBtn" type="button">
-      <span id="aiBtnText">Run AI Analysis</span>
-    </button>
-    <div class="ai-error" id="aiError"></div>
-    <div class="ai-output" id="aiOutput"></div>
+  <!-- ============ STEP 5: Review ============ -->
+  <div class="step-panel" data-step="5" id="step5">
+    <div class="section-title">Review All Inputs</div>
+    <div id="reviewContent"></div>
+
+    <div class="step-buttons">
+      <div class="left">
+        <button class="btn btn-secondary" type="button" onclick="goToStep(4)">&larr; Previous</button>
+      </div>
+      <div class="right">
+        <button class="btn btn-large btn-green" type="button" onclick="finishAnalysis()">Finish Analysis &rarr;</button>
+      </div>
+    </div>
   </div>
+
+  <!-- ============ STEP 6: Results Dashboard ============ -->
+  <div class="step-panel" data-step="6" id="step6">
+
+    <!-- A) Overview Cards -->
+    <div class="section-title">Overview</div>
+    <div class="overview-grid" id="overviewGrid">
+      <div class="metric-card"><div class="label">Monthly Cash Flow</div><div class="value" id="resMonthlyCF">--</div></div>
+      <div class="metric-card"><div class="label">Cash-on-Cash Return</div><div class="value" id="resCoC">--</div></div>
+      <div class="metric-card"><div class="label">Cap Rate</div><div class="value" id="resCapRate">--</div></div>
+      <div class="metric-card"><div class="label">5yr Annualized ROI</div><div class="value" id="res5yrROI">--</div></div>
+    </div>
+
+    <!-- B) Quick Rules -->
+    <div class="section-title">Quick Rules</div>
+    <div class="rules-grid" id="rulesGrid">
+      <div class="rule-card" id="rule1pct">
+        <div class="rule-title">1% Rule <span class="badge" id="rule1Badge">--</span></div>
+        <div class="rule-desc" id="rule1Desc">--</div>
+      </div>
+      <div class="rule-card" id="rule50pct">
+        <div class="rule-title">50% Rule <span class="badge" id="rule50Badge">--</span></div>
+        <div class="rule-desc" id="rule50Desc">--</div>
+      </div>
+      <div class="rule-card" id="rule70pct" style="display:none;">
+        <div class="rule-title">70% Rule <span class="badge" id="rule70Badge">--</span></div>
+        <div class="rule-desc" id="rule70Desc">--</div>
+      </div>
+    </div>
+
+    <!-- C) Detailed Metrics -->
+    <div class="section-title">Detailed Metrics</div>
+    <div class="detail-grid" id="detailGrid">
+      <div class="metric-card"><div class="label">NOI</div><div class="value" id="resNOI">--</div></div>
+      <div class="metric-card"><div class="label">Monthly Mortgage (P&amp;I)</div><div class="value" id="resPI">--</div></div>
+      <div class="metric-card"><div class="label">Monthly PITI</div><div class="value" id="resPITI">--</div></div>
+      <div class="metric-card"><div class="label">Total Monthly Expenses</div><div class="value" id="resTotalExp">--</div></div>
+      <div class="metric-card"><div class="label">Gross Rent Multiplier</div><div class="value" id="resGRM">--</div></div>
+      <div class="metric-card"><div class="label">Break-even Occupancy</div><div class="value" id="resBreakeven">--</div></div>
+      <div class="metric-card"><div class="label">DSCR</div><div class="value" id="resDSCR">--</div></div>
+      <div class="metric-card"><div class="label">Total Cash to Close</div><div class="value" id="resCashClose">--</div></div>
+    </div>
+
+    <!-- D) Deal Score -->
+    <div class="deal-score" id="dealScore">
+      <div class="verdict" id="dealVerdict">--</div>
+      <div class="explanation" id="dealExplanation">--</div>
+    </div>
+
+    <!-- E) 5-Year Projection -->
+    <div class="table-section">
+      <div class="section-title">5-Year Projection</div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Year</th>
+              <th>Annual Cash Flow</th>
+              <th>Property Value</th>
+              <th>Loan Balance</th>
+              <th>Total Equity</th>
+              <th>Cumulative ROI</th>
+            </tr>
+          </thead>
+          <tbody id="projBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- F) Amortization Table -->
+    <div class="table-section" id="amortSection">
+      <div class="section-title">Amortization Summary</div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Year</th>
+              <th>Annual Payment</th>
+              <th>Principal</th>
+              <th>Interest</th>
+              <th>Remaining Balance</th>
+              <th>Total Equity</th>
+            </tr>
+          </thead>
+          <tbody id="amortBody"></tbody>
+          <tfoot id="amortFoot"></tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- G) Equity Growth Chart -->
+    <div class="equity-chart" id="equityChart">
+      <div class="section-title">Equity Growth</div>
+      <div class="equity-legend">
+        <span class="leg-value">Property Value</span>
+        <span class="leg-loan">Loan Balance</span>
+      </div>
+      <div id="equityBars"></div>
+    </div>
+
+    <!-- H) AI Analysis -->
+    <div class="ai-section">
+      <div class="section-title">AI Investment Analysis</div>
+      <button class="btn" id="aiBtn" type="button" onclick="runAI()">
+        <span id="aiBtnText">Run AI Analysis</span>
+      </button>
+      <div class="ai-error" id="aiError"></div>
+      <div class="ai-output" id="aiOutput"></div>
+    </div>
+
+    <!-- I) Download Report -->
+    <div style="text-align:center; margin-top:20px;">
+      <button class="btn btn-secondary btn-large" id="downloadBtn" type="button" onclick="window.print()">Download Report</button>
+    </div>
+
+    <div class="step-buttons">
+      <div class="left">
+        <button class="btn btn-secondary" type="button" onclick="goToStep(5)">&larr; Back to Review</button>
+      </div>
+      <div class="right"></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
 (function() {
-  // --- Element refs ---
-  const $ = id => document.getElementById(id);
-  const purchasePrice = $('purchasePrice');
-  const downPayment = $('downPayment');
-  const interestRate = $('interestRate');
-  const loanTerm = $('loanTerm');
-  const monthlyRent = $('monthlyRent');
-  const propertyTaxes = $('propertyTaxes');
-  const insurance = $('insurance');
-  const maintenance = $('maintenance');
-  const vacancy = $('vacancy');
-  const management = $('management');
-  const unitCount = $('unitCount');
-  const sfhRentGroup = $('sfhRentGroup');
-  const multifamilyInputs = $('multifamilyInputs');
-  const unitRentsGrid = $('unitRentsGrid');
+  // ======================================================================
+  // DOM helpers
+  // ======================================================================
+  var $ = function(id) { return document.getElementById(id); };
+  var fmt = function(n) { return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var fmtDollar = function(n) { return '$' + fmt(n); };
+  var fmtPct = function(n) { return fmt(n) + '%'; };
+  var fmtInt = function(n) { return Math.round(n).toLocaleString('en-US'); };
+  var fmtGRM = function(n) { return n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); };
 
-  let propertyType = 'sfh';
-
-  // --- Formatting ---
-  const fmt = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const fmtDollar = n => '$' + fmt(n);
-  const fmtPct = n => fmt(n) + '%';
-  const fmtGRM = n => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-
-  // --- Property type toggle ---
-  document.querySelectorAll('.prop-type-toggle button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.prop-type-toggle button').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      propertyType = btn.dataset.type;
-      sfhRentGroup.style.display = propertyType === 'sfh' ? '' : 'none';
-      multifamilyInputs.classList.toggle('visible', propertyType === 'multi');
-      updateUnitVisibility();
-      calculate();
-    });
-  });
-
-  // --- Unit count visibility ---
-  function updateUnitVisibility() {
-    const count = parseInt(unitCount.value);
-    unitRentsGrid.querySelectorAll('[data-unit]').forEach(el => {
-      const u = parseInt(el.dataset.unit);
-      el.style.display = u <= count ? '' : 'none';
-    });
-  }
-
-  unitCount.addEventListener('change', () => { updateUnitVisibility(); calculate(); });
-  updateUnitVisibility();
-
-  // --- API key toggle ---
-  const apiKeyInput = $('apiKey');
-  const toggleBtn = $('toggleApiKey');
-  toggleBtn.addEventListener('click', () => {
-    const isPassword = apiKeyInput.type === 'password';
-    apiKeyInput.type = isPassword ? 'text' : 'password';
-    toggleBtn.textContent = isPassword ? 'hide' : 'show';
-  });
-
-  // API key localStorage
-  apiKeyInput.value = localStorage.getItem('anthropic_api_key') || '';
-  apiKeyInput.addEventListener('input', () => {
-    localStorage.setItem('anthropic_api_key', apiKeyInput.value);
-  });
-
-  // --- Clamp helper ---
   function val(el, min, max) {
-    let v = parseFloat(el.value);
+    var v = parseFloat(el.value);
     if (isNaN(v)) v = 0;
     if (min !== undefined && v < min) v = min;
     if (max !== undefined && v > max) v = max;
     return v;
   }
 
-  // --- Main calculation ---
-  let lastCalcResults = {};
+  // ======================================================================
+  // State
+  // ======================================================================
+  var currentStep = 1;
+  var maxVisitedStep = 1;
+  var propertyType = 'sfh';
+  var autoFilledFields = {}; // track fields filled from Zillow
+  var lastCalcResults = {};
 
-  function calculate() {
-    const price = val(purchasePrice, 0);
-    const dpPct = val(downPayment, 0, 100);
-    const rate = val(interestRate, 0, 30);
-    const termYears = Math.max(1, Math.round(val(loanTerm, 1, 50)));
-    const taxesYr = val(propertyTaxes, 0);
-    const insuranceYr = val(insurance, 0);
-    const maintPct = val(maintenance, 0, 100);
-    const vacPct = val(vacancy, 0, 100);
-    const mgmtPct = val(management, 0, 100);
+  // ======================================================================
+  // Wizard Navigation
+  // ======================================================================
+  function updateWizardNav() {
+    var steps = document.querySelectorAll('.wizard-step');
+    var lines = document.querySelectorAll('.wizard-line');
 
-    // Total monthly rent
-    let totalRent;
-    if (propertyType === 'sfh') {
-      totalRent = val(monthlyRent, 0);
-    } else {
-      const count = parseInt(unitCount.value);
-      const rentInputs = unitRentsGrid.querySelectorAll('.unit-rent');
-      totalRent = 0;
-      rentInputs.forEach((inp, i) => { if (i < count) totalRent += val(inp, 0); });
+    steps.forEach(function(s) {
+      var n = parseInt(s.dataset.step);
+      s.classList.remove('active', 'completed', 'disabled');
+      if (n === currentStep) {
+        s.classList.add('active');
+      } else if (n < currentStep) {
+        s.classList.add('completed');
+        s.querySelector('.circle').innerHTML = '&#10003;';
+      } else if (n > maxVisitedStep) {
+        s.classList.add('disabled');
+        s.querySelector('.circle').textContent = n;
+      } else {
+        s.querySelector('.circle').textContent = n;
+      }
+    });
+
+    lines.forEach(function(l) {
+      var n = parseInt(l.dataset.line);
+      l.classList.toggle('filled', n < currentStep);
+    });
+  }
+
+  window.goToStep = function(n) {
+    if (n < 1 || n > 6) return;
+    // Hide current
+    var panels = document.querySelectorAll('.step-panel');
+    panels.forEach(function(p) { p.classList.remove('active'); });
+
+    currentStep = n;
+    if (n > maxVisitedStep) maxVisitedStep = n;
+
+    document.querySelector('.step-panel[data-step="' + n + '"]').classList.add('active');
+    updateWizardNav();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Populate review when entering step 5
+    if (n === 5) populateReview();
+    // Calculate when entering step 6
+    if (n === 6) calculate();
+  };
+
+  window.wizardClick = function(n) {
+    if (n <= maxVisitedStep) goToStep(n);
+  };
+
+  window.finishAnalysis = function() {
+    goToStep(6);
+  };
+
+  // ======================================================================
+  // Cash Purchase Toggle
+  // ======================================================================
+  window.toggleCashPurchase = function() {
+    var checked = $('cashPurchase').checked;
+    $('loanFields').style.display = checked ? 'none' : 'block';
+  };
+
+  // ======================================================================
+  // Property Type Toggle
+  // ======================================================================
+  window.setPropertyType = function(type) {
+    propertyType = type;
+    document.querySelectorAll('#propTypeToggle button').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.type === type);
+    });
+    $('sfhRentGroup').style.display = type === 'sfh' ? 'block' : 'none';
+    $('multifamilyInputs').classList.toggle('visible', type === 'multi');
+    if (type === 'multi') updateUnitVisibility();
+  };
+
+  window.updateUnitVisibility = function() {
+    var count = parseInt($('unitCount').value);
+    $('unitRentsGrid').querySelectorAll('[data-unit]').forEach(function(el) {
+      var u = parseInt(el.dataset.unit);
+      el.style.display = u <= count ? '' : 'none';
+    });
+  };
+
+  updateUnitVisibility();
+
+  // ======================================================================
+  // Down Payment Helper
+  // ======================================================================
+  function updateDpHelper() {
+    var price = val($('purchasePrice'), 0);
+    var dpPct = val($('downPayment'), 0, 100);
+    $('dpHelper').textContent = '$' + fmtInt(price * dpPct / 100);
+  }
+
+  // ======================================================================
+  // Closing Costs default (3% of purchase price)
+  // ======================================================================
+  function updateClosingCostsDefault() {
+    if (!autoFilledFields['closingCosts']) {
+      var price = val($('purchasePrice'), 0);
+      $('closingCosts').value = Math.round(price * 0.03);
     }
+  }
+
+  // Insurance default (0.5% of purchase price)
+  function updateInsuranceDefault() {
+    if (!autoFilledFields['insurance']) {
+      var price = val($('purchasePrice'), 0);
+      $('insurance').value = Math.round(price * 0.005);
+    }
+  }
+
+  // ======================================================================
+  // Zillow Scrape
+  // ======================================================================
+  window.fetchZillow = async function() {
+    var url = $('zillowUrl').value.trim();
+    if (!url) {
+      showUrlError('Please enter a Zillow URL.');
+      return;
+    }
+
+    $('urlError').classList.remove('visible');
+    $('fetchBtn').disabled = true;
+    $('fetchBtnText').innerHTML = '<span class="spinner"></span> Fetching...';
+
+    try {
+      var resp = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url })
+      });
+
+      var data = await resp.json();
+
+      if (!resp.ok || data.error) {
+        showUrlError(data.error || 'Failed to fetch property data.');
+        return;
+      }
+
+      // Auto-fill fields
+      if (data.price) {
+        $('purchasePrice').value = data.price;
+        autoFilledFields['purchasePrice'] = true;
+        // Update defaults based on new price
+        $('closingCosts').value = Math.round(data.price * 0.03);
+        autoFilledFields['closingCosts'] = true;
+        $('insurance').value = Math.round(data.price * 0.005);
+        autoFilledFields['insurance'] = true;
+      }
+
+      if (data.rentZestimate) {
+        $('monthlyRent').value = data.rentZestimate;
+        autoFilledFields['monthlyRent'] = true;
+      }
+
+      if (data.annualTax) {
+        $('propertyTaxes').value = data.annualTax;
+        autoFilledFields['propertyTaxes'] = true;
+      }
+
+      if (data.hoaFee) {
+        $('hoa').value = data.hoaFee;
+        autoFilledFields['hoa'] = true;
+      }
+
+      // Property type mapping
+      if (data.propertyType) {
+        var pt = data.propertyType.toLowerCase();
+        if (pt.indexOf('multi') >= 0 || pt.indexOf('duplex') >= 0 || pt.indexOf('triplex') >= 0 || pt.indexOf('fourplex') >= 0) {
+          setPropertyType('multi');
+        } else {
+          setPropertyType('sfh');
+        }
+      }
+
+      // Property info card
+      if (data.imageUrl) {
+        $('propImage').src = data.imageUrl;
+      }
+      $('propAddress').textContent = data.address || 'Address unavailable';
+
+      var details = [];
+      if (data.beds) details.push(data.beds + ' bed');
+      if (data.baths) details.push(data.baths + ' bath');
+      if (data.sqft) details.push(fmtInt(data.sqft) + ' sqft');
+      if (data.yearBuilt) details.push('Built ' + data.yearBuilt);
+      $('propDetails').textContent = details.join(' | ');
+
+      $('propertyCard').classList.add('visible');
+      updateDpHelper();
+
+    } catch (err) {
+      showUrlError('Network error: ' + err.message);
+    } finally {
+      $('fetchBtn').disabled = false;
+      $('fetchBtnText').textContent = 'Fetch Data';
+    }
+  };
+
+  function showUrlError(msg) {
+    $('urlError').textContent = msg;
+    $('urlError').classList.add('visible');
+  }
+
+  // ======================================================================
+  // Get Total Monthly Rent
+  // ======================================================================
+  function getTotalRent() {
+    if (propertyType === 'sfh') {
+      return val($('monthlyRent'), 0);
+    } else {
+      var count = parseInt($('unitCount').value);
+      var inputs = $('unitRentsGrid').querySelectorAll('.unit-rent');
+      var total = 0;
+      inputs.forEach(function(inp, i) { if (i < count) total += val(inp, 0); });
+      return total;
+    }
+  }
+
+  // ======================================================================
+  // Calculation Engine
+  // ======================================================================
+  function calculate() {
+    var price = val($('purchasePrice'), 0);
+    var arvVal = val($('arv'), 0);
+    var closingCostsVal = val($('closingCosts'), 0);
+    var rehabVal = val($('rehabBudget'), 0);
+    var valueGrowthPct = val($('valueGrowth'), 0, 50);
+
+    var isCash = $('cashPurchase').checked;
+    var dpPct = isCash ? 100 : val($('downPayment'), 0, 100);
+    var rate = isCash ? 0 : val($('interestRate'), 0, 30);
+    var termYears = isCash ? 0 : Math.max(1, Math.round(val($('loanTerm'), 1, 50)));
+    var pointsVal = isCash ? 0 : val($('points'), 0, 10);
+
+    var totalRent = getTotalRent();
+    var otherInc = val($('otherIncome'), 0);
+    var totalMonthlyIncome = totalRent + otherInc;
+    var incomeGrowthPct = val($('incomeGrowth'), 0, 50);
+
+    var taxesYr = val($('propertyTaxes'), 0);
+    var insuranceYr = val($('insurance'), 0);
+    var maintPct = val($('maintenance'), 0, 100);
+    var vacPct = val($('vacancy'), 0, 100);
+    var capexPct = val($('capex'), 0, 100);
+    var mgmtPct = val($('management'), 0, 100);
+    var hoaMonth = val($('hoa'), 0);
+    var utilMonth = val($('utilities'), 0);
+    var otherExpMonth = val($('otherExpenses'), 0);
+    var expGrowthPct = val($('expenseGrowth'), 0, 50);
 
     // Loan
-    const dpAmount = price * dpPct / 100;
-    const loanAmount = price - dpAmount;
-    const n = termYears * 12;
-    const monthlyRate = rate / 100 / 12;
+    var dpAmount = isCash ? price : price * dpPct / 100;
+    var loanAmount = isCash ? 0 : price - dpAmount;
+    var n = termYears * 12;
+    var monthlyRate = rate / 100 / 12;
 
-    let monthlyPI = 0;
-    if (loanAmount > 0 && monthlyRate > 0) {
-      monthlyPI = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, n)) / (Math.pow(1 + monthlyRate, n) - 1);
-    } else if (loanAmount > 0 && monthlyRate === 0) {
-      monthlyPI = loanAmount / n;
-    }
-
-    const monthlyTaxes = taxesYr / 12;
-    const monthlyInsurance = insuranceYr / 12;
-    const piti = monthlyPI + monthlyTaxes + monthlyInsurance;
-
-    // Expenses
-    const maintExp = totalRent * maintPct / 100;
-    const vacExp = totalRent * vacPct / 100;
-    const mgmtExp = totalRent * mgmtPct / 100;
-    const totalExpenses = piti + maintExp + vacExp + mgmtExp;
-
-    // Cash flow
-    const monthlyCF = totalRent - totalExpenses;
-    const annualCF = monthlyCF * 12;
-
-    // CoC
-    const closingCosts = price * 0.03;
-    const totalCashInvested = dpAmount + closingCosts;
-    const coc = totalCashInvested > 0 ? (annualCF / totalCashInvested) * 100 : 0;
-
-    // NOI & Cap Rate
-    const annualOpEx = taxesYr + insuranceYr + (maintExp + vacExp + mgmtExp) * 12;
-    const noi = totalRent * 12 - annualOpEx;
-    const capRate = price > 0 ? (noi / price) * 100 : 0;
-
-    // GRM
-    const annualRent = totalRent * 12;
-    const grm = annualRent > 0 ? price / annualRent : 0;
-
-    // Break-even occupancy (expenses excluding vacancy / rent)
-    const expExVacancy = piti + maintExp + mgmtExp;
-    const breakeven = totalRent > 0 ? (expExVacancy / totalRent) * 100 : 0;
-
-    const totalCashClose = dpAmount + closingCosts;
-
-    // Store for AI
-    lastCalcResults = {
-      price, dpPct, dpAmount, rate, termYears, totalRent, taxesYr, insuranceYr,
-      maintPct, vacPct, mgmtPct, loanAmount, monthlyPI, piti, monthlyCF, annualCF,
-      coc, noi, capRate, grm, breakeven, totalCashClose, totalCashInvested, closingCosts,
-      propertyType
-    };
-
-    // --- Update DOM with flash animation ---
-    function setMetric(id, text, extraClass) {
-      const el = $(id);
-      const changed = el.textContent !== text;
-      el.textContent = text;
-      el.className = 'value' + (extraClass ? ' ' + extraClass : '');
-      if (changed) {
-        el.classList.remove('flash');
-        void el.offsetWidth; // reflow to restart animation
-        el.classList.add('flash');
+    var monthlyPI = 0;
+    if (!isCash && loanAmount > 0) {
+      if (monthlyRate > 0) {
+        monthlyPI = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, n)) / (Math.pow(1 + monthlyRate, n) - 1);
+      } else {
+        monthlyPI = loanAmount / n;
       }
     }
 
-    setMetric('metricPITI', fmtDollar(piti));
-    setMetric('metricMonthlyCF', fmtDollar(monthlyCF), monthlyCF >= 0 ? 'positive' : 'negative');
-    setMetric('metricAnnualCF', fmtDollar(annualCF), annualCF >= 0 ? 'positive' : 'negative');
-    setMetric('metricCoC', fmtPct(coc));
-    setMetric('metricCapRate', fmtPct(capRate));
-    setMetric('metricGRM', fmtGRM(grm));
-    setMetric('metricBreakeven', fmtPct(breakeven));
-    setMetric('metricCashClose', fmtDollar(totalCashClose));
+    var monthlyTaxes = taxesYr / 12;
+    var monthlyInsurance = insuranceYr / 12;
+    var piti = monthlyPI + monthlyTaxes + monthlyInsurance;
 
-    // --- Deal Score ---
-    const scoreEl = $('dealScore');
-    const verdictEl = $('dealVerdict');
-    const explEl = $('dealExplanation');
-    scoreEl.classList.remove('great', 'borderline', 'pass');
+    // Monthly operating expenses
+    var maintExp = totalMonthlyIncome * maintPct / 100;
+    var vacExp = totalMonthlyIncome * vacPct / 100;
+    var capexExp = totalMonthlyIncome * capexPct / 100;
+    var mgmtExp = totalMonthlyIncome * mgmtPct / 100;
+    var totalOpex = monthlyTaxes + monthlyInsurance + maintExp + vacExp + capexExp + mgmtExp + hoaMonth + utilMonth + otherExpMonth;
 
-    if (coc >= 8 && capRate >= 6) {
-      scoreEl.classList.add('great');
-      verdictEl.textContent = '\u2705 Great Deal';
-      explEl.textContent = `Strong cash-on-cash return of ${fmt(coc)}% and cap rate of ${fmt(capRate)}%. This property meets investment thresholds.`;
-    } else if (coc >= 4 || capRate >= 4) {
-      scoreEl.classList.add('borderline');
-      verdictEl.textContent = '\u26A0\uFE0F Borderline Deal';
-      explEl.textContent = `CoC: ${fmt(coc)}%, Cap Rate: ${fmt(capRate)}%. Some metrics are acceptable but the deal doesn\u2019t fully meet investment criteria.`;
-    } else {
-      scoreEl.classList.add('pass');
-      verdictEl.textContent = '\u274C Pass on This Deal';
-      explEl.textContent = `CoC: ${fmt(coc)}%, Cap Rate: ${fmt(capRate)}%. Both metrics are below minimum thresholds. Consider negotiating or finding a better deal.`;
+    // Cash flow
+    var monthlyCF = totalMonthlyIncome - totalOpex - monthlyPI;
+    var annualCF = monthlyCF * 12;
+
+    // NOI
+    var noi = (totalMonthlyIncome * 12) - (totalOpex * 12);
+
+    // Total cash invested
+    var pointsCost = loanAmount * pointsVal / 100;
+    var totalCashInvested = dpAmount + closingCostsVal + rehabVal + pointsCost;
+
+    // Cash on Cash
+    var coc = totalCashInvested > 0 ? (annualCF / totalCashInvested) * 100 : 0;
+
+    // Cap rate
+    var capRate = price > 0 ? (noi / price) * 100 : 0;
+
+    // GRM
+    var annualRent = totalMonthlyIncome * 12;
+    var grm = annualRent > 0 ? price / annualRent : 0;
+
+    // Break-even occupancy (expenses excl vacancy + mortgage / rent)
+    var expExVacancy = totalOpex - vacExp;
+    var breakeven = totalMonthlyIncome > 0 ? ((expExVacancy + monthlyPI) / totalMonthlyIncome) * 100 : 0;
+
+    // DSCR
+    var dscr = (monthlyPI * 12 > 0) ? noi / (monthlyPI * 12) : null;
+
+    var totalCashClose = dpAmount + closingCostsVal + rehabVal + pointsCost;
+
+    // 1% Rule
+    var onePercentPass = totalMonthlyIncome >= price * 0.01;
+    var onePercentPct = price > 0 ? (totalMonthlyIncome / price) * 100 : 0;
+
+    // 50% Rule
+    var fiftyPctRatio = totalMonthlyIncome > 0 ? ((totalOpex * 12) / (totalMonthlyIncome * 12)) * 100 : 0;
+
+    // 70% Rule
+    var seventyPctVal = arvVal > 0 ? ((price + rehabVal) / arvVal) * 100 : 0;
+    var seventyPctPass = arvVal > 0 ? (price + rehabVal) <= arvVal * 0.70 : false;
+    var show70 = rehabVal > 0 || arvVal > 0;
+
+    // ---- 5yr Annualized ROI ----
+    // Build amortization schedule for loan balance lookups
+    var amortSchedule = buildAmortSchedule(loanAmount, monthlyRate, n, termYears, monthlyPI);
+    var initialEquity = price - loanAmount; // = dpAmount effectively
+
+    var cumulativeCF = 0;
+    var projRows = [];
+    for (var yr = 1; yr <= 5; yr++) {
+      var rentMult = Math.pow(1 + incomeGrowthPct / 100, yr);
+      var expMult = Math.pow(1 + expGrowthPct / 100, yr);
+      var valMult = Math.pow(1 + valueGrowthPct / 100, yr);
+
+      var yrIncome = totalMonthlyIncome * rentMult;
+      var yrMaint = yrIncome * maintPct / 100;
+      var yrVac = yrIncome * vacPct / 100;
+      var yrCapex = yrIncome * capexPct / 100;
+      var yrMgmt = yrIncome * mgmtPct / 100;
+      var yrFixedOpex = (monthlyTaxes + monthlyInsurance + hoaMonth + utilMonth + otherExpMonth) * expMult;
+      var yrTotalOpex = yrFixedOpex + yrMaint + yrVac + yrCapex + yrMgmt;
+      var yrCF = (yrIncome - yrTotalOpex - monthlyPI) * 12;
+
+      cumulativeCF += yrCF;
+      var propVal = price * valMult;
+      var loanBal = (yr <= amortSchedule.length) ? amortSchedule[yr - 1].balance : 0;
+      var equity = propVal - loanBal;
+      var cumROI = totalCashInvested > 0 ? ((cumulativeCF + (equity - initialEquity)) / totalCashInvested) * 100 : 0;
+
+      projRows.push({ year: yr, cf: yrCF, propVal: propVal, loanBal: loanBal, equity: equity, cumROI: cumROI });
     }
 
-    // --- Amortization ---
-    generateAmortization(loanAmount, monthlyRate, n, termYears, dpAmount, monthlyPI);
+    var annualized5yrROI = projRows.length > 0 ? projRows[4].cumROI / 5 : 0;
+
+    // Deal Score
+    var dealGrade, dealText, dealExpl;
+    var dscrOk = dscr === null ? true : dscr >= 1.25;
+    if (coc >= 8 && capRate >= 6 && dscrOk) {
+      dealGrade = 'great';
+      dealText = 'Great Deal';
+      dealExpl = 'Strong cash-on-cash return of ' + fmt(coc) + '% and cap rate of ' + fmt(capRate) + '%. This property meets investment thresholds.';
+    } else if (coc >= 4 || capRate >= 4) {
+      dealGrade = 'borderline';
+      dealText = 'Borderline Deal';
+      dealExpl = 'CoC: ' + fmt(coc) + '%, Cap Rate: ' + fmt(capRate) + '%. Some metrics are acceptable but the deal does not fully meet investment criteria.';
+    } else {
+      dealGrade = 'pass';
+      dealText = 'Pass on This Deal';
+      dealExpl = 'CoC: ' + fmt(coc) + '%, Cap Rate: ' + fmt(capRate) + '%. Both metrics are below minimum thresholds. Consider negotiating or finding a better deal.';
+    }
+
+    // Store results
+    lastCalcResults = {
+      price: price, arv: arvVal, closingCosts: closingCostsVal, rehab: rehabVal,
+      valueGrowthPct: valueGrowthPct, isCash: isCash, dpPct: dpPct, dpAmount: dpAmount,
+      rate: rate, termYears: termYears, points: pointsVal, pointsCost: pointsCost,
+      loanAmount: loanAmount, totalRent: totalRent, otherIncome: otherInc,
+      totalMonthlyIncome: totalMonthlyIncome, incomeGrowthPct: incomeGrowthPct,
+      taxesYr: taxesYr, insuranceYr: insuranceYr, maintPct: maintPct, vacPct: vacPct,
+      capexPct: capexPct, mgmtPct: mgmtPct, hoaMonth: hoaMonth, utilMonth: utilMonth,
+      otherExpMonth: otherExpMonth, expGrowthPct: expGrowthPct,
+      monthlyPI: monthlyPI, piti: piti, totalOpex: totalOpex, monthlyCF: monthlyCF,
+      annualCF: annualCF, noi: noi, totalCashInvested: totalCashInvested,
+      coc: coc, capRate: capRate, grm: grm, breakeven: breakeven, dscr: dscr,
+      totalCashClose: totalCashClose, onePercentPass: onePercentPass, onePercentPct: onePercentPct,
+      fiftyPctRatio: fiftyPctRatio, show70: show70, seventyPctVal: seventyPctVal,
+      seventyPctPass: seventyPctPass, annualized5yrROI: annualized5yrROI,
+      dealGrade: dealGrade, dealText: dealText, dealExpl: dealExpl,
+      projRows: projRows, amortSchedule: amortSchedule, monthlyRate: monthlyRate,
+      propertyType: propertyType, n: n
+    };
+
+    // Only update DOM if on step 6
+    if (currentStep === 6) renderResults();
   }
 
-  // --- Amortization table ---
-  function generateAmortization(loanAmount, monthlyRate, totalPayments, termYears, dpAmount, monthlyPI) {
-    const tbody = $('amortBody');
-    const tfoot = $('amortFoot');
-    tbody.innerHTML = '';
-    tfoot.innerHTML = '';
+  // ======================================================================
+  // Amortization schedule builder (returns array of yearly entries)
+  // ======================================================================
+  function buildAmortSchedule(loanAmount, monthlyRate, totalPayments, termYears, monthlyPI) {
+    if (loanAmount <= 0 || totalPayments <= 0) return [];
 
-    if (loanAmount <= 0 || totalPayments <= 0) return;
+    var schedule = [];
+    var balance = loanAmount;
+    var totalPrincipalPaid = 0;
 
-    let balance = loanAmount;
-    let totalPrincipalPaid = 0;
-    let grandTotalPayment = 0;
-    let grandTotalPrincipal = 0;
-    let grandTotalInterest = 0;
+    for (var year = 1; year <= termYears; year++) {
+      var yearPayment = 0, yearPrincipal = 0, yearInterest = 0;
 
-    for (let year = 1; year <= termYears; year++) {
-      let yearPayment = 0, yearPrincipal = 0, yearInterest = 0;
-
-      for (let m = 0; m < 12; m++) {
-        if (balance <= 0) break;
-        const interestPayment = balance * monthlyRate;
-        const principalPayment = Math.min(monthlyPI - interestPayment, balance);
+      for (var m = 0; m < 12; m++) {
+        if (balance <= 0.01) break;
+        var interestPayment = balance * monthlyRate;
+        var principalPayment = Math.min(monthlyPI - interestPayment, balance);
         balance -= principalPayment;
         if (balance < 0) balance = 0;
         yearPayment += monthlyPI;
@@ -796,123 +1553,338 @@
       }
 
       totalPrincipalPaid += yearPrincipal;
-      grandTotalPayment += yearPayment;
-      grandTotalPrincipal += yearPrincipal;
-      grandTotalInterest += yearInterest;
-      const equity = dpAmount + totalPrincipalPaid;
 
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${year}</td><td>${fmtDollar(yearPayment)}</td><td>${fmtDollar(yearPrincipal)}</td><td>${fmtDollar(yearInterest)}</td><td>${fmtDollar(Math.max(0, balance))}</td><td>${fmtDollar(equity)}</td>`;
-      tbody.appendChild(tr);
+      schedule.push({
+        year: year,
+        payment: yearPayment,
+        principal: yearPrincipal,
+        interest: yearInterest,
+        balance: Math.max(0, balance),
+        totalPrincipalPaid: totalPrincipalPaid
+      });
     }
 
-    const tfr = document.createElement('tr');
-    tfr.innerHTML = `<td>Total</td><td>${fmtDollar(grandTotalPayment)}</td><td>${fmtDollar(grandTotalPrincipal)}</td><td>${fmtDollar(grandTotalInterest)}</td><td>—</td><td>—</td>`;
-    tfoot.appendChild(tfr);
+    return schedule;
   }
 
-  // --- Event listeners ---
-  const allInputs = document.querySelectorAll('.input-grid input, .input-grid select');
-  allInputs.forEach(inp => {
-    inp.addEventListener('input', calculate);
-    // Clamp values on blur
+  // ======================================================================
+  // Render Results (Step 6 DOM updates)
+  // ======================================================================
+  function renderResults() {
+    var r = lastCalcResults;
+
+    // A) Overview
+    setMetricColor('resMonthlyCF', fmtDollar(r.monthlyCF), r.monthlyCF);
+    $('resCoC').textContent = fmtPct(r.coc);
+    $('resCapRate').textContent = fmtPct(r.capRate);
+    $('res5yrROI').textContent = fmtPct(r.annualized5yrROI);
+
+    // B) Quick Rules
+    $('rule1Badge').textContent = r.onePercentPass ? 'PASS' : 'FAIL';
+    $('rule1Badge').className = 'badge ' + (r.onePercentPass ? 'badge-pass' : 'badge-fail');
+    $('rule1Desc').textContent = 'Monthly rent (' + fmtDollar(r.totalMonthlyIncome) + ') is ' + fmt(r.onePercentPct) + '% of purchase price (' + fmtDollar(r.price) + ')';
+
+    var fiftyPass = r.fiftyPctRatio <= 50;
+    $('rule50Badge').textContent = fiftyPass ? 'PASS' : 'FAIL';
+    $('rule50Badge').className = 'badge ' + (fiftyPass ? 'badge-pass' : 'badge-fail');
+    $('rule50Desc').textContent = 'Operating expenses are ' + fmt(r.fiftyPctRatio) + '% of income (benchmark: 50%)';
+
+    if (r.show70) {
+      $('rule70pct').style.display = '';
+      $('rule70Badge').textContent = r.seventyPctPass ? 'PASS' : 'FAIL';
+      $('rule70Badge').className = 'badge ' + (r.seventyPctPass ? 'badge-pass' : 'badge-fail');
+      $('rule70Desc').textContent = 'Purchase + rehab (' + fmtDollar(r.price + r.rehab) + ') is ' + fmt(r.seventyPctVal) + '% of ARV (' + fmtDollar(r.arv) + ')';
+    } else {
+      $('rule70pct').style.display = 'none';
+    }
+
+    // C) Detailed Metrics
+    $('resNOI').textContent = fmtDollar(r.noi);
+    $('resPI').textContent = fmtDollar(r.monthlyPI);
+    $('resPITI').textContent = fmtDollar(r.piti);
+    $('resTotalExp').textContent = fmtDollar(r.totalOpex);
+    $('resGRM').textContent = fmtGRM(r.grm);
+    $('resBreakeven').textContent = fmtPct(r.breakeven);
+    $('resDSCR').textContent = r.dscr !== null ? fmt(r.dscr) : 'N/A';
+    $('resCashClose').textContent = fmtDollar(r.totalCashClose);
+
+    // D) Deal Score
+    var ds = $('dealScore');
+    ds.classList.remove('great', 'borderline', 'pass');
+    ds.classList.add(r.dealGrade);
+    $('dealVerdict').textContent = r.dealText;
+    $('dealExplanation').textContent = r.dealExpl;
+
+    // E) 5-Year Projection
+    var projBody = $('projBody');
+    projBody.innerHTML = '';
+    r.projRows.forEach(function(row) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + row.year + '</td><td>' + fmtDollar(row.cf) + '</td><td>' + fmtDollar(row.propVal) + '</td><td>' + fmtDollar(row.loanBal) + '</td><td>' + fmtDollar(row.equity) + '</td><td>' + fmtPct(row.cumROI) + '</td>';
+      projBody.appendChild(tr);
+    });
+
+    // F) Amortization Table
+    var amortSection = $('amortSection');
+    if (r.isCash || r.loanAmount <= 0) {
+      amortSection.style.display = 'none';
+    } else {
+      amortSection.style.display = '';
+      var amortBody = $('amortBody');
+      var amortFoot = $('amortFoot');
+      amortBody.innerHTML = '';
+      amortFoot.innerHTML = '';
+
+      var grandPayment = 0, grandPrincipal = 0, grandInterest = 0;
+      r.amortSchedule.forEach(function(row) {
+        grandPayment += row.payment;
+        grandPrincipal += row.principal;
+        grandInterest += row.interest;
+        var equity = r.dpAmount + row.totalPrincipalPaid;
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + row.year + '</td><td>' + fmtDollar(row.payment) + '</td><td>' + fmtDollar(row.principal) + '</td><td>' + fmtDollar(row.interest) + '</td><td>' + fmtDollar(row.balance) + '</td><td>' + fmtDollar(equity) + '</td>';
+        amortBody.appendChild(tr);
+      });
+
+      var tfr = document.createElement('tr');
+      tfr.innerHTML = '<td>Total</td><td>' + fmtDollar(grandPayment) + '</td><td>' + fmtDollar(grandPrincipal) + '</td><td>' + fmtDollar(grandInterest) + '</td><td>&mdash;</td><td>&mdash;</td>';
+      amortFoot.appendChild(tfr);
+    }
+
+    // G) Equity Chart
+    var equityChart = $('equityChart');
+    if (r.isCash || r.loanAmount <= 0) {
+      equityChart.style.display = 'none';
+    } else {
+      equityChart.style.display = '';
+      renderEquityChart(r);
+    }
+  }
+
+  function setMetricColor(id, text, value) {
+    var el = $(id);
+    el.textContent = text;
+    el.className = 'value ' + (value >= 0 ? 'positive' : 'negative');
+  }
+
+  // ======================================================================
+  // Equity Chart (CSS bars)
+  // ======================================================================
+  function renderEquityChart(r) {
+    var container = $('equityBars');
+    container.innerHTML = '';
+
+    var years = [1, 5, 10, 15, 20, 25, 30];
+    // Filter to loan term
+    years = years.filter(function(y) { return y <= r.termYears; });
+
+    // Calculate values for each year
+    var entries = [];
+    years.forEach(function(yr) {
+      var propVal = r.price * Math.pow(1 + r.valueGrowthPct / 100, yr);
+      var loanBal = (yr <= r.amortSchedule.length) ? r.amortSchedule[yr - 1].balance : 0;
+      entries.push({ year: yr, propVal: propVal, loanBal: loanBal, equity: propVal - loanBal });
+    });
+
+    // Find max for scaling
+    var maxVal = 0;
+    entries.forEach(function(e) { if (e.propVal > maxVal) maxVal = e.propVal; });
+    if (maxVal === 0) maxVal = 1;
+
+    entries.forEach(function(e) {
+      var row = document.createElement('div');
+      row.className = 'equity-bar-row';
+
+      var valPct = (e.propVal / maxVal) * 100;
+      var loanPct = (e.loanBal / maxVal) * 100;
+
+      row.innerHTML =
+        '<div class="bar-label">Year ' + e.year + '</div>' +
+        '<div class="bar-track">' +
+          '<div class="bar-value property-val" style="width:' + valPct + '%"></div>' +
+          '<div class="bar-value loan-bal" style="width:' + loanPct + '%"></div>' +
+        '</div>' +
+        '<div class="bar-amount">' + fmtDollar(e.equity) + '</div>';
+
+      container.appendChild(row);
+    });
+  }
+
+  // ======================================================================
+  // Populate Review (Step 5)
+  // ======================================================================
+  function populateReview() {
+    var content = $('reviewContent');
+    var html = '';
+
+    function badge(field) {
+      return autoFilledFields[field] ? ' <span class="badge badge-zillow">Zillow</span>' : '';
+    }
+
+    // Purchase section
+    html += '<div class="review-section">';
+    html += '<div class="review-header"><h3>Purchase Details</h3><button class="edit-link" onclick="goToStep(1)">Edit</button></div>';
+    html += '<div class="review-grid">';
+    html += reviewItem('Purchase Price', fmtDollar(val($('purchasePrice'), 0)) + badge('purchasePrice'));
+    var arvV = val($('arv'), 0);
+    if (arvV > 0) html += reviewItem('ARV', fmtDollar(arvV));
+    html += reviewItem('Closing Costs', fmtDollar(val($('closingCosts'), 0)) + badge('closingCosts'));
+    html += reviewItem('Rehab Budget', fmtDollar(val($('rehabBudget'), 0)));
+    html += reviewItem('Value Growth', val($('valueGrowth'), 0) + '%/yr');
+    html += '</div></div>';
+
+    // Loan section
+    html += '<div class="review-section">';
+    html += '<div class="review-header"><h3>Loan Details</h3><button class="edit-link" onclick="goToStep(2)">Edit</button></div>';
+    html += '<div class="review-grid">';
+    if ($('cashPurchase').checked) {
+      html += reviewItem('Financing', 'Cash Purchase');
+    } else {
+      html += reviewItem('Down Payment', val($('downPayment'), 0) + '% ($' + fmtInt(val($('purchasePrice'), 0) * val($('downPayment'), 0) / 100) + ')');
+      html += reviewItem('Interest Rate', val($('interestRate'), 0) + '%');
+      html += reviewItem('Loan Term', val($('loanTerm'), 1) + ' years');
+      html += reviewItem('Points', val($('points'), 0));
+    }
+    html += '</div></div>';
+
+    // Income section
+    html += '<div class="review-section">';
+    html += '<div class="review-header"><h3>Rental Income</h3><button class="edit-link" onclick="goToStep(3)">Edit</button></div>';
+    html += '<div class="review-grid">';
+    if (propertyType === 'sfh') {
+      html += reviewItem('Monthly Rent', fmtDollar(val($('monthlyRent'), 0)) + badge('monthlyRent'));
+    } else {
+      var count = parseInt($('unitCount').value);
+      var inputs = $('unitRentsGrid').querySelectorAll('.unit-rent');
+      for (var i = 0; i < count; i++) {
+        html += reviewItem('Unit ' + (i + 1) + ' Rent', fmtDollar(val(inputs[i], 0)));
+      }
+    }
+    html += reviewItem('Other Income', fmtDollar(val($('otherIncome'), 0)) + '/mo');
+    html += reviewItem('Income Growth', val($('incomeGrowth'), 0) + '%/yr');
+    html += '</div></div>';
+
+    // Expenses section
+    html += '<div class="review-section">';
+    html += '<div class="review-header"><h3>Expenses</h3><button class="edit-link" onclick="goToStep(4)">Edit</button></div>';
+    html += '<div class="review-grid">';
+    html += reviewItem('Property Taxes', fmtDollar(val($('propertyTaxes'), 0)) + '/yr' + badge('propertyTaxes'));
+    html += reviewItem('Insurance', fmtDollar(val($('insurance'), 0)) + '/yr' + badge('insurance'));
+    html += reviewItem('Maintenance', val($('maintenance'), 0) + '% of rent');
+    html += reviewItem('Vacancy', val($('vacancy'), 0) + '%');
+    html += reviewItem('CapEx Reserve', val($('capex'), 0) + '% of rent');
+    html += reviewItem('Management', val($('management'), 0) + '%');
+    html += reviewItem('HOA', fmtDollar(val($('hoa'), 0)) + '/mo' + badge('hoa'));
+    html += reviewItem('Utilities', fmtDollar(val($('utilities'), 0)) + '/mo');
+    html += reviewItem('Other Expenses', fmtDollar(val($('otherExpenses'), 0)) + '/mo');
+    html += reviewItem('Expense Growth', val($('expenseGrowth'), 0) + '%/yr');
+    html += '</div></div>';
+
+    content.innerHTML = html;
+  }
+
+  function reviewItem(label, value) {
+    return '<div class="review-item"><span class="review-label">' + label + '</span><span class="review-value">' + value + '</span></div>';
+  }
+
+  // ======================================================================
+  // AI Analysis
+  // ======================================================================
+  window.runAI = async function() {
+    $('aiError').classList.remove('visible');
+    $('aiOutput').classList.remove('visible');
+    $('aiBtn').disabled = true;
+    $('aiBtnText').innerHTML = '<span class="spinner"></span> Analyzing...';
+
+    // Build metrics text
+    var r = lastCalcResults;
+    var metricsText = 'Analyze this rental property deal:\n\n';
+    metricsText += 'Property Type: ' + (r.propertyType === 'sfh' ? 'Single Family Home' : 'Multifamily') + '\n';
+    metricsText += 'Purchase Price: ' + fmtDollar(r.price) + '\n';
+    if (r.arv > 0) metricsText += 'ARV: ' + fmtDollar(r.arv) + '\n';
+    if (r.rehab > 0) metricsText += 'Rehab Budget: ' + fmtDollar(r.rehab) + '\n';
+    metricsText += 'Down Payment: ' + r.dpPct + '% (' + fmtDollar(r.dpAmount) + ')\n';
+    metricsText += 'Loan Amount: ' + fmtDollar(r.loanAmount) + '\n';
+    metricsText += 'Interest Rate: ' + r.rate + '%\n';
+    metricsText += 'Loan Term: ' + r.termYears + ' years\n';
+    metricsText += 'Monthly Rent (total): ' + fmtDollar(r.totalMonthlyIncome) + '\n';
+    metricsText += 'Property Taxes/yr: ' + fmtDollar(r.taxesYr) + '\n';
+    metricsText += 'Insurance/yr: ' + fmtDollar(r.insuranceYr) + '\n';
+    metricsText += 'Maintenance: ' + r.maintPct + '%, Vacancy: ' + r.vacPct + '%, CapEx: ' + r.capexPct + '%, Mgmt: ' + r.mgmtPct + '%\n';
+    metricsText += 'HOA/mo: ' + fmtDollar(r.hoaMonth) + ', Utilities/mo: ' + fmtDollar(r.utilMonth) + '\n';
+    metricsText += '\nCalculated Metrics:\n';
+    metricsText += 'Monthly Mortgage (P&I): ' + fmtDollar(r.monthlyPI) + '\n';
+    metricsText += 'Monthly PITI: ' + fmtDollar(r.piti) + '\n';
+    metricsText += 'Monthly Cash Flow: ' + fmtDollar(r.monthlyCF) + '\n';
+    metricsText += 'Annual Cash Flow: ' + fmtDollar(r.annualCF) + '\n';
+    metricsText += 'Cash-on-Cash Return: ' + fmtPct(r.coc) + '\n';
+    metricsText += 'NOI: ' + fmtDollar(r.noi) + '\n';
+    metricsText += 'Cap Rate: ' + fmtPct(r.capRate) + '\n';
+    metricsText += 'GRM: ' + fmtGRM(r.grm) + '\n';
+    metricsText += 'Break-even Occupancy: ' + fmtPct(r.breakeven) + '\n';
+    metricsText += 'DSCR: ' + (r.dscr !== null ? fmt(r.dscr) : 'N/A (cash)') + '\n';
+    metricsText += 'Total Cash to Close: ' + fmtDollar(r.totalCashClose) + '\n';
+    metricsText += '5yr Annualized ROI: ' + fmtPct(r.annualized5yrROI) + '\n';
+    metricsText += 'Deal Score: ' + r.dealText + '\n';
+
+    try {
+      var resp = await fetch('/api/analyze-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metrics: metricsText })
+      });
+
+      var data = await resp.json();
+
+      if (!resp.ok || data.error) {
+        throw new Error(data.error || 'Failed to get AI analysis.');
+      }
+
+      $('aiOutput').textContent = data.analysis || 'No response received.';
+      $('aiOutput').classList.add('visible');
+    } catch (err) {
+      $('aiError').textContent = 'Error: ' + err.message;
+      $('aiError').classList.add('visible');
+    } finally {
+      $('aiBtn').disabled = false;
+      $('aiBtnText').textContent = 'Run AI Analysis';
+    }
+  };
+
+  // ======================================================================
+  // Event Listeners
+  // ======================================================================
+  var allInputs = document.querySelectorAll('.input-grid input, .input-grid select, .unit-rents-grid input');
+  allInputs.forEach(function(inp) {
+    inp.addEventListener('input', function() {
+      calculate();
+      updateDpHelper();
+    });
+
     if (inp.type === 'number') {
-      inp.addEventListener('blur', () => {
-        let v = parseFloat(inp.value);
-        if (isNaN(v)) { inp.value = inp.min || 0; calculate(); return; }
-        const min = inp.min !== '' ? parseFloat(inp.min) : undefined;
-        const max = inp.max !== '' ? parseFloat(inp.max) : undefined;
-        if (min !== undefined && v < min) inp.value = min;
-        if (max !== undefined && v > max) inp.value = max;
+      inp.addEventListener('blur', function() {
+        var v = parseFloat(inp.value);
+        if (isNaN(v)) { inp.value = inp.min || 0; }
+        var min = inp.min !== '' ? parseFloat(inp.min) : undefined;
+        var max = inp.max !== '' ? parseFloat(inp.max) : undefined;
+        if (min !== undefined && !isNaN(min) && v < min) inp.value = min;
+        if (max !== undefined && !isNaN(max) && v > max) inp.value = max;
         calculate();
       });
     }
   });
 
-  // Initial calculation
+  // Purchase price changes update closing costs and insurance defaults
+  $('purchasePrice').addEventListener('input', function() {
+    updateClosingCostsDefault();
+    updateInsuranceDefault();
+    updateDpHelper();
+  });
+
+  // Initial setup
+  updateDpHelper();
   calculate();
 
-  // --- AI Analysis ---
-  const aiBtn = $('aiBtn');
-  const aiBtnText = $('aiBtnText');
-  const aiOutput = $('aiOutput');
-  const aiError = $('aiError');
-
-  aiBtn.addEventListener('click', async () => {
-    const apiKey = apiKeyInput.value.trim();
-    if (!apiKey) {
-      aiError.textContent = 'Please enter your Anthropic API key above.';
-      aiError.classList.add('visible');
-      return;
-    }
-
-    aiError.classList.remove('visible');
-    aiOutput.classList.remove('visible');
-    aiBtn.disabled = true;
-    aiBtnText.innerHTML = '<span class="spinner"></span> Analyzing...';
-
-    const r = lastCalcResults;
-    const userMessage = `Analyze this rental property deal:
-
-Property Type: ${r.propertyType === 'sfh' ? 'Single Family Home' : 'Multifamily (' + unitCount.value + ' units)'}
-Purchase Price: ${fmtDollar(r.price)}
-Down Payment: ${r.dpPct}% (${fmtDollar(r.dpAmount)})
-Loan Amount: ${fmtDollar(r.loanAmount)}
-Interest Rate: ${r.rate}%
-Loan Term: ${r.termYears} years
-Monthly Rent (total): ${fmtDollar(r.totalRent)}
-Property Taxes/yr: ${fmtDollar(r.taxesYr)}
-Insurance/yr: ${fmtDollar(r.insuranceYr)}
-Maintenance: ${r.maintPct}%
-Vacancy Rate: ${r.vacPct}%
-Property Management: ${r.mgmtPct}%
-
-Calculated Metrics:
-Monthly Mortgage (PITI): ${fmtDollar(r.piti)}
-Monthly Cash Flow: ${fmtDollar(r.monthlyCF)}
-Annual Cash Flow: ${fmtDollar(r.annualCF)}
-Cash-on-Cash Return: ${fmtPct(r.coc)}
-NOI: ${fmtDollar(r.noi)}
-Cap Rate: ${fmtPct(r.capRate)}
-Gross Rent Multiplier: ${fmtGRM(r.grm)}
-Break-even Occupancy: ${fmtPct(r.breakeven)}
-Total Cash to Close: ${fmtDollar(r.totalCashClose)}
-Closing Costs (est 3%): ${fmtDollar(r.closingCosts)}`;
-
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1024,
-          system: 'You are a real estate investment analyst. Analyze this rental property deal and provide a plain-English investment summary with pros, cons, and a recommendation. Be concise but thorough. Use short paragraphs.',
-          messages: [{ role: 'user', content: userMessage }]
-        })
-      });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error?.message || `API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const text = data.content?.[0]?.text || 'No response received.';
-      aiOutput.textContent = text;
-      aiOutput.classList.add('visible');
-    } catch (err) {
-      aiError.textContent = 'Error: ' + err.message;
-      aiError.classList.add('visible');
-    } finally {
-      aiBtn.disabled = false;
-      aiBtnText.textContent = 'Run AI Analysis';
-    }
-  });
 })();
 </script>
 </body>
