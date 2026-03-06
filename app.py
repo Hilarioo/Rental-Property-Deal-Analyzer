@@ -420,8 +420,26 @@ AI_SYSTEM_PROMPT = (
     "You are a real estate investment analyst. Analyze this rental "
     "property deal and provide a plain-English investment summary "
     "with: 1) Overall Assessment, 2) Key Strengths, 3) Key Risks, "
-    "4) Recommendation. Be concise but thorough."
+    "4) Recommendation. Be concise but thorough. "
+    "Do NOT include internal reasoning, thinking process, or chain-of-thought. "
+    "Jump straight to the analysis."
 )
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove thinking/reasoning blocks from LLM output."""
+    # Strip <think>...</think> blocks (qwen3, deepseek-r1)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Strip plain-text thinking blocks that appear before the actual analysis.
+    # Look for the first analysis header pattern and discard everything before it.
+    header = re.search(
+        r"^(#{1,3}\s+|\*\*\s*|\d+[\.\)]\s*\*\*\s*)"
+        r"(Overall|Investment|Key Strength|Key Risk|Recommendation|Summary|Assessment|Analysis)",
+        text, re.MULTILINE | re.IGNORECASE,
+    )
+    if header and header.start() > 100:
+        text = text[header.start():].strip()
+    return text
 
 
 async def _analyze_with_ollama(metrics: str) -> str:
@@ -449,21 +467,24 @@ async def _analyze_with_ollama(metrics: str) -> str:
     if resp.status_code != 200:
         raise Exception(f"Ollama error: {resp.status_code} - {resp.text[:200]}")
     data = resp.json()
-    return data["message"]["content"]
+    return _strip_thinking(data["message"]["content"])
 
 
 async def _analyze_with_lmstudio(metrics: str) -> str:
     """Call LM Studio's OpenAI-compatible API."""
     lmstudio_url = os.getenv("LMSTUDIO_URL", "http://localhost:1234")
     lmstudio_model = os.getenv("LMSTUDIO_MODEL", "")  # empty = use whatever is loaded
+    user_content = metrics
+    if lmstudio_model and any(t in lmstudio_model.lower() for t in ("qwen3", "deepseek")):
+        user_content = "/no_think\n" + metrics
     async with httpx.AsyncClient(timeout=300) as client:
         payload = {
             "messages": [
                 {"role": "system", "content": AI_SYSTEM_PROMPT},
-                {"role": "user", "content": metrics},
+                {"role": "user", "content": user_content},
             ],
             "temperature": 0.7,
-            "max_tokens": 1024,
+            "max_tokens": 8192,
             "stream": False,
         }
         if lmstudio_model:
@@ -475,7 +496,7 @@ async def _analyze_with_lmstudio(metrics: str) -> str:
     if resp.status_code != 200:
         raise Exception(f"LM Studio error: {resp.status_code} - {resp.text[:200]}")
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    return _strip_thinking(data["choices"][0]["message"]["content"])
 
 
 async def _analyze_with_anthropic(metrics: str, api_key: str) -> str:
@@ -566,5 +587,6 @@ def open_browser():
 
 
 if __name__ == "__main__":
-    threading.Timer(1.5, open_browser).start()
+    if os.getenv("NO_BROWSER") != "1":
+        threading.Timer(1.5, open_browser).start()
     uvicorn.run(app, host="127.0.0.1", port=8000)

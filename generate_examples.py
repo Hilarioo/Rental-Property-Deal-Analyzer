@@ -1,9 +1,16 @@
 """
-Generate 3 example report PDFs by automating the browser.
-Run: python generate_examples.py
+Generate example report PDFs and HTMLs by automating the browser.
+
+Usage:
+    python generate_examples.py              # PDF + HTML only (no AI)
+    python generate_examples.py --with-ai    # PDF + HTML + AI analysis
+
 Requires: playwright (pip install playwright && python -m playwright install chromium)
+The app server must be running: python app.py
 """
+import argparse
 import asyncio
+from pathlib import Path
 from playwright.async_api import async_playwright
 
 SCENARIOS = [
@@ -107,11 +114,20 @@ SCENARIOS = [
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Generate example reports")
+    parser.add_argument(
+        "--with-ai", action="store_true",
+        help="Run AI analysis before saving (requires AI provider running)",
+    )
+    args = parser.parse_args()
+
+    Path("examples").mkdir(exist_ok=True)
+
     async with async_playwright() as p:
         browser = await p.chromium.launch()
 
         for scenario in SCENARIOS:
-            print(f"Generating: {scenario['title']}...")
+            print(f"\nGenerating: {scenario['title']}...")
             page = await browser.new_page()
             await page.goto("http://localhost:8000", wait_until="networkidle")
 
@@ -121,9 +137,27 @@ async def main():
                     f"document.getElementById('{field_id}').value = '{value}'"
                 )
 
-            # Navigate to results
+            # Navigate to results (Step 6)
             await page.evaluate("goToStep(6)")
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(1000)
+
+            # Run AI analysis if requested
+            if args.with_ai:
+                print("  Running AI analysis...")
+                await page.evaluate("window.runAI()")
+                # Wait for AI to complete (poll for button text change)
+                try:
+                    await page.wait_for_function(
+                        """() => {
+                            const btn = document.getElementById('aiBtn');
+                            return btn && btn.textContent.trim() === 'Run AI Analysis';
+                        }""",
+                        timeout=300_000,  # 5 min max
+                    )
+                    print("  AI analysis complete.")
+                except Exception:
+                    print("  AI analysis timed out, saving without it.")
+                await page.wait_for_timeout(500)
 
             # Save as PDF
             pdf_path = f"examples/{scenario['name']}_report.pdf"
@@ -131,13 +165,24 @@ async def main():
                 path=pdf_path,
                 format="Letter",
                 print_background=True,
-                margin={"top": "0.5in", "bottom": "0.5in", "left": "0.4in", "right": "0.4in"},
+                margin={
+                    "top": "0.5in", "bottom": "0.5in",
+                    "left": "0.4in", "right": "0.4in",
+                },
             )
             print(f"  Saved: {pdf_path}")
+
+            # Save as HTML
+            html_path = f"examples/{scenario['name']}_report.html"
+            html_content = await page.content()
+            Path(html_path).write_text(html_content, encoding="utf-8")
+            print(f"  Saved: {html_path}")
+
             await page.close()
 
         await browser.close()
-        print("\nDone! All 3 example reports saved to examples/ folder.")
+        print(f"\nDone! All {len(SCENARIOS)} example reports saved to examples/ folder.")
+        print("Files: PDF + HTML" + (" + AI analysis" if args.with_ai else ""))
 
 
 if __name__ == "__main__":
