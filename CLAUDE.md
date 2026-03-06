@@ -79,3 +79,10 @@ Zillow aggressively blocks automated requests. The scraper tries httpx first, th
 
 - No co-author tags — commits are authored by the repo owner only
 - Commit messages follow conventional commits (feat/fix/docs prefix)
+
+## Releases
+
+- Version tagging: `v{major}.{minor}.{patch}` (e.g., `v1.0.0`)
+- Release process: `git tag -a v1.0.0 -m "v1.0.0 — description"` → `git push origin v1.0.0` → `gh release create v1.0.0`
+- License: MIT (see `LICENSE`)
+- Funding: `.github/FUNDING.yml` (GitHub Sponsors + Buy Me a Coffee)

@@ -119,12 +119,36 @@ async def main():
         "--with-ai", action="store_true",
         help="Run AI analysis before saving (requires AI provider running)",
     )
+    parser.add_argument(
+        "--screenshot", action="store_true",
+        help="Capture a PNG screenshot of the good deal results (for README)",
+    )
     args = parser.parse_args()
 
     Path("examples").mkdir(exist_ok=True)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch()
+
+        # Screenshot-only mode: capture good deal results page as PNG
+        if args.screenshot:
+            scenario = SCENARIOS[0]  # good deal
+            print(f"\nCapturing screenshot: {scenario['title']}...")
+            page = await browser.new_page(viewport={"width": 1280, "height": 900})
+            await page.goto("http://localhost:8000", wait_until="networkidle")
+            for field_id, value in scenario["inputs"].items():
+                await page.evaluate(
+                    f"document.getElementById('{field_id}').value = '{value}'"
+                )
+            await page.evaluate("goToStep(6)")
+            await page.wait_for_timeout(1500)
+            screenshot_path = "examples/screenshot.png"
+            await page.screenshot(path=screenshot_path, full_page=True)
+            print(f"  Saved: {screenshot_path}")
+            await page.close()
+            await browser.close()
+            print("\nDone! Screenshot saved to examples/screenshot.png")
+            return
 
         for scenario in SCENARIOS:
             print(f"\nGenerating: {scenario['title']}...")
