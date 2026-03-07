@@ -2225,7 +2225,8 @@
         grandPayment += row.payment;
         grandPrincipal += row.principal;
         grandInterest += row.interest;
-        var equity = r.dpAmount + row.totalPrincipalPaid;
+        var propValYr = r.price * Math.pow(1 + r.valueGrowthPct / 100, row.year);
+        var equity = propValYr - row.balance;
         var tr = document.createElement('tr');
         tr.innerHTML = '<td>' + row.year + '</td><td>' + fmtDollar(row.payment) + '</td><td>' + fmtDollar(row.principal) + '</td><td>' + fmtDollar(row.interest) + '</td><td>' + fmtDollar(row.balance) + '</td><td>' + fmtDollar(equity) + '</td>';
         amortBody.appendChild(tr);
