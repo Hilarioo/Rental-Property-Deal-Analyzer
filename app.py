@@ -1,6 +1,7 @@
-import os, json, re, webbrowser, threading
+import os, json, re, webbrowser, threading, time, asyncio
 from pathlib import Path
 from urllib.parse import urlparse
+from collections import defaultdict
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -11,6 +12,24 @@ import uvicorn
 
 load_dotenv()
 app = FastAPI()
+
+
+# ---------------------------------------------------------------------------
+# Rate Limiter (in-memory, per-IP)
+# ---------------------------------------------------------------------------
+_rate_limits: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(ip: str, limit: int, window: int = 60) -> bool:
+    """Return True if the request is within rate limits."""
+    now = time.time()
+    timestamps = _rate_limits[ip]
+    # Prune old entries
+    _rate_limits[ip] = [t for t in timestamps if now - t < window]
+    if len(_rate_limits[ip]) >= limit:
+        return False
+    _rate_limits[ip].append(now)
+    return True
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -315,25 +334,141 @@ def _extract_from_ld_json(soup):
     return None
 
 
+def _extract_from_dom(soup):
+    """Fallback: extract property data from rendered DOM elements and meta tags."""
+    result = {
+        "address": None, "price": None, "beds": None, "baths": None,
+        "sqft": None, "lotSize": None, "yearBuilt": None, "propertyType": None,
+        "zestimate": None, "rentZestimate": None, "taxHistory": [],
+        "annualTax": None, "hoaFee": 0, "description": None, "imageUrl": None,
+    }
+
+    # Try og:title for address
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content"):
+        result["address"] = og_title["content"].split("|")[0].strip()
+
+    # Try og:image
+    og_image = soup.find("meta", property="og:image")
+    if og_image and og_image.get("content"):
+        result["imageUrl"] = og_image["content"]
+
+    # Try meta description for details
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        desc = meta_desc["content"]
+        result["description"] = desc
+
+        # Parse common patterns like "$350,000 - 3 bed, 2 bath, 1,500 sqft"
+        price_m = re.search(r"\$[\d,]+", desc)
+        if price_m:
+            try:
+                result["price"] = int(price_m.group().replace("$", "").replace(",", ""))
+            except ValueError:
+                pass
+
+        beds_m = re.search(r"(\d+)\s*(?:bed|br)", desc, re.IGNORECASE)
+        if beds_m:
+            result["beds"] = int(beds_m.group(1))
+
+        baths_m = re.search(r"(\d+(?:\.\d+)?)\s*(?:bath|ba)", desc, re.IGNORECASE)
+        if baths_m:
+            result["baths"] = float(baths_m.group(1))
+
+        sqft_m = re.search(r"([\d,]+)\s*(?:sq\s*ft|sqft)", desc, re.IGNORECASE)
+        if sqft_m:
+            try:
+                result["sqft"] = int(sqft_m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
+    # Search for JSON-like data blobs in script tags (Zillow often embeds property
+    # data in various script tags beyond __NEXT_DATA__)
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        if not text or len(text) < 100:
+            continue
+
+        # Look for common Zillow data patterns
+        for pattern in [r'"price"\s*:\s*(\d+)', r'"listPrice"\s*:\s*(\d+)']:
+            m = re.search(pattern, text)
+            if m and not result["price"]:
+                try:
+                    result["price"] = int(m.group(1))
+                except ValueError:
+                    pass
+
+        if not result["beds"]:
+            m = re.search(r'"bedrooms"\s*:\s*(\d+)', text)
+            if m:
+                result["beds"] = int(m.group(1))
+
+        if not result["baths"]:
+            m = re.search(r'"bathrooms"\s*:\s*([\d.]+)', text)
+            if m:
+                result["baths"] = float(m.group(1))
+
+        if not result["sqft"]:
+            m = re.search(r'"livingArea"\s*:\s*(\d+)', text)
+            if m:
+                result["sqft"] = int(m.group(1))
+
+        if not result["yearBuilt"]:
+            m = re.search(r'"yearBuilt"\s*:\s*(\d{4})', text)
+            if m:
+                result["yearBuilt"] = int(m.group(1))
+
+        if not result["zestimate"]:
+            m = re.search(r'"zestimate"\s*:\s*(\d+)', text)
+            if m:
+                result["zestimate"] = int(m.group(1))
+
+        if not result["rentZestimate"]:
+            m = re.search(r'"rentZestimate"\s*:\s*(\d+)', text)
+            if m:
+                result["rentZestimate"] = int(m.group(1))
+
+    # Only return if we found at least an address or price
+    if result["address"] or result["price"]:
+        return result
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Playwright fallback fetcher
 # ---------------------------------------------------------------------------
 
 async def _fetch_with_playwright(url: str) -> str:
     """Use a headless browser to fetch the page (bypasses bot detection)."""
-    import asyncio
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = await browser.new_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            timezone_id="America/New_York",
         )
         page = await context.new_page()
+
+        # Remove webdriver flag to avoid bot detection
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        """)
+
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        # Wait a moment for JS to populate __NEXT_DATA__
-        await page.wait_for_timeout(2000)
+        # Wait for JS to populate data (Zillow is heavily JS-rendered)
+        await page.wait_for_timeout(3000)
+
+        # Try scrolling to trigger lazy-loaded content
+        await page.evaluate("window.scrollBy(0, 300)")
+        await page.wait_for_timeout(1000)
+
         html = await page.content()
         await browser.close()
     return html
@@ -348,8 +483,193 @@ async def serve_frontend():
     return Path("index.html").read_text(encoding="utf-8")
 
 
+def _detect_source(hostname: str) -> str:
+    """Detect data source from URL hostname."""
+    if hostname and hostname.endswith("redfin.com"):
+        return "redfin"
+    if hostname and hostname.endswith("zillow.com"):
+        return "zillow"
+    return "unknown"
+
+
+def _extract_redfin(soup) -> dict | None:
+    """Extract property data from a Redfin listing page."""
+    result = {
+        "address": None, "price": None, "beds": None, "baths": None,
+        "sqft": None, "lotSize": None, "yearBuilt": None, "propertyType": None,
+        "zestimate": None, "rentZestimate": None, "taxHistory": [],
+        "annualTax": None, "hoaFee": 0, "description": None, "imageUrl": None,
+    }
+
+    # Helper to extract address from a schema.org object
+    def _extract_address(obj: dict) -> str | None:
+        addr_obj = obj.get("address", {})
+        if isinstance(addr_obj, dict):
+            parts = [addr_obj.get("streetAddress", ""),
+                     addr_obj.get("addressLocality", "")]
+            state = addr_obj.get("addressRegion", "")
+            zipcode = addr_obj.get("postalCode", "")
+            addr = ", ".join(p for p in parts if p)
+            if state:
+                addr += f", {state} {zipcode}".rstrip()
+            return addr if addr else None
+        elif isinstance(addr_obj, str):
+            return addr_obj
+        return None
+
+    # Helper to check if @type matches any known residential/listing type
+    def _type_matches(item_type, targets) -> bool:
+        if isinstance(item_type, list):
+            return any(t in targets for t in item_type)
+        return item_type in targets
+
+    LISTING_TYPES = {"SingleFamilyResidence", "Residence", "Product",
+                     "House", "Apartment", "RealEstateListing"}
+    RESIDENTIAL_TYPES = {"SingleFamilyResidence", "Residence", "House",
+                         "Apartment", "Condominium", "TownHouse"}
+
+    # 1) ld+json (Redfin usually has good structured data)
+    ld_scripts = soup.find_all("script", type="application/ld+json")
+    for tag in ld_scripts:
+        if not tag.string:
+            continue
+        try:
+            data = json.loads(tag.string)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("@type", "")
+            if not _type_matches(item_type, LISTING_TYPES):
+                continue
+
+            # Extract top-level data (address, image, description, price)
+            if not result["address"]:
+                result["address"] = _extract_address(item)
+            result["description"] = result["description"] or item.get("description")
+            img = item.get("image") or item.get("photo")
+            if isinstance(img, list) and img:
+                img = img[0]
+            if isinstance(img, dict):
+                img = img.get("contentUrl") or img.get("url")
+            if not result["imageUrl"] and isinstance(img, str):
+                result["imageUrl"] = img
+
+            # Price from offers or top-level
+            offers = item.get("offers", {})
+            if isinstance(offers, dict) and not result["price"]:
+                result["price"] = offers.get("price")
+            if not result["price"]:
+                result["price"] = item.get("price")
+
+            # Direct property fields (if at top level)
+            result["beds"] = result["beds"] or item.get("numberOfRooms") or item.get("numberOfBedrooms")
+            result["baths"] = result["baths"] or item.get("numberOfBathroomsTotal") or item.get("numberOfFullBathrooms")
+            result["yearBuilt"] = result["yearBuilt"] or item.get("yearBuilt")
+            floor_size = item.get("floorSize", {})
+            if not result["sqft"]:
+                if isinstance(floor_size, dict):
+                    result["sqft"] = floor_size.get("value")
+                elif isinstance(floor_size, (int, float)):
+                    result["sqft"] = int(floor_size)
+
+            # Traverse mainEntity for nested residential data (Redfin pattern)
+            main_entity = item.get("mainEntity", {})
+            if isinstance(main_entity, dict):
+                me_type = main_entity.get("@type", "")
+                if _type_matches(me_type, RESIDENTIAL_TYPES) or main_entity.get("numberOfBedrooms"):
+                    if not result["address"]:
+                        result["address"] = _extract_address(main_entity)
+                    result["beds"] = result["beds"] or main_entity.get("numberOfBedrooms") or main_entity.get("numberOfRooms")
+                    result["baths"] = result["baths"] or main_entity.get("numberOfBathroomsTotal") or main_entity.get("numberOfFullBathrooms")
+                    result["yearBuilt"] = result["yearBuilt"] or main_entity.get("yearBuilt")
+                    me_floor = main_entity.get("floorSize", {})
+                    if not result["sqft"]:
+                        if isinstance(me_floor, dict):
+                            result["sqft"] = me_floor.get("value")
+                        elif isinstance(me_floor, (int, float)):
+                            result["sqft"] = int(me_floor)
+
+    # 2) Fallback: parse from meta tags
+    if not result["address"]:
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            result["address"] = og_title["content"].split("|")[0].strip()
+
+    if not result["imageUrl"]:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            result["imageUrl"] = og_img["content"]
+
+    # 3) Fallback: regex scan for Redfin's JS data
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        if len(text) < 50:
+            continue
+
+        if not result["price"]:
+            m = re.search(r'"price(?:Info)?"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
+            if not m:
+                m = re.search(r'"listingPrice"\s*:\s*(\d+)', text)
+            if m:
+                try:
+                    result["price"] = int(m.group(1))
+                except ValueError:
+                    pass
+
+        if not result["beds"]:
+            m = re.search(r'"beds"\s*:\s*(\d+)', text)
+            if m:
+                result["beds"] = int(m.group(1))
+
+        if not result["baths"]:
+            m = re.search(r'"baths"\s*:\s*([\d.]+)', text)
+            if m:
+                result["baths"] = float(m.group(1))
+
+        if not result["sqft"]:
+            m = re.search(r'"sqFt"\s*:\s*\{[^}]*"value"\s*:\s*(\d+)', text)
+            if not m:
+                m = re.search(r'"sqftInfo"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
+            if m:
+                result["sqft"] = int(m.group(1))
+
+        if not result["yearBuilt"]:
+            m = re.search(r'"yearBuilt"\s*:\s*\{[^}]*"value"\s*:\s*(\d{4})', text)
+            if m:
+                result["yearBuilt"] = int(m.group(1))
+
+        if not result["annualTax"]:
+            m = re.search(r'"taxInfo"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
+            if m:
+                result["annualTax"] = int(m.group(1))
+
+        if result["hoaFee"] == 0:
+            m = re.search(r'"hoaDues"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
+            if m:
+                result["hoaFee"] = int(m.group(1))
+
+    # Price might come as string "$350,000" — normalize
+    if isinstance(result["price"], str):
+        try:
+            result["price"] = int(re.sub(r"[^\d]", "", result["price"]))
+        except ValueError:
+            result["price"] = None
+
+    if result["address"] or result["price"]:
+        return result
+    return None
+
+
 @app.post("/api/scrape")
-async def scrape_zillow(request: Request):
+async def scrape_property(request: Request):
+    # Rate limit: 5 requests per minute per IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"scrape:{client_ip}", 5):
+        return JSONResponse({"error": "Too many requests. Please wait a minute before trying again."}, status_code=429)
+
     body = await request.json()
     url = body.get("url", "").strip()
 
@@ -357,52 +677,90 @@ async def scrape_zillow(request: Request):
     if not url:
         return JSONResponse({"error": "URL is required."}, status_code=400)
 
+    if len(url) > 2000:
+        return JSONResponse({"error": "URL is too long."}, status_code=400)
+
     parsed = urlparse(url)
-    if not parsed.hostname or not parsed.hostname.endswith("zillow.com"):
+    source = _detect_source(parsed.hostname)
+
+    if source == "unknown":
         return JSONResponse(
-            {"error": "Invalid URL. Only Zillow URLs are supported (must be a zillow.com link)."},
+            {"error": "Unsupported URL. Paste a Zillow or Redfin listing URL."},
+            status_code=400,
+        )
+
+    # Source-specific path validation
+    if source == "zillow" and not re.search(r"/homedetails/|/zpid_|/homes/", parsed.path or ""):
+        return JSONResponse(
+            {"error": "Please provide a direct Zillow property listing URL (e.g. zillow.com/homedetails/...)."},
+            status_code=400,
+        )
+    if source == "redfin" and not re.search(r"/home/\d+", parsed.path or ""):
+        return JSONResponse(
+            {"error": "Please provide a direct Redfin property listing URL (e.g. redfin.com/.../home/12345)."},
             status_code=400,
         )
 
     # --- Fetch page (try httpx first, fallback to Playwright) ---
     html_text = None
+    site_label = "Redfin" if source == "redfin" else "Zillow"
 
-    # Attempt 1: httpx (fast, but often blocked)
+    # Attempt 1: httpx (fast, but Zillow often blocks this)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
             resp = await client.get(url, headers=HEADERS)
         if resp.status_code < 400 and "captcha" not in resp.text[:2000].lower():
-            html_text = resp.text
+            # Check for bot-block pages (Zillow returns 200 with "Access denied")
+            if "access to this page has been denied" not in resp.text[:3000].lower():
+                html_text = resp.text
     except httpx.RequestError:
         pass
 
-    # Attempt 2: Playwright headless browser (slower, but bypasses blocks)
+    # Attempt 2: Playwright headless browser
     if html_text is None:
         try:
             html_text = await _fetch_with_playwright(url)
-        except Exception as exc:
-            return JSONResponse(
-                {"error": f"Could not fetch the Zillow page. Both direct and browser methods failed. Try again later or enter data manually."},
-                status_code=503,
-            )
+            # Check for bot block even in Playwright response
+            if html_text and "access to this page has been denied" in html_text[:3000].lower():
+                html_text = None
+        except Exception:
+            pass
 
     if not html_text:
         return JSONResponse(
-            {"error": "Could not reach Zillow. Check your internet connection and try again."},
-            status_code=502,
+            {"error": f"Could not fetch the {site_label} page. The site may be blocking automated requests. Try again later or enter data manually."},
+            status_code=503,
         )
 
     # --- Parse HTML ---
-    soup = BeautifulSoup(html_text, "lxml")
-
-    # Check for CAPTCHA page
-    if soup.find("div", class_="captcha-container") or "captcha" in html_text[:2000].lower():
+    try:
+        soup = BeautifulSoup(html_text, "lxml")
+    except Exception:
         return JSONResponse(
-            {"error": "Zillow returned a CAPTCHA page. Please try again later or use a different network."},
+            {"error": "Failed to parse the page HTML. The page may be malformed."},
+            status_code=422,
+        )
+
+    # Check for CAPTCHA / bot block pages
+    if (soup.find("div", class_="captcha-container")
+            or "captcha" in html_text[:2000].lower()
+            or "access to this page has been denied" in html_text[:3000].lower()):
+        return JSONResponse(
+            {"error": f"{site_label} blocked the request. Please try again later or enter data manually."},
             status_code=503,
         )
 
     # --- Extract property data ---
+    if source == "redfin":
+        result = _extract_redfin(soup)
+        if result:
+            return JSONResponse(result)
+        return JSONResponse(
+            {"error": "Could not extract property data from this Redfin listing."},
+            status_code=422,
+        )
+
+    # Zillow extraction strategies
     result = _extract_from_next_data(soup)
     if result:
         return JSONResponse(result)
@@ -411,8 +769,12 @@ async def scrape_zillow(request: Request):
     if result:
         return JSONResponse(result)
 
+    result = _extract_from_dom(soup)
+    if result:
+        return JSONResponse(result)
+
     return JSONResponse(
-        {"error": "Could not extract property data. Zillow may have changed their page structure, or this listing type is not supported."},
+        {"error": "Could not extract property data. Zillow may have changed their page structure. Try using a Redfin URL instead, or enter data manually."},
         status_code=422,
     )
 
@@ -524,12 +886,22 @@ def _resolve_provider():
 
 @app.post("/api/analyze-ai")
 async def analyze_ai(request: Request):
+    # Rate limit: 10 requests per minute per IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"ai:{client_ip}", 10):
+        return JSONResponse({"error": "Too many requests. Please wait before trying again."}, status_code=429)
+
     body = await request.json()
     metrics = body.get("metrics", "")
     model = body.get("model")  # optional model override
     if not metrics:
         return JSONResponse(
             {"error": "Missing 'metrics' in request body."},
+            status_code=400,
+        )
+    if len(metrics) > 50_000:
+        return JSONResponse(
+            {"error": "Input too large."},
             status_code=400,
         )
 
@@ -928,12 +1300,22 @@ def _process_stream_token(
 
 @app.post("/api/analyze-ai-stream")
 async def analyze_ai_stream(request: Request):
+    # Rate limit: 10 requests per minute per IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"ai-stream:{client_ip}", 10):
+        return JSONResponse({"error": "Too many requests. Please wait before trying again."}, status_code=429)
+
     body = await request.json()
     metrics = body.get("metrics", "")
     model = body.get("model")  # optional model override
     if not metrics:
         return JSONResponse(
             {"error": "Missing 'metrics' in request body."},
+            status_code=400,
+        )
+    if len(metrics) > 50_000:
+        return JSONResponse(
+            {"error": "Input too large."},
             status_code=400,
         )
 
@@ -972,8 +1354,16 @@ async def analyze_ai_stream(request: Request):
             status_code=400,
         )
 
+    async def _with_timeout(generator, timeout_seconds=300):
+        """Wrap a streaming generator with a timeout."""
+        try:
+            async for chunk in generator:
+                yield chunk
+        except asyncio.CancelledError:
+            yield f"data: {json.dumps({'error': 'Stream timed out.'})}\n\n"
+
     return StreamingResponse(
-        gen,
+        _with_timeout(gen),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

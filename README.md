@@ -35,7 +35,7 @@ Free, open-source rental property investment calculator with AI-powered analysis
 - **5-year total return breakdown** — Cash Flow + Appreciation + Debt Paydown + Tax Benefits
 - **Strategy fit analysis** — Cash Flow / Wealth Building / Low Risk / BRRRR
 - **Save, compare, and export** — localStorage scenarios, side-by-side comparison (up to 3), PDF + HTML export
-- **Zillow scraping** — auto-fill property data from a listing URL
+- **Zillow & Redfin scraping** — auto-fill property data from a listing URL
 - **Model selector** — switch between AI models on the fly
 
 ## Quick Start
@@ -102,7 +102,7 @@ Opens automatically at **http://localhost:8000**. No build step required.
 
 A **6-step wizard** guides you through the analysis:
 
-1. **Property Info** — Address, price, type, ARV, rehab budget (or paste a Zillow URL)
+1. **Property Info** — Address, price, type, ARV, rehab budget (or paste a Zillow/Redfin URL)
 2. **Financing** — Down payment, rate, term, points, closing costs (or toggle cash purchase)
 3. **Income** — Monthly rent (multi-unit support), other income, growth rate
 4. **Expenses** — Taxes, insurance, HOA, utilities, percentage-based costs, expense growth
@@ -175,7 +175,7 @@ Real estate returns come from four sources, all calculated over a 5-year project
 | **Property** | $250,000 single family, $2,800/mo rent |
 | **Results** | Cash Flow: **$593/mo** · CoC: **9.83%** · Cap Rate: **8.92%** · DSCR: **1.47** |
 | **Score** | **14/14 — Great Deal** |
-| **5-Year Return** | **$104,189** (143.71% on $72,500 invested) |
+| **5-Year Return** | **$104,189** (143.71% on $72,500 invested, 19.50% CAGR) |
 
 ### Mediocre Deal — Suburban, Thin Margins
 
@@ -220,9 +220,16 @@ Real estate returns come from four sources, all calculated over a 5-year project
 - **Frontend:** Vanilla HTML/CSS/JS (single file, no frameworks, no build step)
 - **AI:** LM Studio (free, GPU) / Ollama (free, local) / Anthropic Claude (paid, cloud)
 
-## Zillow Scraping
+## Property Data Scraping
 
-Zillow aggressively blocks automated requests. The scraper tries httpx first, then Playwright headless Chromium as fallback. Both may still be blocked by CAPTCHA. When scraping fails, enter data manually — all fields are editable.
+The app can auto-fill property data from **Redfin** and **Zillow** listing URLs.
+
+| Source | Reliability | Notes |
+|--------|-------------|-------|
+| **Redfin** | High | Extracts price, beds, baths, sqft, year built, description, and photo from structured ld+json data |
+| **Zillow** | Low | Aggressively blocked by PerimeterX/HUMAN bot detection; may fail even with Playwright fallback |
+
+The scraper tries httpx first, then Playwright headless Chromium as fallback. When scraping fails, enter data manually — all fields are editable.
 
 ---
 

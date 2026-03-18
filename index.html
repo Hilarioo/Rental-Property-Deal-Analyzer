@@ -187,6 +187,8 @@
   }
 
   .input-group input:focus, .input-group select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.15); }
+  .input-group input.input-error { border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.15); }
+  .negative-cf-warning { display: inline-block; background: var(--red-bg); color: var(--red); font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; }
 
   .input-group select { cursor: pointer; }
   .input-group select option { background: var(--card); color: var(--text); }
@@ -544,10 +546,16 @@
   .factor-row:last-child { border-bottom: none; }
 
   .factor-dot {
-    width: 10px;
-    height: 10px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #fff;
   }
 
   .factor-dot.strong { background: var(--green); }
@@ -594,7 +602,7 @@
 
   .table-wrap {
     max-height: 420px;
-    overflow-y: auto;
+    overflow: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
   }
@@ -1012,33 +1020,33 @@
   </header>
 
   <!-- Wizard Navigation -->
-  <div class="wizard-nav" id="wizardNav">
-    <div class="wizard-step active" data-step="1" onclick="wizardClick(1)">
+  <div class="wizard-nav" id="wizardNav" role="tablist" aria-label="Analysis steps">
+    <div class="wizard-step active" data-step="1" onclick="wizardClick(1)" role="tab" tabindex="0" aria-selected="true">
       <div class="circle">1</div>
       <div class="step-label">Property</div>
     </div>
     <div class="wizard-line" data-line="1"></div>
-    <div class="wizard-step" data-step="2" onclick="wizardClick(2)">
+    <div class="wizard-step" data-step="2" onclick="wizardClick(2)" role="tab" tabindex="0" aria-selected="false">
       <div class="circle">2</div>
       <div class="step-label">Loan</div>
     </div>
     <div class="wizard-line" data-line="2"></div>
-    <div class="wizard-step" data-step="3" onclick="wizardClick(3)">
+    <div class="wizard-step" data-step="3" onclick="wizardClick(3)" role="tab" tabindex="0" aria-selected="false">
       <div class="circle">3</div>
       <div class="step-label">Income</div>
     </div>
     <div class="wizard-line" data-line="3"></div>
-    <div class="wizard-step" data-step="4" onclick="wizardClick(4)">
+    <div class="wizard-step" data-step="4" onclick="wizardClick(4)" role="tab" tabindex="0" aria-selected="false">
       <div class="circle">4</div>
       <div class="step-label">Expenses</div>
     </div>
     <div class="wizard-line" data-line="4"></div>
-    <div class="wizard-step" data-step="5" onclick="wizardClick(5)">
+    <div class="wizard-step" data-step="5" onclick="wizardClick(5)" role="tab" tabindex="0" aria-selected="false">
       <div class="circle">5</div>
       <div class="step-label">Review</div>
     </div>
     <div class="wizard-line" data-line="5"></div>
-    <div class="wizard-step" data-step="6" onclick="wizardClick(6)">
+    <div class="wizard-step" data-step="6" onclick="wizardClick(6)" role="tab" tabindex="0" aria-selected="false">
       <div class="circle">6</div>
       <div class="step-label">Results</div>
     </div>
@@ -1054,11 +1062,11 @@
   </div>
 
   <!-- ============ STEP 1: Property URL & Purchase ============ -->
-  <div class="step-panel active" data-step="1" id="step1">
+  <div class="step-panel active" data-step="1" id="step1" role="tabpanel">
     <div class="section-title">Property URL &amp; Purchase Details</div>
 
     <div class="url-row">
-      <input type="text" id="zillowUrl" placeholder="Paste a Zillow listing URL...">
+      <input type="text" id="zillowUrl" placeholder="Paste a Zillow or Redfin listing URL...">
       <button class="btn" id="fetchBtn" type="button" onclick="fetchZillow()">
         <span id="fetchBtnText">Fetch Data</span>
       </button>
@@ -1124,7 +1132,7 @@
   </div>
 
   <!-- ============ STEP 2: Loan Details ============ -->
-  <div class="step-panel" data-step="2" id="step2">
+  <div class="step-panel" data-step="2" id="step2" role="tabpanel">
     <div class="section-title">Loan Details</div>
 
     <div class="toggle-row">
@@ -1168,7 +1176,7 @@
   </div>
 
   <!-- ============ STEP 3: Rental Income ============ -->
-  <div class="step-panel" data-step="3" id="step3">
+  <div class="step-panel" data-step="3" id="step3" role="tabpanel">
     <div class="section-title">Rental Income</div>
 
     <div class="prop-type-toggle" id="propTypeToggle">
@@ -1226,7 +1234,7 @@
   </div>
 
   <!-- ============ STEP 4: Expenses ============ -->
-  <div class="step-panel" data-step="4" id="step4">
+  <div class="step-panel" data-step="4" id="step4" role="tabpanel">
     <div class="section-title">Operating Expenses</div>
 
     <div class="input-grid">
@@ -1283,7 +1291,7 @@
   </div>
 
   <!-- ============ STEP 5: Review ============ -->
-  <div class="step-panel" data-step="5" id="step5">
+  <div class="step-panel" data-step="5" id="step5" role="tabpanel">
     <div class="section-title">Review All Inputs</div>
     <div id="reviewContent"></div>
 
@@ -1298,7 +1306,7 @@
   </div>
 
   <!-- ============ STEP 6: Results Dashboard ============ -->
-  <div class="step-panel" data-step="6" id="step6">
+  <div class="step-panel" data-step="6" id="step6" role="tabpanel">
 
     <!-- Property Summary (shown if data available) -->
     <div class="property-summary" id="resultsPropSummary" style="display:none;">
@@ -1494,6 +1502,18 @@
   var fmtInt = function(n) { return Math.round(n).toLocaleString('en-US'); };
   var fmtGRM = function(n) { return n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); };
 
+  function esc(s) {
+    if (typeof s !== 'string') return s;
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function debounce(fn, delay) {
+    var timer;
+    return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
+  }
+
   function val(el, min, max) {
     var v = parseFloat(el.value);
     if (isNaN(v)) v = 0;
@@ -1523,6 +1543,7 @@
     steps.forEach(function(s) {
       var n = parseInt(s.dataset.step);
       s.classList.remove('active', 'completed', 'disabled');
+      s.setAttribute('aria-selected', n === currentStep ? 'true' : 'false');
       if (n === currentStep) {
         s.classList.add('active');
       } else if (n < currentStep) {
@@ -1542,8 +1563,20 @@
     });
   }
 
+  function validateStep(step) {
+    var errors = [];
+    if (step === 1 && val($('purchasePrice'), 0) <= 0) errors.push('purchasePrice');
+    if (step === 3 && propertyType === 'sfh' && val($('monthlyRent'), 0) <= 0) errors.push('monthlyRent');
+    document.querySelectorAll('.input-error').forEach(function(el) { el.classList.remove('input-error'); });
+    errors.forEach(function(id) { $(id).classList.add('input-error'); });
+    return errors.length === 0;
+  }
+
   window.goToStep = function(n) {
     if (n < 1 || n > 6) return;
+    // Validate current step when moving forward
+    if (n > currentStep && !validateStep(currentStep)) return;
+
     // Hide current
     var panels = document.querySelectorAll('.step-panel');
     panels.forEach(function(p) { p.classList.remove('active'); });
@@ -1636,8 +1669,10 @@
       showUrlError('Please enter a Zillow URL.');
       return;
     }
-    if (!/^https?:\/\//i.test(url) || url.toLowerCase().indexOf('zillow.com') === -1) {
-      showUrlError('Invalid URL. Please enter a valid Zillow listing URL (must start with http and contain zillow.com).');
+    var isZillow = url.toLowerCase().indexOf('zillow.com') !== -1;
+    var isRedfin = url.toLowerCase().indexOf('redfin.com') !== -1;
+    if (!/^https?:\/\//i.test(url) || (!isZillow && !isRedfin)) {
+      showUrlError('Invalid URL. Please enter a Zillow or Redfin listing URL.');
       return;
     }
 
@@ -1712,7 +1747,11 @@
 
       // Property info card
       if (data.imageUrl) {
+        $('propImage').onerror = function() { this.style.display = 'none'; };
         $('propImage').src = data.imageUrl;
+        $('propImage').style.display = '';
+      } else {
+        $('propImage').style.display = 'none';
       }
       $('propAddress').textContent = data.address || 'Address unavailable';
 
@@ -1863,7 +1902,8 @@
     var pricePerUnit = price / unitCount;
     var rentPerSqft = sqft > 0 ? totalMonthlyIncome / sqft : null;
     var monthlyCFPerUnit = monthlyCF / unitCount;
-    var oer = totalMonthlyIncome > 0 ? (totalOpex / totalMonthlyIncome) * 100 : 0;
+    var opexForOER = monthlyTaxes + monthlyInsurance + maintExp + mgmtExp + hoaMonth + utilMonth + otherExpMonth;
+    var oer = totalMonthlyIncome > 0 ? (opexForOER / totalMonthlyIncome) * 100 : 0;
     var annualDepreciation = (price * buildingPct / 100) / 27.5;
     var annualTaxSavings = annualDepreciation * taxRatePct / 100;
     var afterTaxCF = annualCF + annualTaxSavings;
@@ -1894,14 +1934,14 @@
       var expMult = Math.pow(1 + expGrowthPct / 100, yr);
       var valMult = Math.pow(1 + valueGrowthPct / 100, yr);
 
-      var yrIncome = totalMonthlyIncome * rentMult;
-      var yrMaint = yrIncome * maintPct / 100;
-      var yrVac = yrIncome * vacPct / 100;
-      var yrCapex = yrIncome * capexPct / 100;
-      var yrMgmt = yrIncome * mgmtPct / 100;
-      var yrFixedOpex = (monthlyTaxes + monthlyInsurance + hoaMonth + utilMonth + otherExpMonth) * expMult;
-      var yrTotalOpex = yrFixedOpex + yrMaint + yrVac + yrCapex + yrMgmt;
-      var yrCF = (yrIncome - yrTotalOpex - monthlyPI) * 12;
+      var moIncome = totalMonthlyIncome * rentMult;
+      var moMaint = moIncome * maintPct / 100;
+      var moVac = moIncome * vacPct / 100;
+      var moCapex = moIncome * capexPct / 100;
+      var moMgmt = moIncome * mgmtPct / 100;
+      var moFixedOpex = (monthlyTaxes + monthlyInsurance + hoaMonth + utilMonth + otherExpMonth) * expMult;
+      var moTotalOpex = moFixedOpex + moMaint + moVac + moCapex + moMgmt;
+      var yrCF = (moIncome - moTotalOpex - monthlyPI) * 12;
       var yrTaxSavings = annualDepreciation * taxRatePct / 100;
 
       cumulativeCF += yrCF;
@@ -1914,7 +1954,13 @@
       projRows.push({ year: yr, cf: yrCF, propVal: propVal, loanBal: loanBal, equity: equity, cumROI: cumROI });
     }
 
-    var annualized5yrROI = projRows.length > 0 ? projRows[4].cumROI / 5 : 0;
+    var annualized5yrROI = 0;
+    if (projRows.length > 0 && totalCashInvested > 0) {
+      var totalMultiple = 1 + (projRows[4].cumROI / 100);
+      if (totalMultiple > 0) {
+        annualized5yrROI = (Math.pow(totalMultiple, 0.2) - 1) * 100;
+      }
+    }
 
     // Total Return Breakdown (5-year)
     var totalReturnCF = cumulativeCF;
@@ -2084,6 +2130,8 @@
       var img = $('resultsPropImg');
       if (scrapedData && scrapedData.imageUrl) {
         img.src = scrapedData.imageUrl;
+        img.alt = 'Property at ' + (addr || manualName || 'unknown address');
+        img.onerror = function() { this.style.display = 'none'; };
         img.style.display = '';
       } else {
         img.style.display = 'none';
@@ -2094,7 +2142,13 @@
     }
 
     // A) Overview
+    var cfWarning = r.monthlyCF < 0 ? ' <span class="negative-cf-warning">Negative</span>' : '';
     setMetricColor('resMonthlyCF', fmtDollar(r.monthlyCF), r.monthlyCF);
+    // Append warning badge for negative CF
+    if (r.monthlyCF < 0) {
+      var cfEl = $('resMonthlyCF');
+      cfEl.innerHTML = cfEl.textContent + cfWarning;
+    }
     setMetricColor('resCoC', fmtPct(r.coc), r.coc);
     setMetricText('resCapRate', fmtPct(r.capRate));
     setMetricText('res5yrROI', fmtPct(r.annualized5yrROI));
@@ -2175,8 +2229,10 @@
 
     // Factor scorecard
     var factorHtml = '';
+    var factorIcons = { strong: '\u2713', ok: '\u2013', weak: '\u2717' };
     r.dealFactors.forEach(function(f) {
-      factorHtml += '<div class="factor-row"><div class="factor-dot ' + f.verdict + '"></div><div class="factor-name">' + f.name + '</div><div class="factor-val">' + f.value + '</div><div class="factor-reason">' + f.reason + '</div></div>';
+      var icon = factorIcons[f.verdict] || '';
+      factorHtml += '<div class="factor-row"><div class="factor-dot ' + f.verdict + '" title="' + f.verdict + '">' + icon + '</div><div class="factor-name">' + f.name + '</div><div class="factor-val">' + f.value + '</div><div class="factor-reason">' + f.reason + '</div></div>';
     });
     $('factorList').innerHTML = factorHtml;
 
@@ -2328,7 +2384,7 @@
     html += '<div class="review-header"><h3>Purchase Details</h3><button class="edit-link" onclick="goToStep(1)">Edit</button></div>';
     html += '<div class="review-grid">';
     var propNameV = $('propName').value.trim();
-    if (propNameV) html += reviewItem('Property', propNameV + badge('propName'));
+    if (propNameV) html += reviewItem('Property', esc(propNameV) + badge('propName'));
     html += reviewItem('Purchase Price', fmtDollar(val($('purchasePrice'), 0)) + badge('purchasePrice'));
     var arvV = val($('arv'), 0);
     if (arvV > 0) html += reviewItem('ARV', fmtDollar(arvV));
@@ -2668,7 +2724,15 @@
     }
     data._savedAt = new Date().toISOString();
     scenarios[name] = data;
-    localStorage.setItem(SCENARIO_KEY, JSON.stringify(scenarios));
+    try {
+      localStorage.setItem(SCENARIO_KEY, JSON.stringify(scenarios));
+    } catch(e) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        alert('Storage is full. Delete some saved scenarios to make room.');
+        return;
+      }
+      throw e;
+    }
     refreshScenarioList();
     $('scenarioSelect').value = name;
   };
@@ -2749,7 +2813,7 @@
     ];
 
     var html = '<table class="compare-table"><thead><tr><th>Metric</th>';
-    keys.forEach(function(k) { html += '<th>' + k + '</th>'; });
+    keys.forEach(function(k) { html += '<th>' + esc(k) + '</th>'; });
     html += '</tr></thead><tbody>';
 
     // Deal verdict row
@@ -2793,12 +2857,10 @@
   // ======================================================================
   // Event Listeners
   // ======================================================================
+  var debouncedCalc = debounce(function() { calculate(); updateDpHelper(); }, 150);
   var allInputs = document.querySelectorAll('.input-grid input, .input-grid select, .unit-rents-grid input');
   allInputs.forEach(function(inp) {
-    inp.addEventListener('input', function() {
-      calculate();
-      updateDpHelper();
-    });
+    inp.addEventListener('input', debouncedCalc);
 
     if (inp.type === 'number') {
       inp.addEventListener('blur', function() {
@@ -2821,11 +2883,11 @@
   $('insurance').addEventListener('input', function() { userEditedFields['insurance'] = true; });
 
   // Purchase price changes update closing costs and insurance defaults
-  $('purchasePrice').addEventListener('input', function() {
+  $('purchasePrice').addEventListener('input', debounce(function() {
     updateClosingCostsDefault();
     updateInsuranceDefault();
     updateDpHelper();
-  });
+  }, 150));
 
   // === Try Example Deal ===
   window.tryExampleDeal = function() {
@@ -2845,6 +2907,16 @@
     updateDpHelper();
     goToStep(6);
   };
+
+  // Keyboard navigation for wizard steps
+  document.querySelectorAll('.wizard-step').forEach(function(s) {
+    s.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        wizardClick(parseInt(s.dataset.step));
+      }
+    });
+  });
 
   // Initial setup
   updateDpHelper();
