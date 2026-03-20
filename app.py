@@ -663,6 +663,191 @@ def _extract_redfin(soup) -> dict | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Neighborhood Search — Redfin search page scraping
+# ---------------------------------------------------------------------------
+
+# Global semaphore: max 2 concurrent Playwright browsers for search
+_search_semaphore = asyncio.Semaphore(2)
+
+_REDFIN_SEARCH_JS = """
+() => {
+    const cards = document.querySelectorAll('.MapHomeCardReact');
+    const results = [];
+    const seen = new Set();
+    cards.forEach(card => {
+        const linkEl = card.querySelector('a[href*="/home/"]');
+        const url = linkEl ? linkEl.href : null;
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        const priceDiv = card.querySelector('.bp-Homecard__Price');
+        let price = null;
+        if (priceDiv) {
+            const m = priceDiv.textContent.match(/\\$(\\d[\\d,]*)/);
+            if (m) price = parseInt(m[1].replace(/,/g, ''));
+        }
+        const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"]');
+        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"]');
+        let beds = null, baths = null, sqft = null;
+        if (statsEl) {
+            const t = statsEl.textContent;
+            const bM = t.match(/(\\d+)\\s*bed/i);
+            const btM = t.match(/(\\d+\\.?\\d*)\\s*bath/i);
+            const sM = t.match(/(\\d[\\d,]*)\\s*sq/i);
+            if (bM) beds = parseInt(bM[1]);
+            if (btM) baths = parseFloat(btM[1]);
+            if (sM) sqft = parseInt(sM[1].replace(/,/g, ''));
+        }
+        const imgEl = card.querySelector('img[src*="cdn-redfin"], img[src*="photos"]');
+        results.push({
+            address: addrEl ? addrEl.textContent.trim() : null,
+            price: price,
+            beds: beds,
+            baths: baths,
+            sqft: sqft,
+            listingUrl: url,
+            imageUrl: imgEl ? imgEl.src : null
+        });
+    });
+    return results;
+}
+"""
+
+
+def _build_redfin_search_url(location: str, filters: dict) -> str:
+    """Build a Redfin search URL from location and filters."""
+    from urllib.parse import quote
+    query = location.strip()
+
+    # Detect zip code vs city name
+    if re.match(r"^\d{5}$", query):
+        base = f"https://www.redfin.com/zipcode/{query}"
+    else:
+        # URL-encode city/state for Redfin's /city/ path
+        slug = quote(query, safe="")
+        base = f"https://www.redfin.com/city/{slug}"
+
+    # Build filter path segments
+    filter_parts = []
+    if filters.get("min_price"):
+        filter_parts.append(f"min-price={int(filters['min_price'])}")
+    if filters.get("max_price"):
+        filter_parts.append(f"max-price={int(filters['max_price'])}")
+    if filters.get("min_beds") and filters["min_beds"] > 0:
+        filter_parts.append(f"min-beds={int(filters['min_beds'])}")
+    ptype_map = {"house": "house", "condo": "condo,townhouse", "multi-family": "multifamily"}
+    if filters.get("property_type") and filters["property_type"] in ptype_map:
+        filter_parts.append(f"property-type={ptype_map[filters['property_type']]}")
+
+    if filter_parts:
+        return base + "/filter/" + ",".join(filter_parts)
+    return base
+
+
+async def _search_redfin_page(location: str, filters: dict) -> dict:
+    """Search Redfin by loading the search results page with Playwright."""
+    from playwright.async_api import async_playwright
+
+    url = _build_redfin_search_url(location, filters)
+    max_results = min(filters.get("max_results", 20), 25)
+
+    async with _search_semaphore, async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+
+        try:
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            await browser.close()
+            return {"error": "Could not connect to Redfin. Please try again later."}
+
+        # Check for redirect to main page (bad location)
+        final_url = page.url
+        if "/zipcode/" not in final_url and "/city/" not in final_url and "/neighborhood/" not in final_url and "/filter/" not in final_url:
+            await browser.close()
+            return {"error": f'Could not find location "{location}". Try a zip code (e.g. "78701") or city + state (e.g. "Austin, TX").'}
+
+        # Wait for listing cards to render
+        try:
+            await page.wait_for_selector(".MapHomeCardReact", timeout=8000)
+        except Exception:
+            # No listings found or page didn't load cards
+            html_text = await page.content()
+            await browser.close()
+            if "No results found" in html_text or "0 homes" in html_text:
+                return {"listings": [], "total": 0}
+            return {"error": "No listings found. Try adjusting your filters or searching a different area."}
+
+        await page.wait_for_timeout(2000)
+
+        # Extract location label from page title
+        title = await page.title()
+        label = location
+        if title:
+            # "78701, TX Real Estate & Homes for Sale | Redfin"
+            label = re.sub(r"\s*\|.*$", "", title)
+            label = re.sub(r"\s*Real Estate.*$", "", label).strip()
+            if not label:
+                label = location
+
+        listings = await page.evaluate(_REDFIN_SEARCH_JS)
+        await browser.close()
+
+    # Filter out listings without price and cap results
+    listings = [l for l in listings if l.get("price")][:max_results]
+
+    return {
+        "listings": listings,
+        "total": len(listings),
+        "location_label": label,
+    }
+
+
+@app.post("/api/search")
+async def search_neighborhood(request: Request):
+    """Search for listings in a neighborhood/zip/city via Redfin."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"search:{client_ip}", 3):
+        return JSONResponse(
+            {"error": "Too many searches. Please wait a minute before trying again."},
+            status_code=429,
+        )
+
+    body = await request.json()
+    location = (body.get("location") or "").strip()
+    if not location:
+        return JSONResponse({"error": "Location is required."}, status_code=400)
+    if len(location) > 200:
+        return JSONResponse({"error": "Location query is too long."}, status_code=400)
+
+    filters = {
+        "min_price": body.get("min_price"),
+        "max_price": body.get("max_price"),
+        "min_beds": body.get("min_beds"),
+        "property_type": body.get("property_type"),
+        "max_results": min(body.get("max_results", 20), 25),
+    }
+
+    result = await _search_redfin_page(location, filters)
+
+    if "error" in result and "listings" not in result:
+        return JSONResponse({"error": result["error"]}, status_code=404)
+
+    return JSONResponse(result)
+
+
 @app.post("/api/scrape")
 async def scrape_property(request: Request):
     # Rate limit: 5 requests per minute per IP

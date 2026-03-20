@@ -36,6 +36,7 @@ Free, open-source rental property investment calculator with AI-powered analysis
 - **Strategy fit analysis** — Cash Flow / Wealth Building / Low Risk / BRRRR
 - **Save, compare, and export** — localStorage scenarios, side-by-side comparison (up to 3), PDF + HTML export
 - **Zillow & Redfin scraping** — auto-fill property data from a listing URL
+- **Neighborhood Search** — search a zip code or city, score listings by investor metrics, then analyze the best ones
 - **Model selector** — switch between AI models on the fly
 
 ## Quick Start
@@ -100,7 +101,11 @@ Opens automatically at **http://localhost:8000**. No build step required.
 
 ## How It Works
 
-A **6-step wizard** guides you through the analysis:
+The app has two modes, toggled on the first step:
+
+### Single Property (default)
+
+A **6-step wizard** for analyzing a specific property:
 
 1. **Property Info** — Address, price, type, ARV, rehab budget (or paste a Zillow/Redfin URL)
 2. **Financing** — Down payment, rate, term, points, closing costs (or toggle cash purchase)
@@ -108,6 +113,10 @@ A **6-step wizard** guides you through the analysis:
 4. **Expenses** — Taxes, insurance, HOA, utilities, percentage-based costs, expense growth
 5. **Review** — Summary of all inputs before calculating
 6. **Results** — Full dashboard with metrics, projections, charts, and AI analysis
+
+### Neighborhood Search
+
+Search a zip code or city to **discover** deals — enter a location and target rent, get a scored table of listings, then click **Analyze →** on any result to jump into the full wizard with data pre-filled. See the [Neighborhood Search](#neighborhood-search) section below for details.
 
 ## Metrics Reference
 
@@ -230,6 +239,69 @@ The app can auto-fill property data from **Redfin** and **Zillow** listing URLs.
 | **Zillow** | Low | Aggressively blocked by PerimeterX/HUMAN bot detection; may fail even with Playwright fallback |
 
 The scraper tries httpx first, then Playwright headless Chromium as fallback. When scraping fails, enter data manually — all fields are editable.
+
+---
+
+## Neighborhood Search
+
+Search an entire zip code or city to **discover** investment deals — not just analyze ones you already know about.
+
+### How It Works
+
+1. Click **Neighborhood Search** on Step 1 (the toggle next to "Single Property")
+2. Enter a **location** (zip code like `78701` or city like `Austin, TX`)
+3. Enter your **target monthly rent** for the area (what you'd charge a tenant)
+4. Optionally set filters: price range, min beds, property type
+5. Click **Search Listings** — the app loads Redfin's search page and extracts all active listings
+6. Results appear in a sortable table with a **Quick Score** for each listing
+7. Click **Analyze →** on any listing to switch to the full single-property wizard with data pre-filled
+
+### Search Filters
+
+| Filter | Required | Default | Notes |
+|--------|----------|---------|-------|
+| Location | Yes | — | Zip code (e.g. `78701`) or city + state (e.g. `Austin, TX`) |
+| Min Price | No | None | Set a floor to skip low-quality inventory |
+| Max Price | No | None | Your budget cap |
+| Min Beds | No | Any | Investors typically want 2+ bedrooms |
+| Property Type | No | Any | House, Condo/Townhouse, or Multi-family |
+| Target Monthly Rent | Yes | — | Your rent estimate for the area (used for scoring) |
+| Max Results | No | 20 | 10, 15, 20, or 25 |
+
+### Quick Score (0-3 Stars)
+
+Each listing is scored on three investor rules using just its price and your rent estimate:
+
+| Check | Pass Condition | What It Tells You |
+|-------|---------------|-------------------|
+| **1% Rule** | `monthly_rent / price >= 1%` | Rent is high enough relative to price |
+| **Est. Cap Rate** | `(annual_rent x 0.5) / price >= 6%` | Decent return after typical expenses (50% rule) |
+| **Est. Cash Flow** | `rent - expenses - mortgage > $0` | Positive cash flow at 20% down, 7% rate |
+
+Stars are color-coded: **3 = green** (strong deal), **2 = yellow** (borderline), **1 = red** (weak), **0 = gray** (doesn't pass any check).
+
+> **Why "Target Monthly Rent" instead of automatic estimates?** No free rent API exists. You know your target market better than any estimate. This keeps the feature zero-cost and gives you control.
+
+### Analyze → Full Wizard
+
+When you click **Analyze →** on a search result:
+
+1. The app switches to **Single Property** mode
+2. The Redfin listing URL is set and a full scrape runs automatically
+3. Price, address, sqft, and dependent fields (closing costs, insurance) are pre-filled
+4. You continue through the 6-step wizard as normal — add loan details, rent, expenses, then get full results
+
+### Rate Limits
+
+Neighborhood Search is limited to **3 searches per minute** to avoid overloading Redfin. If you hit the limit, wait 60 seconds and try again.
+
+### Known Limitations
+
+- **Redfin only** — Zillow blocks automated search pages too aggressively
+- **No rent estimation** — you must provide a target rent (by design — see above)
+- **No map view** — results are table-only for now
+- **One search at a time** — no batch analysis of multiple listings simultaneously
+- **City search** requires Redfin to recognize the city name — use zip codes for best reliability
 
 ---
 

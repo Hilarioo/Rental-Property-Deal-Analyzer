@@ -225,6 +225,100 @@
 
   .url-error.visible { display: block; }
 
+  /* Mode Toggle */
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    width: fit-content;
+  }
+  .mode-toggle button {
+    padding: 10px 24px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+  .mode-toggle button.active { background: var(--accent); color: #fff; }
+
+  /* Search Filters */
+  .search-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 700px) { .search-filters { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 480px) { .search-filters { grid-template-columns: 1fr; } }
+
+  .search-status {
+    text-align: center;
+    padding: 16px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+  .search-status.error { color: var(--red); }
+
+  /* Search Results Table */
+  .search-results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  .search-results-table th {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .search-results-table th:hover { color: var(--accent); }
+  .search-results-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .search-results-table tr:hover td { background: rgba(99,102,241,0.04); }
+
+  .quick-score {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+  .quick-score.score-3 { background: var(--green-bg); color: var(--green); }
+  .quick-score.score-2 { background: var(--yellow-bg); color: var(--yellow); }
+  .quick-score.score-1 { background: var(--red-bg); color: var(--red); }
+  .quick-score.score-0 { background: rgba(139,143,163,0.12); color: var(--text-muted); }
+
+  .search-results-table .btn { padding: 6px 14px; font-size: 0.8rem; }
+
+  .score-detail {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .score-detail .pass { color: var(--green); }
+  .score-detail .warn { color: var(--yellow); }
+  .score-detail .fail { color: var(--red); }
+
   /* Property info card */
   .property-card {
     display: none;
@@ -909,7 +1003,8 @@
     /* Hide non-result elements */
     .wizard-nav, .step-buttons, .url-row, .url-error, .property-card,
     .btn, .ai-section .btn, #aiBtn, .toggle-row, #downloadBtn, #downloadHtmlBtn,
-    .connection-banner, .scenario-toolbar, .ai-controls select, .compare-overlay { display: none !important; }
+    .connection-banner, .scenario-toolbar, .ai-controls select, .compare-overlay,
+    .mode-toggle, #searchMode { display: none !important; }
     .step-panel { display: none !important; }
     .step-panel[data-step="6"] { display: block !important; }
 
@@ -1063,72 +1158,161 @@
 
   <!-- ============ STEP 1: Property URL & Purchase ============ -->
   <div class="step-panel active" data-step="1" id="step1" role="tabpanel">
-    <div class="section-title">Property URL &amp; Purchase Details</div>
 
-    <div class="url-row">
-      <input type="text" id="zillowUrl" placeholder="Paste a Zillow or Redfin listing URL...">
-      <button class="btn" id="fetchBtn" type="button" onclick="fetchZillow()">
-        <span id="fetchBtnText">Fetch Data</span>
+    <div class="mode-toggle" id="modeToggle">
+      <button class="active" data-mode="single" onclick="toggleSearchMode('single')">Single Property</button>
+      <button data-mode="search" onclick="toggleSearchMode('search')">Neighborhood Search</button>
+    </div>
+
+    <!-- ===== Single Property Mode ===== -->
+    <div id="singlePropertyMode">
+      <div class="section-title">Property URL &amp; Purchase Details</div>
+
+      <div class="url-row">
+        <input type="text" id="zillowUrl" placeholder="Paste a Zillow or Redfin listing URL...">
+        <button class="btn" id="fetchBtn" type="button" onclick="fetchZillow()">
+          <span id="fetchBtnText">Fetch Data</span>
+        </button>
+      </div>
+      <div class="url-error" id="urlError"></div>
+
+      <div class="property-card" id="propertyCard">
+        <img id="propImage" alt="Property photo">
+        <div class="info">
+          <h3 id="propAddress">--</h3>
+          <div class="details" id="propDetails">--</div>
+        </div>
+      </div>
+
+      <div class="input-grid" style="margin-bottom:12px;">
+        <div class="input-group" style="grid-column: 1 / -1;">
+          <label for="propName">Property Name / Address</label>
+          <input type="text" id="propName" placeholder="e.g. 123 Main St, Springfield — helps you remember which property this is">
+        </div>
+      </div>
+
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="purchasePrice">Purchase Price ($)</label>
+          <input type="number" id="purchasePrice" value="200000" min="0" step="1000">
+        </div>
+        <div class="input-group">
+          <label for="arv">After Repair Value / ARV ($)</label>
+          <input type="number" id="arv" value="" min="0" step="1000" placeholder="Optional">
+        </div>
+        <div class="input-group">
+          <label for="closingCosts">Closing Costs ($)</label>
+          <input type="number" id="closingCosts" value="6000" min="0" step="100">
+        </div>
+        <div class="input-group">
+          <label for="rehabBudget">Rehab / Repair Budget ($)</label>
+          <input type="number" id="rehabBudget" value="0" min="0" step="500">
+        </div>
+        <div class="input-group">
+          <label for="valueGrowth">Property Value Growth (%/yr)</label>
+          <input type="number" id="valueGrowth" value="3" min="0" max="50" step="0.5">
+        </div>
+        <div class="input-group">
+          <label for="sqft">Square Footage</label>
+          <input type="number" id="sqft" value="" min="0" step="1" placeholder="Optional">
+        </div>
+        <div class="input-group">
+          <label for="buildingPct">Building Value % (for depreciation)</label>
+          <input type="number" id="buildingPct" value="80" min="0" max="100" step="1">
+        </div>
+        <div class="input-group">
+          <label for="taxRate">Marginal Tax Rate (%)</label>
+          <input type="number" id="taxRate" value="25" min="0" max="50" step="1">
+        </div>
+      </div>
+
+      <div class="step-buttons">
+        <div class="left"><button class="btn btn-secondary" type="button" onclick="tryExampleDeal()">&#9733; Try Example Deal</button></div>
+        <div class="right">
+          <button class="btn" type="button" onclick="goToStep(2)">Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Neighborhood Search Mode ===== -->
+    <div id="searchMode" style="display:none">
+      <div class="section-title">Neighborhood Search</div>
+      <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px;">Search for listings in a zip code, city, or neighborhood. Results are scored using your target rent to find the best deals.</p>
+
+      <div class="search-filters">
+        <div class="input-group">
+          <label for="searchLocation">Location (zip/city) *</label>
+          <input type="text" id="searchLocation" placeholder="e.g. 78701 or Austin, TX">
+        </div>
+        <div class="input-group">
+          <label for="searchMinPrice">Min Price ($)</label>
+          <input type="number" id="searchMinPrice" min="0" step="10000" placeholder="No minimum">
+        </div>
+        <div class="input-group">
+          <label for="searchMaxPrice">Max Price ($)</label>
+          <input type="number" id="searchMaxPrice" min="0" step="10000" placeholder="No maximum">
+        </div>
+        <div class="input-group">
+          <label for="searchMinBeds">Min Beds</label>
+          <select id="searchMinBeds">
+            <option value="0">Any</option>
+            <option value="1">1+</option>
+            <option value="2">2+</option>
+            <option value="3">3+</option>
+            <option value="4">4+</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="searchPropType">Property Type</label>
+          <select id="searchPropType">
+            <option value="">Any</option>
+            <option value="house">House</option>
+            <option value="condo">Condo / Townhouse</option>
+            <option value="multi-family">Multi-family</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="searchTargetRent">Target Monthly Rent ($) *</label>
+          <input type="number" id="searchTargetRent" min="0" step="50" placeholder="Your rent estimate">
+        </div>
+        <div class="input-group">
+          <label for="searchMaxResults">Max Results</label>
+          <select id="searchMaxResults">
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="20" selected>20</option>
+            <option value="25">25</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="btn btn-large" id="searchBtn" type="button" onclick="runNeighborhoodSearch()">
+        <span id="searchBtnText">Search Listings</span>
       </button>
-    </div>
-    <div class="url-error" id="urlError"></div>
 
-    <div class="property-card" id="propertyCard">
-      <img id="propImage" alt="Property photo">
-      <div class="info">
-        <h3 id="propAddress">--</h3>
-        <div class="details" id="propDetails">--</div>
-      </div>
-    </div>
-
-    <div class="input-grid" style="margin-bottom:12px;">
-      <div class="input-group" style="grid-column: 1 / -1;">
-        <label for="propName">Property Name / Address</label>
-        <input type="text" id="propName" placeholder="e.g. 123 Main St, Springfield — helps you remember which property this is">
-      </div>
-    </div>
-
-    <div class="input-grid">
-      <div class="input-group">
-        <label for="purchasePrice">Purchase Price ($)</label>
-        <input type="number" id="purchasePrice" value="200000" min="0" step="1000">
-      </div>
-      <div class="input-group">
-        <label for="arv">After Repair Value / ARV ($)</label>
-        <input type="number" id="arv" value="" min="0" step="1000" placeholder="Optional">
-      </div>
-      <div class="input-group">
-        <label for="closingCosts">Closing Costs ($)</label>
-        <input type="number" id="closingCosts" value="6000" min="0" step="100">
-      </div>
-      <div class="input-group">
-        <label for="rehabBudget">Rehab / Repair Budget ($)</label>
-        <input type="number" id="rehabBudget" value="0" min="0" step="500">
-      </div>
-      <div class="input-group">
-        <label for="valueGrowth">Property Value Growth (%/yr)</label>
-        <input type="number" id="valueGrowth" value="3" min="0" max="50" step="0.5">
-      </div>
-      <div class="input-group">
-        <label for="sqft">Square Footage</label>
-        <input type="number" id="sqft" value="" min="0" step="1" placeholder="Optional">
-      </div>
-      <div class="input-group">
-        <label for="buildingPct">Building Value % (for depreciation)</label>
-        <input type="number" id="buildingPct" value="80" min="0" max="100" step="1">
-      </div>
-      <div class="input-group">
-        <label for="taxRate">Marginal Tax Rate (%)</label>
-        <input type="number" id="taxRate" value="25" min="0" max="50" step="1">
+      <div id="searchStatus" class="search-status" style="display:none"></div>
+      <div id="searchResultsContainer" style="display:none;margin-top:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="searchResultsTitle">Results</div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="search-results-table" id="searchResultsTable">
+            <thead>
+              <tr>
+                <th onclick="sortSearchResults('address')">Address</th>
+                <th onclick="sortSearchResults('price')">Price</th>
+                <th onclick="sortSearchResults('beds')">Beds/Baths</th>
+                <th onclick="sortSearchResults('sqft')">Sqft</th>
+                <th onclick="sortSearchResults('score')">Quick Score</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="searchResultsBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
-    <div class="step-buttons">
-      <div class="left"><button class="btn btn-secondary" type="button" onclick="tryExampleDeal()">&#9733; Try Example Deal</button></div>
-      <div class="right">
-        <button class="btn" type="button" onclick="goToStep(2)">Next &rarr;</button>
-      </div>
-    </div>
   </div>
 
   <!-- ============ STEP 2: Loan Details ============ -->
@@ -1528,6 +1712,7 @@
   var currentStep = 1;
   var maxVisitedStep = 1;
   var propertyType = 'sfh';
+  var appMode = 'single'; // 'single' or 'search'
   var autoFilledFields = {}; // track fields filled from Zillow
   var userEditedFields = {}; // track fields manually edited by user
   var lastCalcResults = {};
@@ -1565,7 +1750,7 @@
 
   function validateStep(step) {
     var errors = [];
-    if (step === 1 && val($('purchasePrice'), 0) <= 0) errors.push('purchasePrice');
+    if (step === 1 && appMode === 'single' && val($('purchasePrice'), 0) <= 0) errors.push('purchasePrice');
     if (step === 3 && propertyType === 'sfh' && val($('monthlyRent'), 0) <= 0) errors.push('monthlyRent');
     document.querySelectorAll('.input-error').forEach(function(el) { el.classList.remove('input-error'); });
     errors.forEach(function(id) { $(id).classList.add('input-error'); });
@@ -1788,6 +1973,222 @@
     banner.classList.add('visible');
     setTimeout(function() { banner.classList.remove('visible'); }, 8000);
   }
+
+  // ======================================================================
+  // Neighborhood Search
+  // ======================================================================
+  var searchResults = [];
+  var searchSortCol = 'score';
+  var searchSortAsc = false;
+
+  window.toggleSearchMode = function(mode) {
+    appMode = mode;
+    $('singlePropertyMode').style.display = mode === 'single' ? '' : 'none';
+    $('searchMode').style.display = mode === 'search' ? '' : 'none';
+    document.querySelectorAll('#modeToggle button').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    });
+  };
+
+  window.runNeighborhoodSearch = async function() {
+    var location = $('searchLocation').value.trim();
+    var targetRent = parseFloat($('searchTargetRent').value);
+    if (!location) {
+      showSearchStatus('Please enter a location (zip code or city).', true);
+      return;
+    }
+    if (!targetRent || targetRent <= 0) {
+      showSearchStatus('Please enter a target monthly rent.', true);
+      return;
+    }
+
+    $('searchBtn').disabled = true;
+    $('searchBtnText').innerHTML = '<span class="spinner"></span> Searching...';
+    $('searchResultsContainer').style.display = 'none';
+    showSearchStatus('Searching listings...', false);
+
+    try {
+      var body = {
+        location: location,
+        min_price: parseFloat($('searchMinPrice').value) || null,
+        max_price: parseFloat($('searchMaxPrice').value) || null,
+        min_beds: parseInt($('searchMinBeds').value) || 0,
+        property_type: $('searchPropType').value || null,
+        max_results: parseInt($('searchMaxResults').value) || 20,
+      };
+      var resp = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await resp.json();
+      if (!resp.ok || data.error) {
+        showSearchStatus(data.error || 'Search failed.', true);
+        return;
+      }
+      if (!data.listings || data.listings.length === 0) {
+        showSearchStatus('No listings found for "' + esc(location) + '". Try adjusting your filters or searching a different area.', true);
+        return;
+      }
+      $('searchStatus').style.display = 'none';
+      searchResults = data.listings.map(function(l) {
+        l._score = computeQuickScore(l, targetRent);
+        return l;
+      });
+      searchSortCol = 'score';
+      searchSortAsc = false;
+      sortAndRenderSearch();
+      $('searchResultsTitle').textContent = data.total + ' listings in ' + (data.location_label || location);
+      $('searchResultsContainer').style.display = '';
+    } catch (err) {
+      showSearchStatus('Could not connect to the server. Make sure the app is running.', true);
+    } finally {
+      $('searchBtn').disabled = false;
+      $('searchBtnText').textContent = 'Search Listings';
+    }
+  };
+
+  function showSearchStatus(msg, isError) {
+    var el = $('searchStatus');
+    el.textContent = msg;
+    el.className = 'search-status' + (isError ? ' error' : '');
+    el.style.display = '';
+  }
+
+  function computeQuickScore(listing, userRent) {
+    var price = listing.price;
+    var rent = userRent;
+    if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, details: [], cssClass: 'score-0' };
+
+    var stars = 0;
+    var details = [];
+
+    // 1% Rule: monthly rent / price >= 1%
+    var onePercent = rent / price;
+    if (onePercent >= 0.01) {
+      stars++;
+      details.push({ text: '1% Rule: ' + (onePercent * 100).toFixed(2) + '%', cls: 'pass' });
+    } else {
+      details.push({ text: '1% Rule: ' + (onePercent * 100).toFixed(2) + '%', cls: 'fail' });
+    }
+
+    // Estimated Cap Rate: (annual_rent * 0.5) / price * 100
+    var capRate = (rent * 12 * 0.5) / price * 100;
+    if (capRate >= 6) {
+      stars++;
+      details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'pass' });
+    } else if (capRate >= 4) {
+      details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'warn' });
+    } else {
+      details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'fail' });
+    }
+
+    // Estimated Monthly Cash Flow: rent - (rent * 0.5) - mortgage
+    // Mortgage estimate: assume 20% down, 7% rate, 30yr
+    var loanAmt = price * 0.8;
+    var monthlyRate = 0.07 / 12;
+    var nPayments = 360;
+    var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
+    var cashFlow = rent - (rent * 0.5) - mortgage;
+    if (cashFlow > 0) {
+      stars++;
+      details.push({ text: 'Est. CF: +$' + Math.round(cashFlow), cls: 'pass' });
+    } else {
+      details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)), cls: 'fail' });
+    }
+
+    var cssClass = 'score-' + stars;
+    return { stars: stars, details: details, cssClass: cssClass };
+  }
+
+  function sortAndRenderSearch() {
+    searchResults.sort(function(a, b) {
+      var va, vb;
+      if (searchSortCol === 'score') { va = a._score.stars; vb = b._score.stars; }
+      else if (searchSortCol === 'price') { va = a.price || 0; vb = b.price || 0; }
+      else if (searchSortCol === 'beds') { va = a.beds || 0; vb = b.beds || 0; }
+      else if (searchSortCol === 'sqft') { va = a.sqft || 0; vb = b.sqft || 0; }
+      else { va = (a.address || '').toLowerCase(); vb = (b.address || '').toLowerCase(); }
+      if (va < vb) return searchSortAsc ? -1 : 1;
+      if (va > vb) return searchSortAsc ? 1 : -1;
+      return 0;
+    });
+    renderSearchResults();
+  }
+
+  window.sortSearchResults = function(col) {
+    if (searchSortCol === col) {
+      searchSortAsc = !searchSortAsc;
+    } else {
+      searchSortCol = col;
+      searchSortAsc = col === 'address';
+    }
+    sortAndRenderSearch();
+  };
+
+  function renderSearchResults() {
+    var tbody = $('searchResultsBody');
+    var html = '';
+    searchResults.forEach(function(l, i) {
+      var s = l._score;
+      var starStr = '';
+      for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
+      for (var j = s.stars; j < 3; j++) starStr += '&#9734;';
+      var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
+
+      html += '<tr>'
+        + '<td>' + esc(l.address || '—') + '</td>'
+        + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
+        + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
+        + '<td>' + (l.sqft ? fmtInt(l.sqft) : '—') + '</td>'
+        + '<td><span class="quick-score ' + s.cssClass + '">' + starStr + '</span><div class="score-detail">' + detailHtml + '</div></td>'
+        + '<td><button class="btn" onclick="analyzeFromSearch(' + i + ')">Analyze &rarr;</button></td>'
+        + '</tr>';
+    });
+    tbody.innerHTML = html;
+  }
+
+  window.analyzeFromSearch = function(idx) {
+    var l = searchResults[idx];
+    if (!l) return;
+    // Switch to single property mode
+    toggleSearchMode('single');
+    // Set the URL
+    if (l.listingUrl) {
+      $('zillowUrl').value = l.listingUrl;
+    }
+    // Pre-fill known fields
+    if (l.price) { $('purchasePrice').value = l.price; autoFilledFields['purchasePrice'] = true; }
+    if (l.address) { $('propName').value = l.address; autoFilledFields['propName'] = true; }
+    if (l.sqft) { $('sqft').value = l.sqft; autoFilledFields['sqft'] = true; }
+    // Update dependent defaults
+    if (l.price) {
+      $('closingCosts').value = Math.round(l.price * 0.03);
+      userEditedFields['closingCosts'] = false;
+      $('insurance').value = Math.round(l.price * 0.005);
+      userEditedFields['insurance'] = false;
+    }
+    updateDpHelper();
+    // Show property card with available info
+    if (l.imageUrl) {
+      $('propImage').onerror = function() { this.style.display = 'none'; };
+      $('propImage').src = l.imageUrl;
+      $('propImage').style.display = '';
+    } else {
+      $('propImage').style.display = 'none';
+    }
+    $('propAddress').textContent = l.address || 'Address unavailable';
+    var details = [];
+    if (l.beds) details.push(l.beds + ' bed');
+    if (l.baths) details.push(l.baths + ' bath');
+    if (l.sqft) details.push(fmtInt(l.sqft) + ' sqft');
+    $('propDetails').textContent = details.join(' | ');
+    $('propertyCard').classList.add('visible');
+    // If there's a Redfin URL, fetch full data for remaining fields
+    if (l.listingUrl) {
+      fetchZillow();
+    }
+  };
 
   // ======================================================================
   // Get Total Monthly Rent
