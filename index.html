@@ -319,6 +319,76 @@
   .score-detail .warn { color: var(--yellow); }
   .score-detail .fail { color: var(--red); }
 
+  /* Search toolbar (CSV export, compare, alerts) */
+  .search-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .search-toolbar .btn { padding: 6px 14px; font-size: 0.8rem; }
+
+  /* Deal alert thresholds */
+  .alert-config {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .alert-config.visible { display: block; }
+  .alert-config .alert-row {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    font-size: 0.85rem;
+  }
+  .alert-config .alert-row label { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+  .alert-config .alert-row input {
+    width: 70px; padding: 4px 8px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); font-size: 0.85rem;
+  }
+  .search-results-table tr.meets-alert td { background: rgba(34,197,94,0.08); }
+  .alert-badge { display: inline-block; background: var(--green-bg); color: var(--green); font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 3px; margin-left: 6px; text-transform: uppercase; }
+
+  /* Sensitivity Analysis */
+  .sensitivity-section { margin-bottom: 32px; }
+  .sensitivity-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 700px) { .sensitivity-grid { grid-template-columns: 1fr; } }
+  .sensitivity-table {
+    width: 100%; border-collapse: collapse; font-size: 0.82rem;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .sensitivity-table th {
+    background: var(--surface); color: var(--text-muted); font-weight: 600;
+    padding: 8px 10px; font-size: 0.75rem; text-transform: uppercase; text-align: center;
+  }
+  .sensitivity-table td {
+    padding: 6px 10px; text-align: center; border-top: 1px solid var(--border);
+  }
+  .sensitivity-table td.current { background: rgba(99,102,241,0.12); font-weight: 700; }
+  .sensitivity-table td.positive { color: var(--green); }
+  .sensitivity-table td.negative { color: var(--red); }
+
+  /* Rent estimate section */
+  .rent-estimate-section {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .rent-estimate-section .rent-stats {
+    display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;
+  }
+  .rent-stat {
+    text-align: center; flex: 1; min-width: 80px;
+    background: var(--card); border-radius: 6px; padding: 8px;
+  }
+  .rent-stat .rent-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
+  .rent-stat .rent-value { font-size: 1rem; font-weight: 700; }
+  .rent-stat .rent-value.highlight { color: var(--accent); }
+
   /* Property info card */
   .property-card {
     display: none;
@@ -1004,7 +1074,7 @@
     .wizard-nav, .step-buttons, .url-row, .url-error, .property-card,
     .btn, .ai-section .btn, #aiBtn, .toggle-row, #downloadBtn, #downloadHtmlBtn,
     .connection-banner, .scenario-toolbar, .ai-controls select, .compare-overlay,
-    .mode-toggle, #searchMode { display: none !important; }
+    .mode-toggle, #searchMode, .rent-estimate-section, .alert-config, .search-toolbar { display: none !important; }
     .step-panel { display: none !important; }
     .step-panel[data-step="6"] { display: block !important; }
 
@@ -1102,6 +1172,14 @@
     /* Strategy cards layout for print */
     .strategy-grid { grid-template-columns: repeat(3, 1fr) !important; }
     .return-pillars { grid-template-columns: repeat(2, 1fr) !important; }
+
+    /* Sensitivity tables for print */
+    .sensitivity-table { border: 1px solid #ccc !important; }
+    .sensitivity-table th { background: #f0f0f0 !important; color: #333 !important; }
+    .sensitivity-table td { color: #000 !important; border-color: #ddd !important; }
+    .sensitivity-table td.current { background: #eef2ff !important; }
+    .sensitivity-table td.positive { color: #16a34a !important; }
+    .sensitivity-table td.negative { color: #dc2626 !important; }
   }
 </style>
 </head>
@@ -1294,7 +1372,30 @@
       <div id="searchResultsContainer" style="display:none;margin-top:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="searchResultsTitle">Results</div>
+          <div class="search-toolbar">
+            <button class="btn btn-small btn-secondary" onclick="toggleAlertConfig()">Deal Alerts</button>
+            <button class="btn btn-small btn-secondary" onclick="exportSearchCSV()">Export CSV</button>
+          </div>
         </div>
+
+        <div class="alert-config" id="alertConfig">
+          <div style="font-size:0.82rem;font-weight:600;margin-bottom:8px;">Highlight listings that meet your criteria:</div>
+          <div class="alert-row">
+            <label>Min Stars:</label>
+            <select id="alertMinStars" onchange="applyDealAlerts()" style="width:70px;padding:4px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.85rem;">
+              <option value="0">Any</option>
+              <option value="1">1+</option>
+              <option value="2" selected>2+</option>
+              <option value="3">3</option>
+            </select>
+            <label>Max Price:</label>
+            <input type="number" id="alertMaxPrice" placeholder="Any" onchange="applyDealAlerts()">
+            <label>Min Beds:</label>
+            <input type="number" id="alertMinBeds" placeholder="Any" onchange="applyDealAlerts()">
+            <button class="btn btn-small" onclick="saveAlertPrefs()">Save Prefs</button>
+          </div>
+        </div>
+
         <div style="overflow-x:auto;">
           <table class="search-results-table" id="searchResultsTable">
             <thead>
@@ -1335,7 +1436,7 @@
           <div class="helper" id="dpHelper">$40,000</div>
         </div>
         <div class="input-group">
-          <label for="interestRate">Interest Rate (%)</label>
+          <label for="interestRate">Interest Rate (%) <button type="button" class="btn btn-small" id="fetchRateBtn" onclick="fetchMortgageRate()" style="padding:2px 8px;font-size:0.7rem;vertical-align:middle;">Current Rate</button></label>
           <input type="number" id="interestRate" value="7" min="0" max="30" step="0.125">
         </div>
         <div class="input-group">
@@ -1371,9 +1472,17 @@
     <div id="sfhRentGroup">
       <div class="input-grid">
         <div class="input-group">
-          <label for="monthlyRent">Monthly Rent ($)</label>
+          <label for="monthlyRent">Monthly Rent ($) <button type="button" class="btn btn-small" id="estimateRentBtn" onclick="fetchRentEstimate()" style="padding:2px 8px;font-size:0.7rem;vertical-align:middle;">Estimate Rent</button></label>
           <input type="number" id="monthlyRent" value="1800" min="0" step="50">
         </div>
+      </div>
+      <div class="rent-estimate-section" id="rentEstimateSection" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-size:0.88rem;">Market Rent Estimates</strong>
+          <span style="font-size:0.75rem;color:var(--text-muted);" id="rentEstimateLocation"></span>
+        </div>
+        <div class="rent-stats" id="rentEstimateStats"></div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;" id="rentEstimateNote"></div>
       </div>
     </div>
 
@@ -1552,6 +1661,13 @@
     <div class="deal-score" id="dealScore">
       <div class="verdict" id="dealVerdict">--</div>
       <div class="explanation" id="dealExplanation">--</div>
+    </div>
+
+    <!-- D1.5) Sensitivity Analysis -->
+    <div class="sensitivity-section" id="sensitivitySection">
+      <div class="section-title">Sensitivity Analysis</div>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px;">How your returns change with different assumptions</p>
+      <div class="sensitivity-grid" id="sensitivityGrid"></div>
     </div>
 
     <!-- D2) Investment Summary -->
@@ -2005,6 +2121,7 @@
     $('searchBtn').disabled = true;
     $('searchBtnText').innerHTML = '<span class="spinner"></span> Searching...';
     $('searchResultsContainer').style.display = 'none';
+    saveSearchFilters();
     showSearchStatus('Searching listings...', false);
 
     try {
@@ -2129,6 +2246,9 @@
   function renderSearchResults() {
     var tbody = $('searchResultsBody');
     var html = '';
+    var alertStars = parseInt($('alertMinStars').value) || 0;
+    var alertMaxPrice = parseFloat($('alertMaxPrice').value) || 0;
+    var alertMinBeds = parseInt($('alertMinBeds').value) || 0;
     searchResults.forEach(function(l, i) {
       var s = l._score;
       var starStr = '';
@@ -2136,8 +2256,14 @@
       for (var j = s.stars; j < 3; j++) starStr += '&#9734;';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
 
-      html += '<tr>'
-        + '<td>' + esc(l.address || '—') + '</td>'
+      var meetsAlert = s.stars >= alertStars
+        && (!alertMaxPrice || (l.price && l.price <= alertMaxPrice))
+        && (!alertMinBeds || (l.beds && l.beds >= alertMinBeds));
+      var trClass = (alertStars > 0 || alertMaxPrice || alertMinBeds) && meetsAlert ? ' class="meets-alert"' : '';
+      var alertTag = meetsAlert && (alertStars > 0 || alertMaxPrice || alertMinBeds) ? '<span class="alert-badge">Match</span>' : '';
+
+      html += '<tr' + trClass + '>'
+        + '<td>' + esc(l.address || '—') + alertTag + '</td>'
         + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
         + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
         + '<td>' + (l.sqft ? fmtInt(l.sqft) : '—') + '</td>'
@@ -2189,6 +2315,296 @@
       fetchZillow();
     }
   };
+
+  // ======================================================================
+  // Deal Alert Thresholds
+  // ======================================================================
+  window.toggleAlertConfig = function() {
+    var el = $('alertConfig');
+    el.classList.toggle('visible');
+  };
+
+  window.applyDealAlerts = function() {
+    renderSearchResults();
+  };
+
+  window.saveAlertPrefs = function() {
+    var prefs = {
+      minStars: $('alertMinStars').value,
+      maxPrice: $('alertMaxPrice').value,
+      minBeds: $('alertMinBeds').value
+    };
+    try { localStorage.setItem('rpda_alert_prefs', JSON.stringify(prefs)); } catch(e) {}
+  };
+
+  function loadAlertPrefs() {
+    try {
+      var prefs = JSON.parse(localStorage.getItem('rpda_alert_prefs'));
+      if (prefs) {
+        if (prefs.minStars) $('alertMinStars').value = prefs.minStars;
+        if (prefs.maxPrice) $('alertMaxPrice').value = prefs.maxPrice;
+        if (prefs.minBeds) $('alertMinBeds').value = prefs.minBeds;
+      }
+    } catch(e) {}
+  }
+
+  // ======================================================================
+  // Export Search Results to CSV
+  // ======================================================================
+  window.exportSearchCSV = function() {
+    if (!searchResults || searchResults.length === 0) return;
+    var rows = [['Address', 'Price', 'Beds', 'Baths', 'Sqft', 'Quick Score (Stars)', '1% Rule', 'Est. Cap Rate', 'Est. Cash Flow', 'Listing URL']];
+    searchResults.forEach(function(l) {
+      var s = l._score || { stars: 0, details: [] };
+      var details = s.details || [];
+      rows.push([
+        '"' + (l.address || '').replace(/"/g, '""') + '"',
+        l.price || '',
+        l.beds != null ? l.beds : '',
+        l.baths != null ? l.baths : '',
+        l.sqft || '',
+        s.stars,
+        details[0] ? details[0].text : '',
+        details[1] ? details[1].text : '',
+        details[2] ? details[2].text : '',
+        '"' + (l.listingUrl || '').replace(/"/g, '""') + '"'
+      ]);
+    });
+    var csv = rows.map(function(r) { return r.join(','); }).join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'neighborhood-search-results.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  // ======================================================================
+  // Saved Search Filters (localStorage)
+  // ======================================================================
+  var SEARCH_FILTERS_KEY = 'rpda_search_filters';
+
+  function saveSearchFilters() {
+    var filters = {
+      location: $('searchLocation').value,
+      minPrice: $('searchMinPrice').value,
+      maxPrice: $('searchMaxPrice').value,
+      minBeds: $('searchMinBeds').value,
+      propType: $('searchPropType').value,
+      targetRent: $('searchTargetRent').value,
+      maxResults: $('searchMaxResults').value
+    };
+    try { localStorage.setItem(SEARCH_FILTERS_KEY, JSON.stringify(filters)); } catch(e) {}
+  }
+
+  function loadSearchFilters() {
+    try {
+      var f = JSON.parse(localStorage.getItem(SEARCH_FILTERS_KEY));
+      if (f) {
+        if (f.location) $('searchLocation').value = f.location;
+        if (f.minPrice) $('searchMinPrice').value = f.minPrice;
+        if (f.maxPrice) $('searchMaxPrice').value = f.maxPrice;
+        if (f.minBeds) $('searchMinBeds').value = f.minBeds;
+        if (f.propType) $('searchPropType').value = f.propType;
+        if (f.targetRent) $('searchTargetRent').value = f.targetRent;
+        if (f.maxResults) $('searchMaxResults').value = f.maxResults;
+      }
+    } catch(e) {}
+  }
+
+  // ======================================================================
+  // Mortgage Rate Auto-Fill
+  // ======================================================================
+  window.fetchMortgageRate = async function() {
+    var btn = $('fetchRateBtn');
+    btn.textContent = '...';
+    btn.disabled = true;
+    try {
+      var resp = await fetch('/api/mortgage-rate');
+      var data = await resp.json();
+      if (data.rate) {
+        $('interestRate').value = data.rate;
+        calculate();
+      }
+    } catch(e) {}
+    btn.textContent = 'Current Rate';
+    btn.disabled = false;
+  };
+
+  // ======================================================================
+  // Rent Estimation
+  // ======================================================================
+  window.fetchRentEstimate = async function() {
+    var btn = $('estimateRentBtn');
+    btn.textContent = '...';
+    btn.disabled = true;
+
+    // Get location from property name/address or scraped data
+    var location = '';
+    if (scrapedData && scrapedData.address) {
+      // Extract zip code or city from address
+      var addrParts = scrapedData.address.split(',');
+      if (addrParts.length >= 2) {
+        var lastPart = addrParts[addrParts.length - 1].trim();
+        var zipMatch = lastPart.match(/\d{5}/);
+        if (zipMatch) {
+          location = zipMatch[0];
+        } else {
+          location = addrParts.slice(1).join(',').trim();
+        }
+      }
+    }
+    if (!location) {
+      var propNameVal = $('propName').value.trim();
+      if (propNameVal) {
+        var zipM = propNameVal.match(/\d{5}/);
+        if (zipM) location = zipM[0];
+        else location = propNameVal;
+      }
+    }
+    if (!location) {
+      btn.textContent = 'Estimate Rent';
+      btn.disabled = false;
+      alert('Enter a property address first (Step 1) so we can look up local rents.');
+      return;
+    }
+
+    try {
+      var resp = await fetch('/api/rent-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location: location })
+      });
+      var data = await resp.json();
+      if (data.stats && data.stats.count > 0) {
+        var s = data.stats;
+        $('rentEstimateStats').innerHTML =
+          '<div class="rent-stat"><div class="rent-label">Low (25th)</div><div class="rent-value">$' + fmtInt(s.low) + '</div></div>' +
+          '<div class="rent-stat"><div class="rent-label">Median</div><div class="rent-value highlight">$' + fmtInt(s.median) + '</div></div>' +
+          '<div class="rent-stat"><div class="rent-label">Average</div><div class="rent-value">$' + fmtInt(s.avg) + '</div></div>' +
+          '<div class="rent-stat"><div class="rent-label">High (75th)</div><div class="rent-value">$' + fmtInt(s.high) + '</div></div>';
+        $('rentEstimateLocation').textContent = location + ' (' + s.count + ' listings)';
+        $('rentEstimateNote').textContent = 'Click a value to use it as your rent. Based on ' + s.count + ' active Redfin rental listings.';
+        $('rentEstimateSection').style.display = '';
+        // Make stats clickable
+        $('rentEstimateStats').querySelectorAll('.rent-stat').forEach(function(el) {
+          el.style.cursor = 'pointer';
+          el.onclick = function() {
+            var val = el.querySelector('.rent-value').textContent.replace(/[^0-9]/g, '');
+            $('monthlyRent').value = val;
+            calculate();
+          };
+        });
+      } else {
+        $('rentEstimateSection').style.display = 'none';
+        alert('No rental listings found for "' + location + '". Try a more specific location.');
+      }
+    } catch(e) {
+      alert('Could not fetch rent estimates. Make sure the app is running.');
+    }
+    btn.textContent = 'Estimate Rent';
+    btn.disabled = false;
+  };
+
+  // ======================================================================
+  // Sensitivity Analysis (computed in renderResults)
+  // ======================================================================
+  function renderSensitivity(r) {
+    var grid = $('sensitivityGrid');
+    if (!r || !r.price || r.price <= 0) { grid.innerHTML = ''; return; }
+
+    var html = '';
+
+    // 1. Interest Rate vs Cash Flow
+    html += '<div><table class="sensitivity-table"><thead><tr><th colspan="3">Interest Rate &rarr; Cash Flow</th></tr><tr><th>Rate</th><th>Monthly CF</th><th>CoC Return</th></tr></thead><tbody>';
+    var baseRate = r.rate;
+    var rateSteps = [-2, -1, 0, 1, 2];
+    rateSteps.forEach(function(delta) {
+      var testRate = Math.max(0, baseRate + delta);
+      var monthlyR = testRate / 100 / 12;
+      var testPI = 0;
+      if (!r.isCash && r.loanAmount > 0 && monthlyR > 0) {
+        testPI = r.loanAmount * (monthlyR * Math.pow(1 + monthlyR, r.n)) / (Math.pow(1 + monthlyR, r.n) - 1);
+      } else if (!r.isCash && r.loanAmount > 0) {
+        testPI = r.loanAmount / r.n;
+      }
+      var testCF = r.totalMonthlyIncome - r.totalOpex - testPI;
+      var testAnnualCF = testCF * 12;
+      var testCoC = r.totalCashInvested > 0 ? (testAnnualCF / r.totalCashInvested) * 100 : 0;
+      var isCurrent = delta === 0;
+      var cfClass = testCF >= 0 ? 'positive' : 'negative';
+      html += '<tr><td' + (isCurrent ? ' class="current"' : '') + '>' + testRate.toFixed(1) + '%</td>'
+        + '<td class="' + cfClass + (isCurrent ? ' current' : '') + '">' + fmtDollar(testCF) + '</td>'
+        + '<td class="' + (testCoC >= 0 ? 'positive' : 'negative') + (isCurrent ? ' current' : '') + '">' + fmtPct(testCoC) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // 2. Vacancy Rate vs Cash Flow
+    html += '<div><table class="sensitivity-table"><thead><tr><th colspan="3">Vacancy Rate &rarr; Cash Flow</th></tr><tr><th>Vacancy</th><th>Monthly CF</th><th>Break-even</th></tr></thead><tbody>';
+    var vacSteps = [-5, -3, 0, 3, 5];
+    vacSteps.forEach(function(delta) {
+      var testVac = Math.max(0, Math.min(50, r.vacPct + delta));
+      var testVacExp = r.totalMonthlyIncome * testVac / 100;
+      var testTotalOpex = r.totalOpex - (r.totalMonthlyIncome * r.vacPct / 100) + testVacExp;
+      var testCF = r.totalMonthlyIncome - testTotalOpex - r.monthlyPI;
+      var testExpExVac = testTotalOpex - testVacExp;
+      var testBE = r.totalMonthlyIncome > 0 ? ((testExpExVac + r.monthlyPI) / r.totalMonthlyIncome) * 100 : 0;
+      var isCurrent = delta === 0;
+      var cfClass = testCF >= 0 ? 'positive' : 'negative';
+      html += '<tr><td' + (isCurrent ? ' class="current"' : '') + '>' + testVac.toFixed(0) + '%</td>'
+        + '<td class="' + cfClass + (isCurrent ? ' current' : '') + '">' + fmtDollar(testCF) + '</td>'
+        + '<td' + (isCurrent ? ' class="current"' : '') + '>' + fmtPct(testBE) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // 3. Rent Change vs Cash Flow
+    html += '<div><table class="sensitivity-table"><thead><tr><th colspan="3">Rent Change &rarr; Cash Flow</th></tr><tr><th>Rent +/-</th><th>Monthly CF</th><th>CoC Return</th></tr></thead><tbody>';
+    var rentSteps = [-10, -5, 0, 5, 10];
+    rentSteps.forEach(function(delta) {
+      var testIncome = r.totalMonthlyIncome * (1 + delta / 100);
+      // Recalc pct-based expenses
+      var testMaint = testIncome * r.maintPct / 100;
+      var testVac = testIncome * r.vacPct / 100;
+      var testCapex = testIncome * r.capexPct / 100;
+      var testMgmt = testIncome * r.mgmtPct / 100;
+      var fixedOpex = (r.taxesYr / 12) + (r.insuranceYr / 12) + r.hoaMonth + r.utilMonth + r.otherExpMonth;
+      var testOpex = fixedOpex + testMaint + testVac + testCapex + testMgmt;
+      var testCF = testIncome - testOpex - r.monthlyPI;
+      var testCoC = r.totalCashInvested > 0 ? (testCF * 12 / r.totalCashInvested) * 100 : 0;
+      var isCurrent = delta === 0;
+      var cfClass = testCF >= 0 ? 'positive' : 'negative';
+      html += '<tr><td' + (isCurrent ? ' class="current"' : '') + '>' + (delta >= 0 ? '+' : '') + delta + '%</td>'
+        + '<td class="' + cfClass + (isCurrent ? ' current' : '') + '">' + fmtDollar(testCF) + '</td>'
+        + '<td class="' + (testCoC >= 0 ? 'positive' : 'negative') + (isCurrent ? ' current' : '') + '">' + fmtPct(testCoC) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // 4. Purchase Price vs Cap Rate
+    html += '<div><table class="sensitivity-table"><thead><tr><th colspan="3">Purchase Price &rarr; Returns</th></tr><tr><th>Price +/-</th><th>Cap Rate</th><th>CoC Return</th></tr></thead><tbody>';
+    var priceSteps = [-10, -5, 0, 5, 10];
+    priceSteps.forEach(function(delta) {
+      var testPrice = r.price * (1 + delta / 100);
+      var testNOI = r.noi;
+      var testCapRate = testPrice > 0 ? (testNOI / testPrice) * 100 : 0;
+      // Recalc loan
+      var testDP = r.isCash ? testPrice : testPrice * r.dpPct / 100;
+      var testLoan = r.isCash ? 0 : testPrice - testDP;
+      var testPI = 0;
+      if (!r.isCash && testLoan > 0 && r.monthlyRate > 0) {
+        testPI = testLoan * (r.monthlyRate * Math.pow(1 + r.monthlyRate, r.n)) / (Math.pow(1 + r.monthlyRate, r.n) - 1);
+      }
+      var testCF = r.totalMonthlyIncome - r.totalOpex - testPI;
+      var testCash = testDP + r.closingCosts + r.rehab + (testLoan * r.points / 100);
+      var testCoC = testCash > 0 ? (testCF * 12 / testCash) * 100 : 0;
+      var isCurrent = delta === 0;
+      html += '<tr><td' + (isCurrent ? ' class="current"' : '') + '>' + (delta >= 0 ? '+' : '') + delta + '%</td>'
+        + '<td' + (isCurrent ? ' class="current"' : '') + '>' + fmtPct(testCapRate) + '</td>'
+        + '<td class="' + (testCoC >= 0 ? 'positive' : 'negative') + (isCurrent ? ' current' : '') + '">' + fmtPct(testCoC) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    grid.innerHTML = html;
+  }
 
   // ======================================================================
   // Get Total Monthly Rent
@@ -2702,6 +3118,9 @@
       equityChart.style.display = '';
       renderEquityChart(r);
     }
+
+    // H) Sensitivity Analysis
+    renderSensitivity(r);
   }
 
   function setMetricColor(id, text, value) {
@@ -3324,6 +3743,8 @@
   calculate();
   refreshScenarioList();
   loadModels();
+  loadSearchFilters();
+  loadAlertPrefs();
 
 })();
 </script>

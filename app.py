@@ -848,6 +848,192 @@ async def search_neighborhood(request: Request):
     return JSONResponse(result)
 
 
+# ---------------------------------------------------------------------------
+# Mortgage Rate — FRED API (free, no key required for this endpoint)
+# ---------------------------------------------------------------------------
+_mortgage_rate_cache: dict = {"rate": None, "fetched_at": 0}
+
+
+@app.get("/api/mortgage-rate")
+async def get_mortgage_rate():
+    """Fetch current average 30-year fixed mortgage rate from FRED."""
+    now = time.time()
+    # Cache for 6 hours
+    if _mortgage_rate_cache["rate"] is not None and now - _mortgage_rate_cache["fetched_at"] < 21600:
+        return JSONResponse({"rate": _mortgage_rate_cache["rate"]})
+
+    # Scrape Freddie Mac Primary Mortgage Market Survey page
+    try:
+        hdrs = {k: v for k, v in HEADERS.items() if k != "Accept-Encoding"}
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://www.freddiemac.com/pmms",
+                headers=hdrs,
+            )
+            if resp.status_code == 200:
+                import re as _re
+                # First percentage on the page is the current 30-year fixed rate
+                match = _re.search(r"(\d+\.\d+)%", resp.text)
+                if match:
+                    rate = float(match.group(1))
+                    if 2.0 <= rate <= 15.0:  # Sanity check
+                        _mortgage_rate_cache["rate"] = rate
+                        _mortgage_rate_cache["fetched_at"] = now
+                        return JSONResponse({"rate": rate})
+    except Exception:
+        pass
+
+    return JSONResponse({"rate": None, "error": "Could not fetch current rate."})
+
+
+# ---------------------------------------------------------------------------
+# Rent Estimation — Redfin rental listings search
+# ---------------------------------------------------------------------------
+_REDFIN_RENT_JS = """
+() => {
+    const cards = document.querySelectorAll('.MapHomeCardReact, [class*="HomeCard"]');
+    const results = [];
+    const seen = new Set();
+    cards.forEach(card => {
+        const priceDiv = card.querySelector('.bp-Homecard__Price, [class*="Price"]');
+        if (!priceDiv) return;
+        const priceText = priceDiv.textContent;
+        // Only include rental listings (contain /mo or /month)
+        if (!/\\/mo/i.test(priceText) && !/rent/i.test(priceText)) {
+            // Also check if it looks like a rent price (< $10k/mo typically)
+            const m = priceText.match(/\\$(\\d[\\d,]*)/);
+            if (m) {
+                const p = parseInt(m[1].replace(/,/g, ''));
+                if (p > 15000) return; // likely a sale price, skip
+            }
+        }
+        const m = priceText.match(/\\$(\\d[\\d,]*)/);
+        if (!m) return;
+        const rent = parseInt(m[1].replace(/,/g, ''));
+        if (rent <= 0 || rent > 50000) return;
+
+        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"]');
+        let beds = null, baths = null, sqft = null;
+        if (statsEl) {
+            const t = statsEl.textContent;
+            const bM = t.match(/(\\d+)\\s*bed/i);
+            const btM = t.match(/(\\d+\\.?\\d*)\\s*bath/i);
+            const sM = t.match(/(\\d[\\d,]*)\\s*sq/i);
+            if (bM) beds = parseInt(bM[1]);
+            if (btM) baths = parseFloat(btM[1]);
+            if (sM) sqft = parseInt(sM[1].replace(/,/g, ''));
+        }
+        const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"]');
+        const addr = addrEl ? addrEl.textContent.trim() : null;
+        const key = addr || rent.toString();
+        if (seen.has(key)) return;
+        seen.add(key);
+        results.push({ rent: rent, beds: beds, baths: baths, sqft: sqft, address: addr });
+    });
+    return results;
+}
+"""
+
+
+async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict:
+    """Search Redfin for rental listings to estimate market rent."""
+    from playwright.async_api import async_playwright
+
+    query = location.strip()
+    if re.match(r"^\d{5}$", query):
+        base = f"https://www.redfin.com/zipcode/{query}/apartments-for-rent"
+    else:
+        from urllib.parse import quote
+        slug = quote(query, safe="")
+        base = f"https://www.redfin.com/city/{slug}/apartments-for-rent"
+
+    if beds and beds > 0:
+        base += f"/filter/min-beds={int(beds)},max-beds={int(beds)}"
+
+    async with _search_semaphore, async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+
+        try:
+            await page.goto(base, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            await browser.close()
+            return {"error": "Could not connect to Redfin."}
+
+        try:
+            await page.wait_for_selector(
+                ".MapHomeCardReact, [class*='HomeCard']", timeout=8000
+            )
+        except Exception:
+            await browser.close()
+            return {"rentals": [], "total": 0}
+
+        await page.wait_for_timeout(2000)
+        rentals = await page.evaluate(_REDFIN_RENT_JS)
+        await browser.close()
+
+    rentals = [r for r in rentals if r.get("rent") and r["rent"] > 0][:30]
+    if not rentals:
+        return {"rentals": [], "total": 0}
+
+    rents = [r["rent"] for r in rentals]
+    rents.sort()
+    avg_rent = sum(rents) / len(rents)
+    median_rent = rents[len(rents) // 2]
+    low_rent = rents[int(len(rents) * 0.25)] if len(rents) >= 4 else rents[0]
+    high_rent = rents[int(len(rents) * 0.75)] if len(rents) >= 4 else rents[-1]
+
+    return {
+        "rentals": rentals[:15],
+        "total": len(rentals),
+        "stats": {
+            "avg": round(avg_rent),
+            "median": round(median_rent),
+            "low": round(low_rent),
+            "high": round(high_rent),
+            "count": len(rents),
+        },
+    }
+
+
+@app.post("/api/rent-estimate")
+async def estimate_rent(request: Request):
+    """Estimate market rent for a location using Redfin rental listings."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"rent:{client_ip}", 3):
+        return JSONResponse(
+            {"error": "Too many requests. Please wait a minute."},
+            status_code=429,
+        )
+
+    body = await request.json()
+    location = (body.get("location") or "").strip()
+    if not location:
+        return JSONResponse({"error": "Location is required."}, status_code=400)
+    if len(location) > 200:
+        return JSONResponse({"error": "Location too long."}, status_code=400)
+
+    beds = body.get("beds")
+    result = await _search_redfin_rentals(location, beds)
+
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=404)
+
+    return JSONResponse(result)
+
+
 @app.post("/api/scrape")
 async def scrape_property(request: Request):
     # Rate limit: 5 requests per minute per IP
