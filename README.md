@@ -37,6 +37,10 @@ Free, open-source rental property investment calculator with AI-powered analysis
 - **Save, compare, and export** — localStorage scenarios, side-by-side comparison (up to 3), PDF + HTML export
 - **Zillow & Redfin scraping** — auto-fill property data from a listing URL
 - **Neighborhood Search** — search a zip code or city, score listings by investor metrics, then analyze the best ones
+- **Sensitivity analysis** — what-if tables for interest rate, vacancy, rent, and purchase price
+- **Rent estimation** — scrape Redfin rental listings to estimate market rent for any location
+- **Mortgage rate auto-fill** — fetch current 30-year fixed rate from Freddie Mac with one click
+- **Deal alerts & CSV export** — highlight matching listings, export search results to spreadsheet
 - **Model selector** — switch between AI models on the fly
 
 ## Quick Start
@@ -108,11 +112,11 @@ The app has two modes, toggled on the first step:
 A **6-step wizard** for analyzing a specific property:
 
 1. **Property Info** — Address, price, type, ARV, rehab budget (or paste a Zillow/Redfin URL)
-2. **Financing** — Down payment, rate, term, points, closing costs (or toggle cash purchase)
-3. **Income** — Monthly rent (multi-unit support), other income, growth rate
+2. **Financing** — Down payment, rate, term, points, closing costs (or toggle cash purchase). Click **Current Rate** to auto-fill the latest 30-year fixed mortgage rate from Freddie Mac.
+3. **Income** — Monthly rent (multi-unit support), other income, growth rate. Click **Estimate Rent** to scrape Redfin rental listings and get market rent stats (low, median, average, high).
 4. **Expenses** — Taxes, insurance, HOA, utilities, percentage-based costs, expense growth
 5. **Review** — Summary of all inputs before calculating
-6. **Results** — Full dashboard with metrics, projections, charts, and AI analysis
+6. **Results** — Full dashboard with metrics, projections, sensitivity analysis, charts, and AI analysis
 
 ### Neighborhood Search
 
@@ -175,6 +179,19 @@ Real estate returns come from four sources, all calculated over a 5-year project
 | **Low Risk** | BEO < 75%, DSCR >= 1.5, 50% rule pass | Conservative margins |
 | **BRRRR** | 70% rule pass, ARV spread | Below-market purchase + forced appreciation |
 
+### Sensitivity Analysis
+
+The results page includes **4 what-if tables** showing how key metrics change under different assumptions:
+
+| Table | Variable | Range | Metrics Shown |
+|-------|----------|-------|---------------|
+| **Interest Rate** | ±2% from your rate | 5 steps | Monthly Cash Flow, CoC Return |
+| **Vacancy Rate** | ±5% from your assumption | 5 steps | Monthly Cash Flow, Break-even Occupancy |
+| **Rent Change** | ±10% | 5 steps | Monthly Cash Flow, CoC Return |
+| **Purchase Price** | ±10% | 5 steps | Cap Rate, CoC Return |
+
+The current (base) values are highlighted. This helps you stress-test deals — if the deal only works at exactly 5% vacancy and 6% rates, it may be riskier than one that survives 10% vacancy and 8% rates.
+
 ## Example Scenarios
 
 ### Good Deal — Cash Flow Rental
@@ -219,7 +236,7 @@ Real estate returns come from four sources, all calculated over a 5-year project
 | Value growth | 3%/yr | U.S. historical avg |
 | Income growth | 2%/yr | Conservative rent increases |
 | Expense growth | 2%/yr | Roughly tracks CPI |
-| Loan terms | 30yr fixed, 20% down, 7% | 2024-2025 rates |
+| Loan terms | 30yr fixed, 20% down, 7% | Click "Current Rate" for live Freddie Mac rate |
 
 **Not accounted for:** selling costs (6-8%), capital gains tax, depreciation recapture (25%), cost segregation, refinancing, PMI, rent-ready costs, legal/accounting fees.
 
@@ -239,6 +256,14 @@ The app can auto-fill property data from **Redfin** and **Zillow** listing URLs.
 | **Zillow** | Low | Aggressively blocked by PerimeterX/HUMAN bot detection; may fail even with Playwright fallback |
 
 The scraper tries httpx first, then Playwright headless Chromium as fallback. When scraping fails, enter data manually — all fields are editable.
+
+### Additional Data Sources
+
+| Feature | Source | Notes |
+|---------|--------|-------|
+| **Mortgage Rate** | [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Current 30-year fixed rate, cached 6 hours |
+| **Rent Estimates** | Redfin rental listings | Scrapes active rentals via Playwright, returns percentile stats |
+| **Neighborhood Search** | Redfin search API | Structured JSON from `stingray/api/gis` endpoint |
 
 ---
 
@@ -291,6 +316,26 @@ When you click **Analyze →** on a search result:
 3. Price, address, sqft, and dependent fields (closing costs, insurance) are pre-filled
 4. You continue through the 6-step wizard as normal — add loan details, rent, expenses, then get full results
 
+### Deal Alerts
+
+Click **Deal Alerts** in the toolbar above search results to set thresholds:
+
+| Filter | Default | What It Does |
+|--------|---------|-------------|
+| Min Stars | 2+ | Only highlight listings with this many quick score stars |
+| Max Price | — | Budget cap |
+| Min Beds | — | Minimum bedrooms |
+
+Listings that match all criteria get a green **"Match"** badge and highlighted row. Preferences are saved to localStorage.
+
+### Export CSV
+
+Click **Export CSV** to download all search results as a spreadsheet with columns: Address, Price, Beds, Baths, Sqft, Quick Score, 1% Rule, Est. Cap Rate, Est. Cash Flow, and Listing URL.
+
+### Saved Filters
+
+Search filters (location, price range, beds, property type, rent, max results) are automatically saved to localStorage and restored when you return.
+
 ### Rate Limits
 
 Neighborhood Search is limited to **3 searches per minute** to avoid overloading Redfin. If you hit the limit, wait 60 seconds and try again.
@@ -298,7 +343,6 @@ Neighborhood Search is limited to **3 searches per minute** to avoid overloading
 ### Known Limitations
 
 - **Redfin only** — Zillow blocks automated search pages too aggressively
-- **No rent estimation** — you must provide a target rent (by design — see above)
 - **No map view** — results are table-only for now
 - **One search at a time** — no batch analysis of multiple listings simultaneously
 - **City search** requires Redfin to recognize the city name — use zip codes for best reliability
