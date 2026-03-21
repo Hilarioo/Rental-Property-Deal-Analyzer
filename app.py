@@ -850,7 +850,12 @@ async def search_neighborhood(request: Request):
 
 @app.post("/api/smart-search")
 async def smart_search(request: Request):
-    """Smart Deal Finder: search listings + auto-estimate rent from market data."""
+    """Smart Deal Finder: search listings + auto-estimate rent from market data.
+
+    Strategy: fetch rentals first, compute a smart max price from rent data,
+    then search for-sale listings within that price range so results are
+    more likely to be viable investment deals.
+    """
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"smart:{client_ip}", 3):
         return JSONResponse(
@@ -865,32 +870,14 @@ async def smart_search(request: Request):
     if len(location) > 200:
         return JSONResponse({"error": "Location query is too long."}, status_code=400)
 
-    filters = {
-        "min_price": body.get("min_price"),
-        "max_price": body.get("max_price"),
-        "min_beds": body.get("min_beds"),
-        "property_type": body.get("property_type"),
-        "max_results": min(body.get("max_results", 25), 25),
-    }
+    user_min_beds = body.get("min_beds")
+    user_property_type = body.get("property_type")
+    user_max_results = min(body.get("max_results", 25), 25)
 
-    # Run sale listings + rental data in parallel
-    listings_task = asyncio.create_task(_search_redfin_page(location, filters))
-    rentals_task = asyncio.create_task(_search_redfin_rentals(location))
+    # Step 1: Fetch rental data first to determine smart price cap
+    rentals_result = await _search_redfin_rentals(location)
 
-    listings_result = await listings_task
-    rentals_result = await rentals_task
-
-    if "error" in listings_result and "listings" not in listings_result:
-        return JSONResponse({"error": listings_result["error"]}, status_code=404)
-
-    listings = listings_result.get("listings", [])
-    if not listings:
-        return JSONResponse(
-            {"error": "No for-sale listings found. Try a different location."},
-            status_code=404,
-        )
-
-    # Build rent lookup by bedroom count from rental data
+    # Build rent lookup by bedroom count
     rent_by_beds: dict[int, list[int]] = {}
     all_rents: list[int] = []
     for r in rentals_result.get("rentals", []):
@@ -913,7 +900,52 @@ async def smart_search(request: Request):
         all_rents.sort()
         overall_median = all_rents[len(all_rents) // 2]
 
-    # Attach estimated rent to each listing
+    # Step 2: Compute smart max price from rent data
+    # Use highest bedroom-count median rent for the price cap.
+    # At 7% rate, 20% down: monthly mortgage ~ price * 0.00533
+    # For break-even cash flow: rent*0.5 >= mortgage → rent*0.5 >= price*0.00533
+    # → price <= rent * 93.8.  We use 150x to allow some flexibility and
+    # include properties that are close to viable (might work with better
+    # financing, value-add, or rent growth).
+    smart_max_price = None
+    if overall_median > 0:
+        best_rent = max(rent_median_by_beds.values()) if rent_median_by_beds else overall_median
+        smart_max_price = int(best_rent * 150)
+        # Round up to nearest $25k for cleaner search
+        smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
+        # Floor at $75k so we don't exclude everything
+        smart_max_price = max(smart_max_price, 75000)
+
+    filters = {
+        "min_price": body.get("min_price"),
+        "max_price": smart_max_price,
+        "min_beds": user_min_beds,
+        "property_type": user_property_type,
+        "max_results": user_max_results,
+    }
+
+    # Step 3: Search for-sale listings with the smart price cap
+    listings_result = await _search_redfin_page(location, filters)
+
+    if "error" in listings_result and "listings" not in listings_result:
+        return JSONResponse({"error": listings_result["error"]}, status_code=404)
+
+    listings = listings_result.get("listings", [])
+    if not listings:
+        # Fallback: try without price cap but still report rent data
+        filters["max_price"] = None
+        listings_result = await _search_redfin_page(location, filters)
+        if "error" in listings_result and "listings" not in listings_result:
+            return JSONResponse({"error": listings_result["error"]}, status_code=404)
+        listings = listings_result.get("listings", [])
+
+    if not listings:
+        return JSONResponse(
+            {"error": "No for-sale listings found. Try a different location."},
+            status_code=404,
+        )
+
+    # Step 4: Attach estimated rent to each listing
     for listing in listings:
         beds = listing.get("beds")
         if beds and beds in rent_median_by_beds:
@@ -929,6 +961,7 @@ async def smart_search(request: Request):
         "location_label": listings_result.get("location_label", location),
         "rent_stats": rentals_result.get("stats"),
         "rent_by_beds": {str(k): v for k, v in rent_median_by_beds.items()},
+        "smart_max_price": smart_max_price,
     })
 
 
