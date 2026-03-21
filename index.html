@@ -2271,9 +2271,10 @@
     el.style.display = '';
   }
 
-  function computeQuickScore(listing, userRent) {
+  function computeQuickScore(listing, userRent, mortgageRate) {
     var price = listing.price;
     var rent = userRent;
+    var rate = mortgageRate || 0.07; // default 7% if not provided
     if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, numericScore: 0, details: [], cssClass: 'score-0' };
 
     // Flag suspiciously cheap listings (likely vacant lots or teardowns)
@@ -2315,11 +2316,11 @@
     }
 
     // --- Estimated Monthly Cash Flow ---
-    // Mortgage: 20% down, 7% rate, 30yr
-    // At 7%, -$200/mo is common for viable deals (equity + appreciation
-    // of ~$500/mo on a $200K property makes total return positive)
+    // Mortgage: 20% down, current rate (from FRED), 30yr
+    // Negative CF is common at current rates — equity + appreciation
+    // can still make total return positive
     var loanAmt = price * 0.8;
-    var monthlyRate = 0.07 / 12;
+    var monthlyRate = rate / 12;
     var nPayments = 360;
     var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
     var cashFlow = rent - (rent * 0.5) - mortgage;
@@ -2567,9 +2568,10 @@
       }
 
       $('smartStatus').style.display = 'none';
+      var smartRate = data.mortgage_rate ? data.mortgage_rate / 100 : null;
       smartResults = data.listings.map(function(l) {
         var rent = l.estRent || 0;
-        l._score = computeQuickScore(l, rent);
+        l._score = computeQuickScore(l, rent, smartRate);
         l._estRent = rent;
         return l;
       });

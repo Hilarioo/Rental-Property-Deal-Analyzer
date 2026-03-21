@@ -1117,6 +1117,9 @@ async def smart_search(request: Request):
     rent_count = len(all_rents)
     rent_confidence = "high" if rent_count >= 15 else "medium" if rent_count >= 5 else "low"
 
+    # Include current mortgage rate for scoring calibration
+    current_rate = _mortgage_rate_cache.get("rate")
+
     return JSONResponse({
         "listings": listings,
         "total": listings_result.get("total", len(listings)),
@@ -1125,6 +1128,7 @@ async def smart_search(request: Request):
         "rent_by_beds": {str(k): v for k, v in rent_median_by_beds.items()},
         "smart_max_price": smart_max_price,
         "rent_confidence": rent_confidence,
+        "mortgage_rate": current_rate,
     })
 
 
