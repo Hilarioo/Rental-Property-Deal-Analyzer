@@ -950,7 +950,7 @@ async def search_neighborhood(request: Request):
         "max_price": body.get("max_price"),
         "min_beds": body.get("min_beds"),
         "property_type": body.get("property_type"),
-        "max_results": min(body.get("max_results", 20), 25),
+        "max_results": min(body.get("max_results", 20), 50),
     }
 
     result = await _search_redfin_page(location, filters)
@@ -1076,10 +1076,15 @@ async def smart_search(request: Request):
     ]
 
     # Step 5: Attach estimated rent to each listing
+    # Use bedroom-specific rent when available, otherwise find closest match
     for listing in listings:
         beds = listing.get("beds")
         if beds and beds in rent_median_by_beds:
             listing["estRent"] = rent_median_by_beds[beds]
+        elif beds and rent_median_by_beds:
+            # Find closest bedroom count with rent data
+            closest = min(rent_median_by_beds.keys(), key=lambda b: abs(b - beds))
+            listing["estRent"] = rent_median_by_beds[closest]
         elif overall_median > 0:
             listing["estRent"] = overall_median
         else:
