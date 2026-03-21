@@ -1240,6 +1240,7 @@
     <div class="mode-toggle" id="modeToggle">
       <button class="active" data-mode="single" onclick="toggleSearchMode('single')">Single Property</button>
       <button data-mode="search" onclick="toggleSearchMode('search')">Neighborhood Search</button>
+      <button data-mode="smart" onclick="toggleSearchMode('smart')">Smart Deal Finder</button>
     </div>
 
     <!-- ===== Single Property Mode ===== -->
@@ -1373,6 +1374,10 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="searchResultsTitle">Results</div>
           <div class="search-toolbar">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;margin-right:8px;">
+              <input type="checkbox" id="filterGoodDeals" onchange="applyDealAlerts()" style="cursor:pointer;accent-color:var(--accent);">
+              Good deals only (★★+)
+            </label>
             <button class="btn btn-small btn-secondary" onclick="toggleAlertConfig()">Deal Alerts</button>
             <button class="btn btn-small btn-secondary" onclick="exportSearchCSV()">Export CSV</button>
           </div>
@@ -1409,6 +1414,85 @@
               </tr>
             </thead>
             <tbody id="searchResultsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Smart Deal Finder Mode ===== -->
+    <div id="smartMode" style="display:none">
+      <div class="section-title">Smart Deal Finder</div>
+      <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px;">Enter a location and we'll automatically look up market rents, then find properties where the numbers actually work.</p>
+
+      <div class="search-filters">
+        <div class="input-group">
+          <label for="smartLocation">Location (zip/city) *</label>
+          <input type="text" id="smartLocation" placeholder="e.g. 37211 or Nashville, TN">
+        </div>
+        <div class="input-group">
+          <label for="smartMinBeds">Min Beds</label>
+          <select id="smartMinBeds">
+            <option value="0">Any</option>
+            <option value="1">1+</option>
+            <option value="2">2+</option>
+            <option value="3" selected>3+</option>
+            <option value="4">4+</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="smartPropType">Property Type</label>
+          <select id="smartPropType">
+            <option value="">Any</option>
+            <option value="house">House</option>
+            <option value="condo">Condo / Townhouse</option>
+            <option value="multi-family">Multi-family</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="smartMaxResults">Max Results</label>
+          <select id="smartMaxResults">
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="20">20</option>
+            <option value="25" selected>25</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="btn btn-large" id="smartBtn" type="button" onclick="runSmartSearch()">
+        <span id="smartBtnText">Find Deals</span>
+      </button>
+
+      <div id="smartStatus" class="search-status" style="display:none"></div>
+
+      <div id="smartRentInfo" style="display:none;margin-top:16px;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;">
+        <div style="font-size:0.82rem;font-weight:600;margin-bottom:6px;">Market Rent Data (auto-detected)</div>
+        <div id="smartRentDetails" style="font-size:0.85rem;color:var(--text-muted);"></div>
+      </div>
+
+      <div id="smartResultsContainer" style="display:none;margin-top:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="smartResultsTitle">Results</div>
+          <div class="search-toolbar">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;margin-right:8px;">
+              <input type="checkbox" id="smartFilterGood" onchange="renderSmartResults()" style="cursor:pointer;accent-color:var(--accent);" checked>
+              Good deals only (&#9733;&#9733;+)
+            </label>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="search-results-table" id="smartResultsTable">
+            <thead>
+              <tr>
+                <th onclick="sortSmartResults('address')">Address</th>
+                <th onclick="sortSmartResults('price')">Price</th>
+                <th onclick="sortSmartResults('beds')">Beds/Baths</th>
+                <th onclick="sortSmartResults('estRent')">Est. Rent</th>
+                <th onclick="sortSmartResults('score')">Deal Score</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="smartResultsBody"></tbody>
           </table>
         </div>
       </div>
@@ -2101,6 +2185,7 @@
     appMode = mode;
     $('singlePropertyMode').style.display = mode === 'single' ? '' : 'none';
     $('searchMode').style.display = mode === 'search' ? '' : 'none';
+    $('smartMode').style.display = mode === 'smart' ? '' : 'none';
     document.querySelectorAll('#modeToggle button').forEach(function(b) {
       b.classList.toggle('active', b.dataset.mode === mode);
     });
@@ -2246,10 +2331,13 @@
   function renderSearchResults() {
     var tbody = $('searchResultsBody');
     var html = '';
+    var filterGood = $('filterGoodDeals').checked;
     var alertStars = parseInt($('alertMinStars').value) || 0;
     var alertMaxPrice = parseFloat($('alertMaxPrice').value) || 0;
     var alertMinBeds = parseInt($('alertMinBeds').value) || 0;
+    var shown = 0;
     searchResults.forEach(function(l, i) {
+      if (filterGood && l._score.stars < 2) return;
       var s = l._score;
       var starStr = '';
       for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
@@ -2262,6 +2350,7 @@
       var trClass = (alertStars > 0 || alertMaxPrice || alertMinBeds) && meetsAlert ? ' class="meets-alert"' : '';
       var alertTag = meetsAlert && (alertStars > 0 || alertMaxPrice || alertMinBeds) ? '<span class="alert-badge">Match</span>' : '';
 
+      shown++;
       html += '<tr' + trClass + '>'
         + '<td>' + esc(l.address || '—') + alertTag + '</td>'
         + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
@@ -2271,6 +2360,9 @@
         + '<td><button class="btn" onclick="analyzeFromSearch(' + i + ')">Analyze &rarr;</button></td>'
         + '</tr>';
     });
+    if (filterGood && shown === 0) {
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No listings with 2+ stars. Try a higher target rent or lower price range.</td></tr>';
+    }
     tbody.innerHTML = html;
   }
 
@@ -2314,6 +2406,185 @@
     if (l.listingUrl) {
       fetchZillow();
     }
+  };
+
+  // ======================================================================
+  // Smart Deal Finder
+  // ======================================================================
+  var smartResults = [];
+  var smartSortCol = 'score';
+  var smartSortAsc = false;
+
+  window.runSmartSearch = async function() {
+    var location = $('smartLocation').value.trim();
+    if (!location) {
+      showSmartStatus('Please enter a location (zip code or city).', true);
+      return;
+    }
+
+    $('smartBtn').disabled = true;
+    $('smartBtnText').innerHTML = '<span class="spinner"></span> Searching &amp; estimating rents...';
+    $('smartResultsContainer').style.display = 'none';
+    $('smartRentInfo').style.display = 'none';
+    showSmartStatus('Searching for-sale listings and rental data in parallel... This may take 15–30 seconds.', false);
+
+    try {
+      var body = {
+        location: location,
+        min_beds: parseInt($('smartMinBeds').value) || 0,
+        property_type: $('smartPropType').value || null,
+        max_results: parseInt($('smartMaxResults').value) || 25,
+      };
+      var resp = await fetch('/api/smart-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await resp.json();
+      if (!resp.ok || data.error) {
+        showSmartStatus(data.error || 'Search failed.', true);
+        return;
+      }
+      if (!data.listings || data.listings.length === 0) {
+        showSmartStatus('No listings found for "' + esc(location) + '".', true);
+        return;
+      }
+
+      // Show rent data info
+      if (data.rent_stats) {
+        var rs = data.rent_stats;
+        var rentHtml = 'Based on <strong>' + rs.count + '</strong> rental listings: ';
+        rentHtml += 'Median <strong>$' + fmtInt(rs.median) + '/mo</strong>, ';
+        rentHtml += 'Range $' + fmtInt(rs.low) + ' – $' + fmtInt(rs.high);
+        if (data.rent_by_beds) {
+          var bedParts = [];
+          Object.keys(data.rent_by_beds).sort().forEach(function(b) {
+            bedParts.push(b + 'BR: $' + fmtInt(data.rent_by_beds[b]));
+          });
+          if (bedParts.length > 0) {
+            rentHtml += '<br>By bedroom: ' + bedParts.join(' &middot; ');
+          }
+        }
+        $('smartRentDetails').innerHTML = rentHtml;
+        $('smartRentInfo').style.display = '';
+      }
+
+      $('smartStatus').style.display = 'none';
+      smartResults = data.listings.map(function(l) {
+        var rent = l.estRent || 0;
+        l._score = computeQuickScore(l, rent);
+        l._estRent = rent;
+        return l;
+      });
+      smartSortCol = 'score';
+      smartSortAsc = false;
+      sortSmartAndRender();
+      var goodCount = smartResults.filter(function(l) { return l._score.stars >= 2; }).length;
+      $('smartResultsTitle').textContent = goodCount + ' potential deals out of ' + data.total + ' listings in ' + (data.location_label || location);
+      $('smartResultsContainer').style.display = '';
+    } catch (err) {
+      showSmartStatus('Could not connect to the server. Make sure the app is running.', true);
+    } finally {
+      $('smartBtn').disabled = false;
+      $('smartBtnText').textContent = 'Find Deals';
+    }
+  };
+
+  function showSmartStatus(msg, isError) {
+    var el = $('smartStatus');
+    el.textContent = msg;
+    el.className = 'search-status' + (isError ? ' error' : '');
+    el.style.display = '';
+  }
+
+  function sortSmartAndRender() {
+    smartResults.sort(function(a, b) {
+      var va, vb;
+      if (smartSortCol === 'score') { va = a._score.stars; vb = b._score.stars; }
+      else if (smartSortCol === 'price') { va = a.price || 0; vb = b.price || 0; }
+      else if (smartSortCol === 'beds') { va = a.beds || 0; vb = b.beds || 0; }
+      else if (smartSortCol === 'estRent') { va = a._estRent || 0; vb = b._estRent || 0; }
+      else { va = (a.address || '').toLowerCase(); vb = (b.address || '').toLowerCase(); }
+      if (va < vb) return smartSortAsc ? -1 : 1;
+      if (va > vb) return smartSortAsc ? 1 : -1;
+      return 0;
+    });
+    renderSmartResults();
+  }
+
+  window.sortSmartResults = function(col) {
+    if (smartSortCol === col) {
+      smartSortAsc = !smartSortAsc;
+    } else {
+      smartSortCol = col;
+      smartSortAsc = col === 'address';
+    }
+    sortSmartAndRender();
+  };
+
+  window.renderSmartResults = function() {
+    var tbody = $('smartResultsBody');
+    var html = '';
+    var filterGood = $('smartFilterGood').checked;
+    var shown = 0;
+    smartResults.forEach(function(l, i) {
+      if (filterGood && l._score.stars < 2) return;
+      var s = l._score;
+      var starStr = '';
+      for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
+      for (var j = s.stars; j < 3; j++) starStr += '&#9734;';
+      var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
+      shown++;
+      html += '<tr>'
+        + '<td>' + esc(l.address || '—') + '</td>'
+        + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
+        + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
+        + '<td>' + (l._estRent ? '$' + fmtInt(l._estRent) + '/mo' : '—') + '</td>'
+        + '<td><span class="quick-score ' + s.cssClass + '">' + starStr + '</span><div class="score-detail">' + detailHtml + '</div></td>'
+        + '<td><button class="btn" onclick="analyzeFromSmart(' + i + ')">Analyze &rarr;</button></td>'
+        + '</tr>';
+    });
+    if (shown === 0) {
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No good deals found in this area. Market rents may not support investment at current prices.</td></tr>';
+    }
+    tbody.innerHTML = html;
+  };
+
+  window.analyzeFromSmart = function(idx) {
+    var l = smartResults[idx];
+    if (!l) return;
+    toggleSearchMode('single');
+    if (l.listingUrl) $('zillowUrl').value = l.listingUrl;
+    if (l.price) { $('purchasePrice').value = l.price; autoFilledFields['purchasePrice'] = true; }
+    if (l.address) { $('propName').value = l.address; autoFilledFields['propName'] = true; }
+    if (l.sqft) { $('sqft').value = l.sqft; autoFilledFields['sqft'] = true; }
+    if (l.price) {
+      $('closingCosts').value = Math.round(l.price * 0.03);
+      userEditedFields['closingCosts'] = false;
+      $('insurance').value = Math.round(l.price * 0.005);
+      userEditedFields['insurance'] = false;
+    }
+    // Pre-fill rent from estimated market rent
+    if (l._estRent) {
+      $('monthlyRent').value = l._estRent;
+      autoFilledFields['monthlyRent'] = true;
+    }
+    updateDpHelper();
+    if (l.imageUrl) {
+      $('propImage').onerror = function() { this.style.display = 'none'; };
+      $('propImage').src = l.imageUrl;
+      $('propImage').style.display = '';
+    } else {
+      $('propImage').style.display = 'none';
+    }
+    $('propAddress').textContent = l.address || 'Address unavailable';
+    var details = [];
+    if (l.beds) details.push(l.beds + ' bed');
+    if (l.baths) details.push(l.baths + ' bath');
+    if (l.sqft) details.push(fmtInt(l.sqft) + ' sqft');
+    $('propDetails').textContent = details.join(' | ');
+    $('propertyCard').classList.add('visible');
+    if (l.listingUrl) fetchZillow();
   };
 
   // ======================================================================

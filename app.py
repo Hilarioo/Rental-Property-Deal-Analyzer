@@ -848,6 +848,90 @@ async def search_neighborhood(request: Request):
     return JSONResponse(result)
 
 
+@app.post("/api/smart-search")
+async def smart_search(request: Request):
+    """Smart Deal Finder: search listings + auto-estimate rent from market data."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"smart:{client_ip}", 3):
+        return JSONResponse(
+            {"error": "Too many searches. Please wait a minute before trying again."},
+            status_code=429,
+        )
+
+    body = await request.json()
+    location = (body.get("location") or "").strip()
+    if not location:
+        return JSONResponse({"error": "Location is required."}, status_code=400)
+    if len(location) > 200:
+        return JSONResponse({"error": "Location query is too long."}, status_code=400)
+
+    filters = {
+        "min_price": body.get("min_price"),
+        "max_price": body.get("max_price"),
+        "min_beds": body.get("min_beds"),
+        "property_type": body.get("property_type"),
+        "max_results": min(body.get("max_results", 25), 25),
+    }
+
+    # Run sale listings + rental data in parallel
+    listings_task = asyncio.create_task(_search_redfin_page(location, filters))
+    rentals_task = asyncio.create_task(_search_redfin_rentals(location))
+
+    listings_result = await listings_task
+    rentals_result = await rentals_task
+
+    if "error" in listings_result and "listings" not in listings_result:
+        return JSONResponse({"error": listings_result["error"]}, status_code=404)
+
+    listings = listings_result.get("listings", [])
+    if not listings:
+        return JSONResponse(
+            {"error": "No for-sale listings found. Try a different location."},
+            status_code=404,
+        )
+
+    # Build rent lookup by bedroom count from rental data
+    rent_by_beds: dict[int, list[int]] = {}
+    all_rents: list[int] = []
+    for r in rentals_result.get("rentals", []):
+        rent_val = r.get("rent", 0)
+        if rent_val <= 0:
+            continue
+        all_rents.append(rent_val)
+        b = r.get("beds")
+        if b is not None and b > 0:
+            rent_by_beds.setdefault(b, []).append(rent_val)
+
+    # Compute median rent per bedroom count
+    rent_median_by_beds: dict[int, int] = {}
+    for beds, rents in rent_by_beds.items():
+        rents.sort()
+        rent_median_by_beds[beds] = rents[len(rents) // 2]
+
+    overall_median = 0
+    if all_rents:
+        all_rents.sort()
+        overall_median = all_rents[len(all_rents) // 2]
+
+    # Attach estimated rent to each listing
+    for listing in listings:
+        beds = listing.get("beds")
+        if beds and beds in rent_median_by_beds:
+            listing["estRent"] = rent_median_by_beds[beds]
+        elif overall_median > 0:
+            listing["estRent"] = overall_median
+        else:
+            listing["estRent"] = None
+
+    return JSONResponse({
+        "listings": listings,
+        "total": listings_result.get("total", len(listings)),
+        "location_label": listings_result.get("location_label", location),
+        "rent_stats": rentals_result.get("stats"),
+        "rent_by_beds": {str(k): v for k, v in rent_median_by_beds.items()},
+    })
+
+
 # ---------------------------------------------------------------------------
 # Mortgage Rate — FRED API (free, no key required for this endpoint)
 # ---------------------------------------------------------------------------
