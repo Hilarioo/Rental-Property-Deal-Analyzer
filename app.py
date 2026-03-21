@@ -667,8 +667,8 @@ def _extract_redfin(soup) -> dict | None:
 # Neighborhood Search — Redfin search page scraping
 # ---------------------------------------------------------------------------
 
-# Global semaphore: max 2 concurrent Playwright browsers for search
-_search_semaphore = asyncio.Semaphore(2)
+# Global semaphore: max 3 concurrent Playwright browsers for search
+_search_semaphore = asyncio.Semaphore(3)
 
 _REDFIN_SEARCH_JS = """
 () => {
@@ -888,9 +888,17 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
         await page.wait_for_timeout(2000)
 
         # Scroll down to load more lazy-loaded listings
-        for _ in range(5):
+        # More scrolls = more listings. Stop early if no new content loaded.
+        prev_count = 0
+        for _ in range(8):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1200)
+            await page.wait_for_timeout(1000)
+            cur_count = await page.evaluate(
+                "document.querySelectorAll('.MapHomeCardReact, [class*=\"HomeCard\"]').length"
+            )
+            if cur_count == prev_count and cur_count >= 10:
+                break  # no new listings loaded
+            prev_count = cur_count
 
         # Extract total count from page (e.g., "47 homes" in the results header)
         page_total = await page.evaluate("""
@@ -950,7 +958,7 @@ async def search_neighborhood(request: Request):
         "max_price": body.get("max_price"),
         "min_beds": body.get("min_beds"),
         "property_type": body.get("property_type"),
-        "max_results": min(body.get("max_results", 20), 50),
+        "max_results": min(body.get("max_results", 25), 75),
     }
 
     result = await _search_redfin_page(location, filters)
@@ -986,7 +994,7 @@ async def smart_search(request: Request):
     user_min_beds = body.get("min_beds")
     user_property_type = body.get("property_type")
     min_price = body.get("min_price") or 25000
-    user_max_results = body.get("max_results") or 40
+    user_max_results = body.get("max_results") or 50
 
     # Step 1+2: Fetch rental data AND for-sale listings IN PARALLEL
     # Use a generous max price for the initial search; we'll filter down
@@ -996,7 +1004,7 @@ async def smart_search(request: Request):
         "max_price": 500000,  # generous cap; will narrow after rent data
         "min_beds": user_min_beds,
         "property_type": user_property_type or "house",
-        "max_results": min(user_max_results + 10, 50),
+        "max_results": min(user_max_results + 20, 80),
         "sort": "price-asc",
     }
 
@@ -1105,6 +1113,10 @@ async def smart_search(request: Request):
     # Cap to user's requested max
     listings = listings[:user_max_results]
 
+    # Rent confidence: how reliable is the estimate?
+    rent_count = len(all_rents)
+    rent_confidence = "high" if rent_count >= 15 else "medium" if rent_count >= 5 else "low"
+
     return JSONResponse({
         "listings": listings,
         "total": listings_result.get("total", len(listings)),
@@ -1112,6 +1124,7 @@ async def smart_search(request: Request):
         "rent_stats": rentals_result.get("stats"),
         "rent_by_beds": {str(k): v for k, v in rent_median_by_beds.items()},
         "smart_max_price": smart_max_price,
+        "rent_confidence": rent_confidence,
     })
 
 
@@ -1288,11 +1301,17 @@ async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict
             await browser.close()
             return {"rentals": [], "total": 0}
 
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1500)
+
+        # Scroll to load more rental listings
+        for _ in range(4):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(800)
+
         rentals = await page.evaluate(_REDFIN_RENT_JS)
         await browser.close()
 
-    rentals = [r for r in rentals if r.get("rent") and r["rent"] > 0][:30]
+    rentals = [r for r in rentals if r.get("rent") and r["rent"] > 0][:40]
     if not rentals:
         return {"rentals": [], "total": 0}
 

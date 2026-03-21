@@ -1459,10 +1459,9 @@
         <div class="input-group">
           <label for="smartMaxResults">Max Results</label>
           <select id="smartMaxResults">
-            <option value="15">15</option>
             <option value="25">25</option>
-            <option value="40" selected>40</option>
-            <option value="50">50</option>
+            <option value="50" selected>50</option>
+            <option value="75">75</option>
           </select>
         </div>
       </div>
@@ -2557,6 +2556,11 @@
         }
         if (data.smart_max_price) {
           rentHtml += '<br>Smart price cap: <strong>$' + fmtInt(data.smart_max_price) + '</strong> (only showing properties that could pencil out)';
+        }
+        if (data.rent_confidence) {
+          var confLabel = data.rent_confidence === 'high' ? 'High' : data.rent_confidence === 'medium' ? 'Medium' : 'Low';
+          var confCls = data.rent_confidence === 'high' ? 'pass' : data.rent_confidence === 'medium' ? 'warn' : 'fail';
+          rentHtml += ' &middot; Rent confidence: <span class="' + confCls + '">' + confLabel + '</span>';
         }
         $('smartRentDetails').innerHTML = rentHtml;
         $('smartRentInfo').style.display = '';
