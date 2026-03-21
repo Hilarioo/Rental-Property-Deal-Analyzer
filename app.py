@@ -1001,7 +1001,9 @@ async def smart_search(request: Request):
     }
 
     # Run both searches concurrently (semaphore allows 2 concurrent Playwright)
-    rentals_task = asyncio.create_task(_search_redfin_rentals(location))
+    # Pass min_beds so rental comps match the bedroom count we're searching for
+    rental_beds = user_min_beds if user_min_beds and user_min_beds >= 2 else None
+    rentals_task = asyncio.create_task(_search_redfin_rentals(location, rental_beds))
     listings_task = asyncio.create_task(_search_redfin_page(location, initial_filters))
     rentals_result, listings_result = await asyncio.gather(rentals_task, listings_task)
 
@@ -1033,12 +1035,15 @@ async def smart_search(request: Request):
         overall_p75 = all_rents[min(int(len(all_rents) * 0.75), len(all_rents) - 1)]
 
     # Compute smart max price from rent data
+    # Use median (not P75) to avoid luxury apartment skew.
+    # Multiplier of 200 (~0.5% rent/price) is conservative for 7% rate
+    # environment — deals above this ratio rarely cash-flow positive.
     smart_max_price = None
     if overall_median > 0:
-        best_rent = max(rent_p75_by_beds.values()) if rent_p75_by_beds else overall_p75 or overall_median
-        smart_max_price = int(best_rent * 250)
+        best_rent = max(rent_median_by_beds.values()) if rent_median_by_beds else overall_median
+        smart_max_price = int(best_rent * 200)
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
-        smart_max_price = max(smart_max_price, 100000)
+        smart_max_price = max(smart_max_price, 75000)
 
     if "error" in listings_result and "listings" not in listings_result:
         return JSONResponse({"error": listings_result["error"]}, status_code=404)
@@ -1088,6 +1093,14 @@ async def smart_search(request: Request):
             listing["estRent"] = overall_median
         else:
             listing["estRent"] = None
+
+        # Sanity cap: rent shouldn't exceed 3% of price (even in cash-flow
+        # markets like Cleveland, 3% monthly is extreme). Low floor ensures
+        # very cheap properties still get a reasonable estimate.
+        price = listing.get("price") or 0
+        if listing["estRent"] and price > 0:
+            max_plausible_rent = max(int(price * 0.03), 500)
+            listing["estRent"] = min(listing["estRent"], max_plausible_rent)
 
     # Cap to user's requested max
     listings = listings[:user_max_results]
