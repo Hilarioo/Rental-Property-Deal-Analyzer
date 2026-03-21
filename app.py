@@ -1060,6 +1060,13 @@ async def smart_search(request: Request):
     if "error" in listings_result and "listings" not in listings_result:
         return JSONResponse({"error": listings_result["error"]}, status_code=404)
 
+    # If no rental data at all, we can't score deals meaningfully
+    if not all_rents:
+        return JSONResponse(
+            {"error": "No rental data found for this area. Try a nearby zip code — rent comps are needed to estimate deals."},
+            status_code=404,
+        )
+
     listings = listings_result.get("listings", [])
 
     # Filter by smart max price (initial search used generous $500K cap)

@@ -1485,6 +1485,7 @@
               <input type="checkbox" id="smartFilterGood" checked onchange="renderSmartResults()" style="cursor:pointer;accent-color:var(--accent);">
               Good deals only (&#9733;&#9733;&#9733;+)
             </label>
+            <button class="btn btn-small btn-secondary" onclick="exportSmartCSV()">Export CSV</button>
           </div>
         </div>
         <div style="overflow-x:auto;">
@@ -2586,6 +2587,7 @@
         if (data.mortgage_rate) {
           rentHtml += ' &middot; Scoring at <strong>' + data.mortgage_rate.toFixed(2) + '%</strong> rate';
         }
+        rentHtml += '<br><span style="color:var(--text-muted);font-size:0.78rem;">Assumptions: 20% down, 30yr fixed, expenses 45-55% of rent (tiered by price), 3% appreciation</span>';
         $('smartRentDetails').innerHTML = rentHtml;
         $('smartRentInfo').style.display = '';
       }
@@ -2764,6 +2766,40 @@
   }
 
   // ======================================================================
+  // Export Smart Deal Finder Results to CSV
+  // ======================================================================
+  window.exportSmartCSV = function() {
+    if (!smartResults || smartResults.length === 0) return;
+    var rows = [['Address', 'Price', 'Beds', 'Baths', 'Sqft', 'Est. Rent', 'Stars', 'Score', 'Rent/Price', 'Est. Cap Rate', 'Est. Cash Flow', 'GRM', 'Est. Return', 'Listing URL']];
+    smartResults.forEach(function(l) {
+      var s = l._score || { stars: 0, numericScore: 0, details: [] };
+      var d = s.details || [];
+      rows.push([
+        '"' + (l.address || '').replace(/"/g, '""') + '"',
+        l.price || '',
+        l.beds != null ? l.beds : '',
+        l.baths != null ? l.baths : '',
+        l.sqft || '',
+        l._estRent || '',
+        s.stars,
+        s.numericScore,
+        d[0] ? d[0].text : '',
+        d[1] ? d[1].text : '',
+        d[2] ? d[2].text : '',
+        d[3] ? d[3].text : '',
+        d[4] ? d[4].text : '',
+        '"' + (l.listingUrl || '').replace(/"/g, '""') + '"'
+      ]);
+    });
+    var csv = rows.map(function(r) { return r.join(','); }).join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smart-deal-finder-results.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
   // Export Search Results to CSV
   // ======================================================================
   window.exportSearchCSV = function() {
