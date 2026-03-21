@@ -672,7 +672,7 @@ _search_semaphore = asyncio.Semaphore(2)
 
 _REDFIN_SEARCH_JS = """
 () => {
-    const cards = document.querySelectorAll('.MapHomeCardReact');
+    const cards = document.querySelectorAll('.MapHomeCardReact, [class*="HomeCard"]');
     const results = [];
     const seen = new Set();
     cards.forEach(card => {
@@ -680,7 +680,7 @@ _REDFIN_SEARCH_JS = """
         const url = linkEl ? linkEl.href : null;
         if (!url || seen.has(url)) return;
         seen.add(url);
-        const priceDiv = card.querySelector('.bp-Homecard__Price');
+        const priceDiv = card.querySelector('.bp-Homecard__Price, [class*="Price"]');
         let price = null;
         if (priceDiv) {
             const m = priceDiv.textContent.match(/\\$(\\d[\\d,]*)/);
@@ -775,13 +775,13 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
 
         # Check for redirect to main page (bad location)
         final_url = page.url
-        if "/zipcode/" not in final_url and "/city/" not in final_url and "/neighborhood/" not in final_url and "/filter/" not in final_url:
+        if "/zipcode/" not in final_url and "/city/" not in final_url and "/neighborhood/" not in final_url and "/filter/" not in final_url and "/county/" not in final_url and "/state/" not in final_url:
             await browser.close()
             return {"error": f'Could not find location "{location}". Try a zip code (e.g. "78701") or city + state (e.g. "Austin, TX").'}
 
         # Wait for listing cards to render
         try:
-            await page.wait_for_selector(".MapHomeCardReact", timeout=8000)
+            await page.wait_for_selector(".MapHomeCardReact, [class*='HomeCard']", timeout=8000)
         except Exception:
             # No listings found or page didn't load cards
             html_text = await page.content()
