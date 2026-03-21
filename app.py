@@ -985,9 +985,25 @@ async def smart_search(request: Request):
 
     user_min_beds = body.get("min_beds")
     user_property_type = body.get("property_type")
+    min_price = body.get("min_price") or 25000
+    user_max_results = body.get("max_results") or 40
 
-    # Step 1: Fetch rental data first to determine smart price cap
-    rentals_result = await _search_redfin_rentals(location)
+    # Step 1+2: Fetch rental data AND for-sale listings IN PARALLEL
+    # Use a generous max price for the initial search; we'll filter down
+    # once we know the smart price cap from rental data.
+    initial_filters = {
+        "min_price": min_price,
+        "max_price": 500000,  # generous cap; will narrow after rent data
+        "min_beds": user_min_beds,
+        "property_type": user_property_type or "house",
+        "max_results": min(user_max_results + 10, 50),
+        "sort": "price-asc",
+    }
+
+    # Run both searches concurrently (semaphore allows 2 concurrent Playwright)
+    rentals_task = asyncio.create_task(_search_redfin_rentals(location))
+    listings_task = asyncio.create_task(_search_redfin_page(location, initial_filters))
+    rentals_result, listings_result = await asyncio.gather(rentals_task, listings_task)
 
     # Build rent lookup by bedroom count
     rent_by_beds: dict[int, list[int]] = {}
@@ -1016,51 +1032,22 @@ async def smart_search(request: Request):
         overall_median = all_rents[len(all_rents) // 2]
         overall_p75 = all_rents[min(int(len(all_rents) * 0.75), len(all_rents) - 1)]
 
-    # Step 2: Compute smart max price from rent data
-    # Use 75th-percentile rent (optimistic but realistic for well-managed
-    # properties) and a 250x multiplier.  At 7% / 20% down the break-even
-    # multiplier is ~94x; 250x captures deals that work with equity buildup,
-    # appreciation, rent growth, or better financing (house-hack, ARM, etc.)
+    # Compute smart max price from rent data
     smart_max_price = None
     if overall_median > 0:
         best_rent = max(rent_p75_by_beds.values()) if rent_p75_by_beds else overall_p75 or overall_median
         smart_max_price = int(best_rent * 250)
-        # Round up to nearest $25k for cleaner search
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
-        # Floor at $100k so we don't exclude everything
         smart_max_price = max(smart_max_price, 100000)
-
-    # Set a minimum price to skip vacant lots / land-only parcels.
-    # $25K is well below any habitable structure but above nearly all lot prices.
-    min_price = body.get("min_price") or 25000
-
-    user_max_results = body.get("max_results") or 40
-
-    filters = {
-        "min_price": min_price,
-        "max_price": smart_max_price,
-        "min_beds": user_min_beds,
-        "property_type": user_property_type or "house",
-        # Fetch extra to compensate for post-filtering, capped at 50
-        "max_results": min(user_max_results + 10, 50),
-        # Sort by price ascending so cheapest come first
-        "sort": "price-asc",
-    }
-
-    # Step 3: Search for-sale listings with the smart price cap
-    listings_result = await _search_redfin_page(location, filters)
 
     if "error" in listings_result and "listings" not in listings_result:
         return JSONResponse({"error": listings_result["error"]}, status_code=404)
 
     listings = listings_result.get("listings", [])
-    if not listings:
-        # Fallback: try without price cap but still report rent data
-        filters["max_price"] = None
-        listings_result = await _search_redfin_page(location, filters)
-        if "error" in listings_result and "listings" not in listings_result:
-            return JSONResponse({"error": listings_result["error"]}, status_code=404)
-        listings = listings_result.get("listings", [])
+
+    # Filter by smart max price (initial search used generous $500K cap)
+    if smart_max_price and listings:
+        listings = [l for l in listings if l.get("price", 0) <= smart_max_price]
 
     if not listings:
         return JSONResponse(
