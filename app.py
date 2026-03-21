@@ -1008,12 +1008,14 @@ async def smart_search(request: Request):
         "sort": "price-asc",
     }
 
-    # Run both searches concurrently (semaphore allows 2 concurrent Playwright)
-    # Pass min_beds so rental comps match the bedroom count we're searching for
+    # Run rentals, for-sale listings, AND mortgage rate fetch in parallel
     rental_beds = user_min_beds if user_min_beds and user_min_beds >= 2 else None
     rentals_task = asyncio.create_task(_search_redfin_rentals(location, rental_beds))
     listings_task = asyncio.create_task(_search_redfin_page(location, initial_filters))
-    rentals_result, listings_result = await asyncio.gather(rentals_task, listings_task)
+    rate_task = asyncio.create_task(_ensure_mortgage_rate())
+    rentals_result, listings_result, _ = await asyncio.gather(
+        rentals_task, listings_task, rate_task
+    )
 
     # Build rent lookup by bedroom count
     rent_by_beds: dict[int, list[int]] = {}
@@ -1051,7 +1053,7 @@ async def smart_search(request: Request):
         # Use overall median (not max across bedrooms) to avoid
         # inflated caps from high-bedroom luxury rentals.
         best_rent = overall_median
-        smart_max_price = int(best_rent * 200)
+        smart_max_price = int(best_rent * 225)
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
         smart_max_price = max(smart_max_price, 75000)
 
@@ -1140,35 +1142,34 @@ async def smart_search(request: Request):
 _mortgage_rate_cache: dict = {"rate": None, "fetched_at": 0}
 
 
-@app.get("/api/mortgage-rate")
-async def get_mortgage_rate():
-    """Fetch current average 30-year fixed mortgage rate from FRED."""
+async def _ensure_mortgage_rate() -> float | None:
+    """Fetch and cache mortgage rate if not already cached. Returns the rate."""
     now = time.time()
-    # Cache for 6 hours
     if _mortgage_rate_cache["rate"] is not None and now - _mortgage_rate_cache["fetched_at"] < 21600:
-        return JSONResponse({"rate": _mortgage_rate_cache["rate"]})
-
-    # Scrape Freddie Mac Primary Mortgage Market Survey page
+        return _mortgage_rate_cache["rate"]
     try:
         hdrs = {k: v for k, v in HEADERS.items() if k != "Accept-Encoding"}
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                "https://www.freddiemac.com/pmms",
-                headers=hdrs,
-            )
+            resp = await client.get("https://www.freddiemac.com/pmms", headers=hdrs)
             if resp.status_code == 200:
-                import re as _re
-                # First percentage on the page is the current 30-year fixed rate
-                match = _re.search(r"(\d+\.\d+)%", resp.text)
+                match = re.search(r"(\d+\.\d+)%", resp.text)
                 if match:
                     rate = float(match.group(1))
-                    if 2.0 <= rate <= 15.0:  # Sanity check
+                    if 2.0 <= rate <= 15.0:
                         _mortgage_rate_cache["rate"] = rate
                         _mortgage_rate_cache["fetched_at"] = now
-                        return JSONResponse({"rate": rate})
+                        return rate
     except Exception:
         pass
+    return _mortgage_rate_cache.get("rate")
 
+
+@app.get("/api/mortgage-rate")
+async def get_mortgage_rate():
+    """Fetch current average 30-year fixed mortgage rate from FRED."""
+    rate = await _ensure_mortgage_rate()
+    if rate is not None:
+        return JSONResponse({"rate": rate})
     return JSONResponse({"rate": None, "error": "Could not fetch current rate."})
 
 

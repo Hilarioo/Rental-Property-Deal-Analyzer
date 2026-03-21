@@ -2301,14 +2301,17 @@
       details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'fail' });
     }
 
-    // --- Estimated Cap Rate: (annual_rent * 0.50) / price * 100 ---
+    // --- Expense Ratio (tiered by price band) ---
+    // Cheaper properties have higher operating costs (older, more maintenance).
+    var expenseRatio = price >= 250000 ? 0.45 : price >= 100000 ? 0.50 : 0.55;
+
+    // --- Estimated Cap Rate: (annual_rent * expenseRatio) / price * 100 ---
     // Dynamic thresholds: good if cap >= rate-3%, decent if >= rate-4%.
-    // At 7% rates: 4%+ good, 3%+ decent. At 6%: 3%+ good, 2%+ decent.
-    var capRate = (rent * 12 * 0.5) / price * 100;
+    var capRate = (rent * 12 * (1 - expenseRatio)) / price * 100;
     var capGoodThreshold = Math.max(3, rate * 100 - 3);
     var capWarnThreshold = Math.max(2, rate * 100 - 4);
-    // Continuous score: 25 pts max, scaled 0-8% range
-    numericScore += Math.min(25, (capRate / 8) * 25);
+    // Continuous score: 30 pts max (cap rate is the most meaningful metric)
+    numericScore += Math.min(30, (capRate / 8) * 30);
     if (capRate >= capGoodThreshold) {
       stars++;
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'pass' });
@@ -2326,7 +2329,7 @@
     var monthlyRate = rate / 12;
     var nPayments = 360;
     var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
-    var cashFlow = rent - (rent * 0.5) - mortgage;
+    var cashFlow = rent - (rent * expenseRatio) - mortgage;
     // Continuous score: 25 pts max, scaled from -$500 to +$500
     numericScore += Math.min(25, Math.max(0, ((cashFlow + 500) / 1000) * 25));
     // Scale the negative-CF tolerance by price. -$200/mo on a $50K property
@@ -2348,8 +2351,8 @@
     var grm = price / (rent * 12);
     var grmGood = Math.round(12 + (7 - rate * 100)); // lower rates allow higher GRM
     var grmOk = grmGood + 3;
-    // Continuous score: 25 pts max, inverse scaled (lower GRM = more points)
-    numericScore += Math.min(25, Math.max(0, ((20 - grm) / 20) * 25));
+    // Continuous score: 15 pts max (GRM ignores expenses, so lower weight)
+    numericScore += Math.min(15, Math.max(0, ((20 - grm) / 20) * 15));
     if (grm <= grmGood) {
       stars++;
       details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'pass' });
