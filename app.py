@@ -738,6 +738,9 @@ def _build_redfin_search_url(location: str, filters: dict) -> str:
     ptype_map = {"house": "house", "condo": "condo,townhouse", "multi-family": "multifamily"}
     if filters.get("property_type") and filters["property_type"] in ptype_map:
         filter_parts.append(f"property-type={ptype_map[filters['property_type']]}")
+    # Sort by price ascending so cheapest listings (most likely deals) come first
+    if filters.get("sort") == "price-asc":
+        filter_parts.append("sort=lo-price")
 
     if filter_parts:
         return base + "/filter/" + ",".join(filter_parts)
@@ -745,11 +748,14 @@ def _build_redfin_search_url(location: str, filters: dict) -> str:
 
 
 async def _search_redfin_page(location: str, filters: dict) -> dict:
-    """Search Redfin by loading the search results page with Playwright."""
+    """Search Redfin by loading the search results page with Playwright.
+
+    Scrolls down multiple times to load more listings via lazy-loading.
+    """
     from playwright.async_api import async_playwright
 
     url = _build_redfin_search_url(location, filters)
-    max_results = min(filters.get("max_results", 20), 25)
+    max_results = filters.get("max_results", 40)
 
     async with _search_semaphore, async_playwright() as p:
         browser = await p.chromium.launch(
@@ -792,6 +798,23 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
 
         await page.wait_for_timeout(2000)
 
+        # Scroll down to load more lazy-loaded listings
+        for _ in range(5):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(1200)
+
+        # Extract total count from page (e.g., "47 homes" in the results header)
+        page_total = await page.evaluate("""
+            () => {
+                const el = document.querySelector('[class*="homes"], [class*="result"]');
+                if (el) {
+                    const m = el.textContent.match(/(\\d+)\\s*home/i);
+                    if (m) return parseInt(m[1]);
+                }
+                return null;
+            }
+        """)
+
         # Extract location label from page title
         title = await page.title()
         label = location
@@ -810,7 +833,7 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
 
     return {
         "listings": listings,
-        "total": len(listings),
+        "total": page_total or len(listings),
         "location_label": label,
     }
 
@@ -872,7 +895,6 @@ async def smart_search(request: Request):
 
     user_min_beds = body.get("min_beds")
     user_property_type = body.get("property_type")
-    user_max_results = min(body.get("max_results", 25), 25)
 
     # Step 1: Fetch rental data first to determine smart price cap
     rentals_result = await _search_redfin_rentals(location)
@@ -889,39 +911,44 @@ async def smart_search(request: Request):
         if b is not None and b > 0:
             rent_by_beds.setdefault(b, []).append(rent_val)
 
-    # Compute median rent per bedroom count
+    # Compute median rent per bedroom count, and also the 75th percentile
     rent_median_by_beds: dict[int, int] = {}
+    rent_p75_by_beds: dict[int, int] = {}
     for beds, rents in rent_by_beds.items():
         rents.sort()
         rent_median_by_beds[beds] = rents[len(rents) // 2]
+        rent_p75_by_beds[beds] = rents[min(int(len(rents) * 0.75), len(rents) - 1)]
 
     overall_median = 0
+    overall_p75 = 0
     if all_rents:
         all_rents.sort()
         overall_median = all_rents[len(all_rents) // 2]
+        overall_p75 = all_rents[min(int(len(all_rents) * 0.75), len(all_rents) - 1)]
 
     # Step 2: Compute smart max price from rent data
-    # Use highest bedroom-count median rent for the price cap.
-    # At 7% rate, 20% down: monthly mortgage ~ price * 0.00533
-    # For break-even cash flow: rent*0.5 >= mortgage → rent*0.5 >= price*0.00533
-    # → price <= rent * 93.8.  We use 150x to allow some flexibility and
-    # include properties that are close to viable (might work with better
-    # financing, value-add, or rent growth).
+    # Use 75th-percentile rent (optimistic but realistic for well-managed
+    # properties) and a 250x multiplier.  At 7% / 20% down the break-even
+    # multiplier is ~94x; 250x captures deals that work with equity buildup,
+    # appreciation, rent growth, or better financing (house-hack, ARM, etc.)
     smart_max_price = None
     if overall_median > 0:
-        best_rent = max(rent_median_by_beds.values()) if rent_median_by_beds else overall_median
-        smart_max_price = int(best_rent * 150)
+        best_rent = max(rent_p75_by_beds.values()) if rent_p75_by_beds else overall_p75 or overall_median
+        smart_max_price = int(best_rent * 250)
         # Round up to nearest $25k for cleaner search
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
-        # Floor at $75k so we don't exclude everything
-        smart_max_price = max(smart_max_price, 75000)
+        # Floor at $100k so we don't exclude everything
+        smart_max_price = max(smart_max_price, 100000)
 
     filters = {
         "min_price": body.get("min_price"),
         "max_price": smart_max_price,
         "min_beds": user_min_beds,
         "property_type": user_property_type,
-        "max_results": user_max_results,
+        # Fetch up to 50 listings (scrolling loads more)
+        "max_results": 50,
+        # Sort by price ascending so cheapest come first
+        "sort": "price-asc",
     }
 
     # Step 3: Search for-sale listings with the smart price cap

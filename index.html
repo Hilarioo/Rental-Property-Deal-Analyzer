@@ -303,9 +303,11 @@
     font-size: 0.8rem;
     white-space: nowrap;
   }
+  .quick-score.score-4 { background: var(--green-bg); color: var(--green); }
   .quick-score.score-3 { background: var(--green-bg); color: var(--green); }
   .quick-score.score-2 { background: var(--yellow-bg); color: var(--yellow); }
   .quick-score.score-1 { background: var(--red-bg); color: var(--red); }
+  .score-num { font-size: 0.75em; opacity: 0.7; margin-left: 4px; }
   .quick-score.score-0 { background: rgba(139,143,163,0.12); color: var(--text-muted); }
 
   .search-results-table .btn { padding: 6px 14px; font-size: 0.8rem; }
@@ -1432,10 +1434,10 @@
         <div class="input-group">
           <label for="smartMinBeds">Min Beds</label>
           <select id="smartMinBeds">
-            <option value="0">Any</option>
+            <option value="0" selected>Any</option>
             <option value="1">1+</option>
             <option value="2">2+</option>
-            <option value="3" selected>3+</option>
+            <option value="3">3+</option>
             <option value="4">4+</option>
           </select>
         </div>
@@ -1451,10 +1453,10 @@
         <div class="input-group">
           <label for="smartMaxResults">Max Results</label>
           <select id="smartMaxResults">
-            <option value="10">10</option>
             <option value="15">15</option>
-            <option value="20">20</option>
-            <option value="25" selected>25</option>
+            <option value="25">25</option>
+            <option value="40" selected>40</option>
+            <option value="50">50</option>
           </select>
         </div>
       </div>
@@ -2260,53 +2262,99 @@
   function computeQuickScore(listing, userRent) {
     var price = listing.price;
     var rent = userRent;
-    if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, details: [], cssClass: 'score-0' };
+    if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, numericScore: 0, details: [], cssClass: 'score-0' };
 
     var stars = 0;
     var details = [];
+    var numericScore = 0; // 0-100 continuous score for ranking
 
-    // 1% Rule: monthly rent / price >= 1%
-    var onePercent = rent / price;
-    if (onePercent >= 0.01) {
+    // --- Rent-to-Price ratio (modernized for 7% rate era) ---
+    // At 7% rates, true 1% rule deals barely exist in most metros.
+    // Thresholds: 0.65%+ = star (solid), 0.50%+ = warn (viable with upside)
+    var rentToPriceRatio = rent / price;
+    var rtpPct = (rentToPriceRatio * 100).toFixed(2);
+    // Continuous score: 25 pts max, scaled 0-1% range
+    numericScore += Math.min(25, (rentToPriceRatio / 0.01) * 25);
+    if (rentToPriceRatio >= 0.0065) {
       stars++;
-      details.push({ text: '1% Rule: ' + (onePercent * 100).toFixed(2) + '%', cls: 'pass' });
+      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'pass' });
+    } else if (rentToPriceRatio >= 0.005) {
+      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'warn' });
     } else {
-      details.push({ text: '1% Rule: ' + (onePercent * 100).toFixed(2) + '%', cls: 'fail' });
+      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'fail' });
     }
 
-    // Estimated Cap Rate: (annual_rent * 0.5) / price * 100
+    // --- Estimated Cap Rate: (annual_rent * 0.50) / price * 100 ---
+    // At 7% rates: 4%+ is good (positive leverage with appreciation),
+    // 3%+ is decent (break-even zone, equity buildup carries it)
     var capRate = (rent * 12 * 0.5) / price * 100;
-    if (capRate >= 6) {
+    // Continuous score: 25 pts max, scaled 0-8% range
+    numericScore += Math.min(25, (capRate / 8) * 25);
+    if (capRate >= 4) {
       stars++;
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'pass' });
-    } else if (capRate >= 4) {
+    } else if (capRate >= 3) {
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'warn' });
     } else {
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'fail' });
     }
 
-    // Estimated Monthly Cash Flow: rent - (rent * 0.5) - mortgage
-    // Mortgage estimate: assume 20% down, 7% rate, 30yr
+    // --- Estimated Monthly Cash Flow ---
+    // Mortgage: 20% down, 7% rate, 30yr
+    // At 7%, -$200/mo is common for viable deals (equity + appreciation
+    // of ~$500/mo on a $200K property makes total return positive)
     var loanAmt = price * 0.8;
     var monthlyRate = 0.07 / 12;
     var nPayments = 360;
     var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
     var cashFlow = rent - (rent * 0.5) - mortgage;
-    if (cashFlow > 0) {
+    // Continuous score: 25 pts max, scaled from -$500 to +$500
+    numericScore += Math.min(25, Math.max(0, ((cashFlow + 500) / 1000) * 25));
+    if (cashFlow >= 0) {
       stars++;
       details.push({ text: 'Est. CF: +$' + Math.round(cashFlow), cls: 'pass' });
+    } else if (cashFlow >= -200) {
+      stars++;
+      details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)) + '/mo', cls: 'warn' });
     } else {
-      details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)), cls: 'fail' });
+      details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)) + '/mo', cls: 'fail' });
     }
 
-    var cssClass = 'score-' + stars;
-    return { stars: stars, details: details, cssClass: cssClass };
+    // --- Gross Rent Multiplier (GRM): price / annual rent ---
+    // Lower is better. Under 12 great, under 15 decent for 7% era.
+    var grm = price / (rent * 12);
+    // Continuous score: 25 pts max, inverse scaled (lower GRM = more points)
+    numericScore += Math.min(25, Math.max(0, ((20 - grm) / 20) * 25));
+    if (grm <= 12) {
+      stars++;
+      details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'pass' });
+    } else if (grm <= 15) {
+      details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'warn' });
+    } else {
+      details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'fail' });
+    }
+
+    // --- Estimated Year-1 Total Return (cash flow + equity + appreciation) ---
+    // Shows the full picture: even negative CF deals can return 8-15%
+    var downPayment = price * 0.2;
+    var yearlyAppreciation = price * 0.03; // 3% appreciation
+    var yearlyEquity = (mortgage * 12) - (loanAmt * monthlyRate * 12); // rough principal paydown yr1
+    var yearlyCashFlow = cashFlow * 12;
+    var totalReturn = yearlyCashFlow + yearlyAppreciation + yearlyEquity;
+    var totalReturnPct = downPayment > 0 ? (totalReturn / downPayment * 100) : 0;
+    var trCls = totalReturnPct >= 10 ? 'pass' : totalReturnPct >= 5 ? 'warn' : 'fail';
+    details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: trCls });
+
+    numericScore = Math.round(Math.min(100, Math.max(0, numericScore)));
+
+    var cssClass = 'score-' + Math.min(stars, 4);
+    return { stars: stars, numericScore: numericScore, details: details, cssClass: cssClass };
   }
 
   function sortAndRenderSearch() {
     searchResults.sort(function(a, b) {
       var va, vb;
-      if (searchSortCol === 'score') { va = a._score.stars; vb = b._score.stars; }
+      if (searchSortCol === 'score') { va = a._score.numericScore; vb = b._score.numericScore; }
       else if (searchSortCol === 'price') { va = a.price || 0; vb = b.price || 0; }
       else if (searchSortCol === 'beds') { va = a.beds || 0; vb = b.beds || 0; }
       else if (searchSortCol === 'sqft') { va = a.sqft || 0; vb = b.sqft || 0; }
@@ -2341,7 +2389,7 @@
       var s = l._score;
       var starStr = '';
       for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
-      for (var j = s.stars; j < 3; j++) starStr += '&#9734;';
+      for (var j = s.stars; j < 4; j++) starStr += '&#9734;';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
 
       var meetsAlert = s.stars >= alertStars
@@ -2426,7 +2474,7 @@
     $('smartBtnText').innerHTML = '<span class="spinner"></span> Searching &amp; estimating rents...';
     $('smartResultsContainer').style.display = 'none';
     $('smartRentInfo').style.display = 'none';
-    showSmartStatus('Searching for-sale listings and rental data in parallel... This may take 15–30 seconds.', false);
+    showSmartStatus('Step 1: Fetching rental data to calculate smart price cap... Then searching for deals. This takes 20–40 seconds.', false);
 
     try {
       var body = {
@@ -2483,7 +2531,9 @@
       smartSortAsc = false;
       sortSmartAndRender();
       var goodCount = smartResults.filter(function(l) { return l._score.stars >= 2; }).length;
-      $('smartResultsTitle').textContent = goodCount + ' potential deals out of ' + data.total + ' listings in ' + (data.location_label || location);
+      var totalInArea = data.total || smartResults.length;
+      var priceInfo = data.smart_max_price ? ' under $' + fmtInt(data.smart_max_price) : '';
+      $('smartResultsTitle').textContent = goodCount + ' potential deals found — ' + smartResults.length + ' of ' + totalInArea + ' listings' + priceInfo + ' in ' + (data.location_label || location);
       $('smartResultsContainer').style.display = '';
     } catch (err) {
       showSmartStatus('Could not connect to the server. Make sure the app is running.', true);
@@ -2503,7 +2553,7 @@
   function sortSmartAndRender() {
     smartResults.sort(function(a, b) {
       var va, vb;
-      if (smartSortCol === 'score') { va = a._score.stars; vb = b._score.stars; }
+      if (smartSortCol === 'score') { va = a._score.numericScore; vb = b._score.numericScore; }
       else if (smartSortCol === 'price') { va = a.price || 0; vb = b.price || 0; }
       else if (smartSortCol === 'beds') { va = a.beds || 0; vb = b.beds || 0; }
       else if (smartSortCol === 'estRent') { va = a._estRent || 0; vb = b._estRent || 0; }
@@ -2535,7 +2585,8 @@
       var s = l._score;
       var starStr = '';
       for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
-      for (var j = s.stars; j < 3; j++) starStr += '&#9734;';
+      for (var j = s.stars; j < 4; j++) starStr += '&#9734;';
+      var scoreLabel = ' <span class="score-num">' + s.numericScore + '/100</span>';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
       shown++;
       html += '<tr>'
@@ -2543,7 +2594,7 @@
         + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
         + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
         + '<td>' + (l._estRent ? '$' + fmtInt(l._estRent) + '/mo' : '—') + '</td>'
-        + '<td><span class="quick-score ' + s.cssClass + '">' + starStr + '</span><div class="score-detail">' + detailHtml + '</div></td>'
+        + '<td><span class="quick-score ' + s.cssClass + '">' + starStr + scoreLabel + '</span><div class="score-detail">' + detailHtml + '</div></td>'
         + '<td><button class="btn" onclick="analyzeFromSmart(' + i + ')">Analyze &rarr;</button></td>'
         + '</tr>';
     });
