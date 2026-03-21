@@ -2479,6 +2479,7 @@
   window.analyzeFromSearch = function(idx) {
     var l = searchResults[idx];
     if (!l) return;
+    smartAnalyzeActive = true;
     // Switch to single property mode
     toggleSearchMode('single');
     // Set the URL
@@ -2515,6 +2516,9 @@
     // If there's a Redfin URL, fetch full data for remaining fields
     if (l.listingUrl) {
       fetchZillow();
+    } else {
+      smartAnalyzeActive = false;
+      goToStep(2);
     }
   };
 
@@ -2804,7 +2808,7 @@
   // ======================================================================
   window.exportSearchCSV = function() {
     if (!searchResults || searchResults.length === 0) return;
-    var rows = [['Address', 'Price', 'Beds', 'Baths', 'Sqft', 'Quick Score (Stars)', '1% Rule', 'Est. Cap Rate', 'Est. Cash Flow', 'Listing URL']];
+    var rows = [['Address', 'Price', 'Beds', 'Baths', 'Sqft', 'Stars', 'Rent/Price', 'Est. Cap Rate', 'Est. Cash Flow', 'GRM', 'Listing URL']];
     searchResults.forEach(function(l) {
       var s = l._score || { stars: 0, details: [] };
       var details = s.details || [];
@@ -2818,6 +2822,7 @@
         details[0] ? details[0].text : '',
         details[1] ? details[1].text : '',
         details[2] ? details[2].text : '',
+        details[3] ? details[3].text : '',
         '"' + (l.listingUrl || '').replace(/"/g, '""') + '"'
       ]);
     });
