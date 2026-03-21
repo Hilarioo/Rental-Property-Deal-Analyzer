@@ -311,6 +311,8 @@
   .quick-score.score-0 { background: rgba(139,143,163,0.12); color: var(--text-muted); }
 
   .search-results-table .btn { padding: 6px 14px; font-size: 0.8rem; }
+  .search-results-table a { color: var(--accent); text-decoration: none; }
+  .search-results-table a:hover { text-decoration: underline; }
 
   .score-detail {
     font-size: 0.72rem;
@@ -2398,9 +2400,12 @@
       var trClass = (alertStars > 0 || alertMaxPrice || alertMinBeds) && meetsAlert ? ' class="meets-alert"' : '';
       var alertTag = meetsAlert && (alertStars > 0 || alertMaxPrice || alertMinBeds) ? '<span class="alert-badge">Match</span>' : '';
 
+      var addrLink = l.listingUrl
+        ? '<a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener">' + esc(l.address || '—') + '</a>'
+        : esc(l.address || '—');
       shown++;
       html += '<tr' + trClass + '>'
-        + '<td>' + esc(l.address || '—') + alertTag + '</td>'
+        + '<td>' + addrLink + alertTag + '</td>'
         + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
         + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
         + '<td>' + (l.sqft ? fmtInt(l.sqft) : '—') + '</td>'
@@ -2589,8 +2594,11 @@
       var scoreLabel = ' <span class="score-num">' + s.numericScore + '/100</span>';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
       shown++;
+      var addrHtml = l.listingUrl
+        ? '<a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener" title="View on Redfin">' + esc(l.address || '—') + '</a>'
+        : esc(l.address || '—');
       html += '<tr>'
-        + '<td>' + esc(l.address || '—') + '</td>'
+        + '<td>' + addrHtml + '</td>'
         + '<td>$' + (l.price ? fmtInt(l.price) : '—') + '</td>'
         + '<td>' + (l.beds != null ? l.beds : '—') + ' / ' + (l.baths != null ? l.baths : '—') + '</td>'
         + '<td>' + (l._estRent ? '$' + fmtInt(l._estRent) + '/mo' : '—') + '</td>'
@@ -2598,8 +2606,10 @@
         + '<td><button class="btn" onclick="analyzeFromSmart(' + i + ')">Analyze &rarr;</button></td>'
         + '</tr>';
     });
-    if (shown === 0) {
-      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No good deals found in this area. Market rents may not support investment at current prices.</td></tr>';
+    if (shown === 0 && filterGood) {
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No 2+ star deals found. Uncheck "Good deals only" to see all listings ranked by score, or try a different area with higher rent-to-price ratios.</td></tr>';
+    } else if (shown === 0) {
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No listings found. Try a different location or adjust filters.</td></tr>';
     }
     tbody.innerHTML = html;
   };
