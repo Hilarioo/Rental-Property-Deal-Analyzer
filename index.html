@@ -286,6 +286,10 @@
     white-space: nowrap;
   }
   .search-results-table th:hover { color: var(--accent); }
+  .search-results-table th.sortable::after { content: ''; margin-left: 4px; }
+  .search-results-table th.sort-asc::after { content: ' \25B2'; font-size: 0.65rem; }
+  .search-results-table th.sort-desc::after { content: ' \25BC'; font-size: 0.65rem; }
+  .search-results-table th.sort-active { color: var(--accent); }
   .search-results-table td {
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
@@ -1409,11 +1413,11 @@
           <table class="search-results-table" id="searchResultsTable">
             <thead>
               <tr>
-                <th onclick="sortSearchResults('address')">Address</th>
-                <th onclick="sortSearchResults('price')">Price</th>
-                <th onclick="sortSearchResults('beds')">Beds/Baths</th>
-                <th onclick="sortSearchResults('sqft')">Sqft</th>
-                <th onclick="sortSearchResults('score')">Quick Score</th>
+                <th onclick="sortSearchResults('address')" class="sortable" data-col="address">Address</th>
+                <th onclick="sortSearchResults('price')" class="sortable" data-col="price">Price</th>
+                <th onclick="sortSearchResults('beds')" class="sortable" data-col="beds">Beds/Baths</th>
+                <th onclick="sortSearchResults('sqft')" class="sortable" data-col="sqft">Sqft</th>
+                <th onclick="sortSearchResults('score')" class="sortable" data-col="score">Quick Score</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -1488,11 +1492,11 @@
           <table class="search-results-table" id="smartResultsTable">
             <thead>
               <tr>
-                <th onclick="sortSmartResults('address')">Address</th>
-                <th onclick="sortSmartResults('price')">Price</th>
-                <th onclick="sortSmartResults('beds')">Beds/Baths</th>
-                <th onclick="sortSmartResults('estRent')">Est. Rent</th>
-                <th onclick="sortSmartResults('score')">Deal Score</th>
+                <th onclick="sortSmartResults('address')" class="sortable" data-col="address">Address</th>
+                <th onclick="sortSmartResults('price')" class="sortable" data-col="price">Price</th>
+                <th onclick="sortSmartResults('beds')" class="sortable" data-col="beds">Beds/Baths</th>
+                <th onclick="sortSmartResults('estRent')" class="sortable" data-col="estRent">Est. Rent</th>
+                <th onclick="sortSmartResults('score')" class="sortable" data-col="score">Deal Score</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -2385,6 +2389,12 @@
       searchSortCol = col;
       searchSortAsc = col === 'address';
     }
+    var ths = document.querySelectorAll('#searchResultsTable th.sortable');
+    ths.forEach(function(th) {
+      th.classList.toggle('sort-active', th.getAttribute('data-col') === col);
+      th.classList.toggle('sort-asc', th.getAttribute('data-col') === col && searchSortAsc);
+      th.classList.toggle('sort-desc', th.getAttribute('data-col') === col && !searchSortAsc);
+    });
     sortAndRenderSearch();
   };
 
@@ -2587,6 +2597,13 @@
       smartSortCol = col;
       smartSortAsc = col === 'address';
     }
+    // Update sort indicators in header
+    var ths = document.querySelectorAll('#smartResultsTable th.sortable');
+    ths.forEach(function(th) {
+      th.classList.toggle('sort-active', th.getAttribute('data-col') === col);
+      th.classList.toggle('sort-asc', th.getAttribute('data-col') === col && smartSortAsc);
+      th.classList.toggle('sort-desc', th.getAttribute('data-col') === col && !smartSortAsc);
+    });
     sortSmartAndRender();
   };
 
