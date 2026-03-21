@@ -1447,7 +1447,7 @@
           <label for="smartPropType">Property Type</label>
           <select id="smartPropType">
             <option value="">Any</option>
-            <option value="house">House</option>
+            <option value="house" selected>House</option>
             <option value="condo">Condo / Townhouse</option>
             <option value="multi-family">Multi-family</option>
           </select>
@@ -2352,9 +2352,11 @@
 
     numericScore = Math.round(Math.min(100, Math.max(0, numericScore)));
 
-    // Warn on suspiciously cheap properties (vacant lots, teardowns)
+    // Warn on suspiciously cheap properties
     if (isLikelyLot) {
       details.push({ text: 'Verify: may be land only', cls: 'warn' });
+    } else if (price < 75000) {
+      details.push({ text: 'Likely needs rehab — budget $20-50K+', cls: 'warn' });
     }
 
     var cssClass = 'score-' + Math.min(stars, 4);

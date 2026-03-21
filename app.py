@@ -675,43 +675,95 @@ _REDFIN_SEARCH_JS = """
     const cards = document.querySelectorAll('.MapHomeCardReact, [class*="HomeCard"]');
     const results = [];
     const seen = new Set();
+
+    // Helper: extract beds/baths/sqft from a text string
+    function parseStats(t) {
+        const b = t.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
+        const bt = t.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
+        const s = t.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
+        return {
+            beds: b ? parseInt(b[1]) : null,
+            baths: bt ? parseFloat(bt[1]) : null,
+            sqft: s ? parseInt(s[1].replace(/,/g, '')) : null
+        };
+    }
+
     cards.forEach(card => {
         const linkEl = card.querySelector('a[href*="/home/"]');
         const url = linkEl ? linkEl.href : null;
         if (!url || seen.has(url)) return;
         seen.add(url);
+
+        // --- Price ---
         const priceDiv = card.querySelector('.bp-Homecard__Price, [class*="Price"]');
         let price = null;
         if (priceDiv) {
             const m = priceDiv.textContent.match(/\\$(\\d[\\d,]*)/);
             if (m) price = parseInt(m[1].replace(/,/g, ''));
         }
+
+        // --- Address ---
         const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"], [class*="address"]');
-        // Try multiple selectors for stats (beds, baths, sqft)
-        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"], [class*="homeStat"], [class*="home-stat"]');
+
+        // --- Beds / Baths / Sqft ---
         let beds = null, baths = null, sqft = null;
-        // First try stats element
-        if (statsEl) {
-            const t = statsEl.textContent;
-            const bM = t.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
-            const btM = t.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
-            const sM = t.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
-            if (bM) beds = parseInt(bM[1]);
-            if (btM) baths = parseFloat(btM[1]);
-            if (sM) sqft = parseInt(sM[1].replace(/,/g, ''));
+
+        // Method 1: Dedicated stats element
+        const statsEls = card.querySelectorAll('.bp-Homecard__Stats, [class*="HomeStats"], [class*="homeStat"], [class*="home-stat"], [class*="KeyStats"], [class*="keyStats"]');
+        for (const el of statsEls) {
+            const p = parseStats(el.textContent);
+            if (p.beds !== null) beds = p.beds;
+            if (p.baths !== null) baths = p.baths;
+            if (p.sqft !== null) sqft = p.sqft;
+            if (beds !== null) break;
         }
-        // Fallback: search entire card text for bed/bath pattern
-        // Use word-boundary (\\b) after keyword to avoid matching addresses like "314 Bedford"
+
+        // Method 2: Look for individual stat spans/divs inside the card
+        if (beds === null) {
+            const spans = card.querySelectorAll('span, div');
+            for (const sp of spans) {
+                const txt = sp.textContent.trim();
+                // Match standalone "3 Beds" or "2 Baths" text nodes (short, focused)
+                if (txt.length < 15) {
+                    if (beds === null) {
+                        const bm = txt.match(/^(\\d+)\\s*(?:beds?|bd|BR)$/i);
+                        if (bm) beds = parseInt(bm[1]);
+                    }
+                    if (baths === null) {
+                        const btm = txt.match(/^(\\d+\\.?\\d*)\\s*(?:baths?|ba)$/i);
+                        if (btm) baths = parseFloat(btm[1]);
+                    }
+                    if (sqft === null) {
+                        const sm = txt.match(/^(\\d[\\d,]*)\\s*(?:sq|SF)/i);
+                        if (sm) sqft = parseInt(sm[1].replace(/,/g, ''));
+                    }
+                }
+            }
+        }
+
+        // Method 3: Card aria-label or title attribute (Redfin sometimes puts stats here)
+        if (beds === null) {
+            const ariaEl = card.querySelector('[aria-label]');
+            if (ariaEl) {
+                const p = parseStats(ariaEl.getAttribute('aria-label'));
+                if (p.beds !== null && p.beds <= 20) beds = p.beds;
+                if (p.baths !== null && baths === null) baths = p.baths;
+                if (p.sqft !== null && sqft === null) sqft = p.sqft;
+            }
+        }
+
+        // Method 4: Full card text fallback (with sanity checks)
         if (beds === null) {
             const fullText = card.textContent;
-            const bM2 = fullText.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
-            const btM2 = fullText.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
-            const sM2 = fullText.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
-            if (bM2 && parseInt(bM2[1]) <= 20) beds = parseInt(bM2[1]);
-            if (btM2 && parseFloat(btM2[1]) <= 20) baths = parseFloat(btM2[1]);
-            if (!sqft && sM2) sqft = parseInt(sM2[1].replace(/,/g, ''));
+            const p = parseStats(fullText);
+            if (p.beds !== null && p.beds <= 20) beds = p.beds;
+            if (p.baths !== null && p.baths <= 20 && baths === null) baths = p.baths;
+            if (p.sqft !== null && sqft === null) sqft = p.sqft;
         }
-        const imgEl = card.querySelector('img[src*="cdn-redfin"], img[src*="photos"], img[src*="ssl.cdn"]');
+
+        // --- Image ---
+        const imgEl = card.querySelector('img[src*="cdn-redfin"], img[src*="photos"], img[src*="ssl.cdn"], img[src*="rdcpix"]');
+
         results.push({
             address: addrEl ? addrEl.textContent.trim() : null,
             price: price,
@@ -857,8 +909,9 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
         label = location
         if title:
             # "78701, TX Real Estate & Homes for Sale | Redfin"
+            # "Memphis, TN Homes for Sale & Real Estate | Redfin"
             label = re.sub(r"\s*\|.*$", "", title)
-            label = re.sub(r"\s*Real Estate.*$", "", label).strip()
+            label = re.sub(r"\s*(Real Estate|Homes for Sale|Houses for Sale|&).*$", "", label).strip()
             if not label:
                 label = location
 
@@ -1109,16 +1162,29 @@ _REDFIN_RENT_JS = """
         const rent = parseInt(m[1].replace(/,/g, ''));
         if (rent <= 0 || rent > 50000) return;
 
-        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"]');
         let beds = null, baths = null, sqft = null;
-        if (statsEl) {
-            const t = statsEl.textContent;
-            const bM = t.match(/(\\d+)\\s*bed/i);
-            const btM = t.match(/(\\d+\\.?\\d*)\\s*bath/i);
-            const sM = t.match(/(\\d[\\d,]*)\\s*sq/i);
+        // Try multiple stat selectors
+        const statsEls = card.querySelectorAll('.bp-Homecard__Stats, [class*="HomeStats"], [class*="homeStat"], [class*="KeyStats"]');
+        for (const el of statsEls) {
+            const t = el.textContent;
+            const bM = t.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
+            const btM = t.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
+            const sM = t.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
             if (bM) beds = parseInt(bM[1]);
             if (btM) baths = parseFloat(btM[1]);
             if (sM) sqft = parseInt(sM[1].replace(/,/g, ''));
+            if (beds !== null) break;
+        }
+        // Fallback: individual short spans
+        if (beds === null) {
+            const spans = card.querySelectorAll('span, div');
+            for (const sp of spans) {
+                const txt = sp.textContent.trim();
+                if (txt.length < 15) {
+                    if (beds === null) { const bm = txt.match(/^(\\d+)\\s*(?:beds?|bd|BR)$/i); if (bm) beds = parseInt(bm[1]); }
+                    if (baths === null) { const btm = txt.match(/^(\\d+\\.?\\d*)\\s*(?:baths?|ba)$/i); if (btm) baths = parseFloat(btm[1]); }
+                }
+            }
         }
         const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"]');
         const addr = addrEl ? addrEl.textContent.trim() : null;
