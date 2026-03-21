@@ -1048,7 +1048,9 @@ async def smart_search(request: Request):
     # environment — deals above this ratio rarely cash-flow positive.
     smart_max_price = None
     if overall_median > 0:
-        best_rent = max(rent_median_by_beds.values()) if rent_median_by_beds else overall_median
+        # Use overall median (not max across bedrooms) to avoid
+        # inflated caps from high-bedroom luxury rentals.
+        best_rent = overall_median
         smart_max_price = int(best_rent * 200)
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
         smart_max_price = max(smart_max_price, 75000)
@@ -1077,8 +1079,8 @@ async def smart_search(request: Request):
 
     # Step 5: Attach estimated rent to each listing
     # Use bedroom-specific rent when available, otherwise find closest match.
-    # Prefer the overall median over bedroom-specific rent when the bedroom
-    # rent seems inflated (>50% higher than median — likely luxury apartments).
+    # Prefer a blend over bedroom-specific rent when it's >30% above the
+    # overall median — likely skewed by luxury apartments.
     for listing in listings:
         beds = listing.get("beds")
         bed_rent = None
@@ -1102,12 +1104,12 @@ async def smart_search(request: Request):
         else:
             listing["estRent"] = None
 
-        # Sanity cap: rent shouldn't exceed 3% of price (even in cash-flow
-        # markets like Cleveland, 3% monthly is extreme). Low floor ensures
-        # very cheap properties still get a reasonable estimate.
+        # Sanity cap: rent shouldn't exceed 2% of price monthly (24% annual).
+        # Even aggressive cash-flow markets rarely exceed 1.5%.
+        # Floor of $500 ensures very cheap properties get usable estimates.
         price = listing.get("price") or 0
         if listing["estRent"] and price > 0:
-            max_plausible_rent = max(int(price * 0.03), 500)
+            max_plausible_rent = max(int(price * 0.02), 500)
             listing["estRent"] = min(listing["estRent"], max_plausible_rent)
 
     # Cap to user's requested max

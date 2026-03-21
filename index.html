@@ -2329,10 +2329,13 @@
     var cashFlow = rent - (rent * 0.5) - mortgage;
     // Continuous score: 25 pts max, scaled from -$500 to +$500
     numericScore += Math.min(25, Math.max(0, ((cashFlow + 500) / 1000) * 25));
+    // Scale the negative-CF tolerance by price. -$200/mo on a $50K property
+    // is -12% annual drag (devastating), but on a $300K property it's -0.8% (fine).
+    var cfTolerance = Math.min(-50, -(price * 0.001));  // -0.1% of price/mo, min -$50
     if (cashFlow >= 0) {
       stars++;
       details.push({ text: 'Est. CF: +$' + Math.round(cashFlow), cls: 'pass' });
-    } else if (cashFlow >= -200) {
+    } else if (cashFlow >= cfTolerance) {
       stars++;
       details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)) + '/mo', cls: 'warn' });
     } else {
@@ -2367,13 +2370,14 @@
     var trCls = totalReturnPct >= 10 ? 'pass' : totalReturnPct >= 5 ? 'warn' : 'fail';
     details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: trCls });
 
-    // Apply condition risk discount for cheap properties.
-    // Sub-$75K houses almost always need $20-50K+ rehab, eating into returns.
-    // Sub-$50K are often teardowns or need full gut renovation.
+    // Apply condition risk discount for cheap properties (step function).
+    // Risk jumps sharply below $75K — not linear.
     if (price < 100000) {
-      var riskPenalty = Math.max(0, (100000 - price) / 100000) * 25; // up to -25 pts
+      var riskPenalty = 0;
+      if (price < 50000) { riskPenalty = 25; stars = Math.min(stars, 2); }
+      else if (price < 75000) { riskPenalty = 15; }
+      else { riskPenalty = 5; }
       numericScore -= riskPenalty;
-      if (price < 50000) stars = Math.min(stars, 2); // cap at 2 stars for very cheap
     }
 
     numericScore = Math.round(Math.min(100, Math.max(0, numericScore)));
