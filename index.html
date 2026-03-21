@@ -2285,17 +2285,19 @@
     var details = [];
     var numericScore = 0; // 0-100 continuous score for ranking
 
-    // --- Rent-to-Price ratio ---
-    // At current rates, true 1% rule deals barely exist in most metros.
-    // Thresholds: 0.65%+ = star (solid), 0.50%+ = warn (viable with upside)
+    // --- Rent-to-Price ratio (rate-adaptive) ---
+    // At 5% rate: 0.50% good. At 7%: 0.60% good. At 8%: 0.65% good.
+    // Formula: 0.50 + (rate% - 5) * 0.05
     var rentToPriceRatio = rent / price;
     var rtpPct = (rentToPriceRatio * 100).toFixed(2);
+    var rtpGood = (0.50 + (rate * 100 - 5) * 0.05) / 100;
+    var rtpWarn = rtpGood - 0.0015;
     // Continuous score: 25 pts max, scaled 0-1% range
     numericScore += Math.min(25, (rentToPriceRatio / 0.01) * 25);
-    if (rentToPriceRatio >= 0.0065) {
+    if (rentToPriceRatio >= rtpGood) {
       stars++;
       details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'pass' });
-    } else if (rentToPriceRatio >= 0.005) {
+    } else if (rentToPriceRatio >= rtpWarn) {
       details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'warn' });
     } else {
       details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'fail' });
@@ -2390,6 +2392,11 @@
       details.push({ text: 'Verify: may be land only', cls: 'warn' });
     } else if (price < 75000) {
       details.push({ text: 'Likely needs rehab — budget $20-50K+', cls: 'warn' });
+    }
+
+    // Flag when rent estimate seems unusually high relative to price
+    if (rent > price * 0.015 && price >= 50000) {
+      details.push({ text: 'Verify rent estimate', cls: 'warn' });
     }
 
     var cssClass = 'score-' + Math.min(stars, 4);
