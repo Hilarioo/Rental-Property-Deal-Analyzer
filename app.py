@@ -1063,15 +1063,27 @@ async def smart_search(request: Request):
     ]
 
     # Step 5: Attach estimated rent to each listing
-    # Use bedroom-specific rent when available, otherwise find closest match
+    # Use bedroom-specific rent when available, otherwise find closest match.
+    # Prefer the overall median over bedroom-specific rent when the bedroom
+    # rent seems inflated (>50% higher than median — likely luxury apartments).
     for listing in listings:
         beds = listing.get("beds")
+        bed_rent = None
         if beds and beds in rent_median_by_beds:
-            listing["estRent"] = rent_median_by_beds[beds]
+            bed_rent = rent_median_by_beds[beds]
         elif beds and rent_median_by_beds:
-            # Find closest bedroom count with rent data
             closest = min(rent_median_by_beds.keys(), key=lambda b: abs(b - beds))
-            listing["estRent"] = rent_median_by_beds[closest]
+            bed_rent = rent_median_by_beds[closest]
+
+        if bed_rent and overall_median > 0:
+            # If bedroom-specific rent is >30% above overall median, it may be
+            # skewed by luxury apartments. Use a blend to moderate the estimate.
+            if bed_rent > overall_median * 1.3:
+                listing["estRent"] = int((bed_rent + overall_median) / 2)
+            else:
+                listing["estRent"] = bed_rent
+        elif bed_rent:
+            listing["estRent"] = bed_rent
         elif overall_median > 0:
             listing["estRent"] = overall_median
         else:

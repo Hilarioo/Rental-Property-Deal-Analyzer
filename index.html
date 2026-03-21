@@ -2354,6 +2354,14 @@
     var trCls = totalReturnPct >= 10 ? 'pass' : totalReturnPct >= 5 ? 'warn' : 'fail';
     details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: trCls });
 
+    // Apply condition risk discount to numeric score for very cheap properties.
+    // Properties under $50K almost always need substantial rehab that eats into
+    // the apparent returns. Scale from full discount at $25K to no discount at $100K.
+    if (price < 100000) {
+      var riskPenalty = Math.max(0, (100000 - price) / 100000) * 15; // up to -15 pts
+      numericScore -= riskPenalty;
+    }
+
     numericScore = Math.round(Math.min(100, Math.max(0, numericScore)));
 
     // Warn on suspiciously cheap properties
