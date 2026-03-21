@@ -686,19 +686,32 @@ _REDFIN_SEARCH_JS = """
             const m = priceDiv.textContent.match(/\\$(\\d[\\d,]*)/);
             if (m) price = parseInt(m[1].replace(/,/g, ''));
         }
-        const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"]');
-        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"]');
+        const addrEl = card.querySelector('.bp-Homecard__Address, [class*="homeAddressV2"], [class*="address"]');
+        // Try multiple selectors for stats (beds, baths, sqft)
+        const statsEl = card.querySelector('.bp-Homecard__Stats, [class*="HomeStats"], [class*="homeStat"], [class*="home-stat"]');
         let beds = null, baths = null, sqft = null;
+        // First try stats element
         if (statsEl) {
             const t = statsEl.textContent;
-            const bM = t.match(/(\\d+)\\s*bed/i);
-            const btM = t.match(/(\\d+\\.?\\d*)\\s*bath/i);
-            const sM = t.match(/(\\d[\\d,]*)\\s*sq/i);
+            const bM = t.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
+            const btM = t.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
+            const sM = t.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
             if (bM) beds = parseInt(bM[1]);
             if (btM) baths = parseFloat(btM[1]);
             if (sM) sqft = parseInt(sM[1].replace(/,/g, ''));
         }
-        const imgEl = card.querySelector('img[src*="cdn-redfin"], img[src*="photos"]');
+        // Fallback: search entire card text for bed/bath pattern
+        // Use word-boundary (\\b) after keyword to avoid matching addresses like "314 Bedford"
+        if (beds === null) {
+            const fullText = card.textContent;
+            const bM2 = fullText.match(/(\\d+)\\s*(?:beds?|bd|BR)\\b/i);
+            const btM2 = fullText.match(/(\\d+\\.?\\d*)\\s*(?:baths?|ba)\\b/i);
+            const sM2 = fullText.match(/(\\d[\\d,]*)\\s*(?:sq|SF)\\b/i);
+            if (bM2 && parseInt(bM2[1]) <= 20) beds = parseInt(bM2[1]);
+            if (btM2 && parseFloat(btM2[1]) <= 20) baths = parseFloat(btM2[1]);
+            if (!sqft && sM2) sqft = parseInt(sM2[1].replace(/,/g, ''));
+        }
+        const imgEl = card.querySelector('img[src*="cdn-redfin"], img[src*="photos"], img[src*="ssl.cdn"]');
         results.push({
             address: addrEl ? addrEl.textContent.trim() : null,
             price: price,
@@ -714,20 +727,8 @@ _REDFIN_SEARCH_JS = """
 """
 
 
-def _build_redfin_search_url(location: str, filters: dict) -> str:
-    """Build a Redfin search URL from location and filters."""
-    from urllib.parse import quote
-    query = location.strip()
-
-    # Detect zip code vs city name
-    if re.match(r"^\d{5}$", query):
-        base = f"https://www.redfin.com/zipcode/{query}"
-    else:
-        # URL-encode city/state for Redfin's /city/ path
-        slug = quote(query, safe="")
-        base = f"https://www.redfin.com/city/{slug}"
-
-    # Build filter path segments
+def _build_redfin_filter_path(filters: dict) -> str:
+    """Build Redfin filter path segments from filters dict."""
     filter_parts = []
     if filters.get("min_price"):
         filter_parts.append(f"min-price={int(filters['min_price'])}")
@@ -738,13 +739,28 @@ def _build_redfin_search_url(location: str, filters: dict) -> str:
     ptype_map = {"house": "house", "condo": "condo,townhouse", "multi-family": "multifamily"}
     if filters.get("property_type") and filters["property_type"] in ptype_map:
         filter_parts.append(f"property-type={ptype_map[filters['property_type']]}")
-    # Sort by price ascending so cheapest listings (most likely deals) come first
     if filters.get("sort") == "price-asc":
         filter_parts.append("sort=lo-price")
-
     if filter_parts:
-        return base + "/filter/" + ",".join(filter_parts)
-    return base
+        return "/filter/" + ",".join(filter_parts)
+    return ""
+
+
+def _build_redfin_search_url(location: str, filters: dict) -> str:
+    """Build a Redfin search URL from location and filters.
+
+    For zip codes, we can construct the URL directly.
+    For city names, returns None — caller must use Playwright search bar.
+    """
+    query = location.strip()
+
+    # Detect zip code (direct URL) vs city name (needs search)
+    if re.match(r"^\d{5}$", query):
+        base = f"https://www.redfin.com/zipcode/{query}"
+        return base + _build_redfin_filter_path(filters)
+
+    # City names can't be constructed as URLs (Redfin uses numeric city IDs)
+    return None
 
 
 async def _search_redfin_page(location: str, filters: dict) -> dict:
@@ -754,7 +770,7 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
     """
     from playwright.async_api import async_playwright
 
-    url = _build_redfin_search_url(location, filters)
+    direct_url = _build_redfin_search_url(location, filters)
     max_results = filters.get("max_results", 40)
 
     async with _search_semaphore, async_playwright() as p:
@@ -773,11 +789,32 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
         )
 
-        try:
-            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            await browser.close()
-            return {"error": "Could not connect to Redfin. Please try again later."}
+        if direct_url:
+            # Zip code — navigate directly
+            try:
+                await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                await browser.close()
+                return {"error": "Could not connect to Redfin. Please try again later."}
+        else:
+            # City name — use Redfin search bar to resolve
+            try:
+                await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
+                # Type in search box and pick first suggestion
+                search_input = page.locator("input[type='text'][placeholder*='Search'], input[type='search'], #search-box-input, [data-testid='search-box-input']").first
+                await search_input.fill(location.strip())
+                await page.wait_for_timeout(1500)
+                # Press Enter to search (autocomplete should resolve)
+                await search_input.press("Enter")
+                await page.wait_for_timeout(3000)
+                # Now append filters to the URL
+                current_url = page.url
+                filter_path = _build_redfin_filter_path(filters)
+                if filter_path and "/filter/" not in current_url:
+                    await page.goto(current_url.rstrip("/") + filter_path, wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                await browser.close()
+                return {"error": "Could not connect to Redfin. Please try again later."}
 
         # Check for redirect to main page (bad location)
         final_url = page.url
@@ -940,13 +977,19 @@ async def smart_search(request: Request):
         # Floor at $100k so we don't exclude everything
         smart_max_price = max(smart_max_price, 100000)
 
+    # Set a minimum price to skip vacant lots / land-only parcels.
+    # $25K is well below any habitable structure but above nearly all lot prices.
+    min_price = body.get("min_price") or 25000
+
+    user_max_results = body.get("max_results") or 40
+
     filters = {
-        "min_price": body.get("min_price"),
+        "min_price": min_price,
         "max_price": smart_max_price,
         "min_beds": user_min_beds,
-        "property_type": user_property_type,
-        # Fetch up to 50 listings (scrolling loads more)
-        "max_results": 50,
+        "property_type": user_property_type or "house",
+        # Fetch extra to compensate for post-filtering, capped at 50
+        "max_results": min(user_max_results + 10, 50),
         # Sort by price ascending so cheapest come first
         "sort": "price-asc",
     }
@@ -972,7 +1015,14 @@ async def smart_search(request: Request):
             status_code=404,
         )
 
-    # Step 4: Attach estimated rent to each listing
+    # Step 4: Filter out likely vacant parcels
+    # Addresses starting with "0 " are empty land listings on Redfin
+    listings = [
+        l for l in listings
+        if not (l.get("address") or "").strip().startswith("0 ")
+    ]
+
+    # Step 5: Attach estimated rent to each listing
     for listing in listings:
         beds = listing.get("beds")
         if beds and beds in rent_median_by_beds:
@@ -981,6 +1031,9 @@ async def smart_search(request: Request):
             listing["estRent"] = overall_median
         else:
             listing["estRent"] = None
+
+    # Cap to user's requested max
+    listings = listings[:user_max_results]
 
     return JSONResponse({
         "listings": listings,
@@ -1080,19 +1133,20 @@ _REDFIN_RENT_JS = """
 
 
 async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict:
-    """Search Redfin for rental listings to estimate market rent."""
+    """Search Redfin for rental listings to estimate market rent.
+
+    For zip codes, navigates directly. For city names, uses Playwright
+    search bar (Redfin uses numeric city IDs that can't be URL-constructed).
+    """
     from playwright.async_api import async_playwright
 
     query = location.strip()
-    if re.match(r"^\d{5}$", query):
-        base = f"https://www.redfin.com/zipcode/{query}/apartments-for-rent"
-    else:
-        from urllib.parse import quote
-        slug = quote(query, safe="")
-        base = f"https://www.redfin.com/city/{slug}/apartments-for-rent"
+    is_zip = bool(re.match(r"^\d{5}$", query))
 
+    # Build bed filter suffix
+    bed_filter = ""
     if beds and beds > 0:
-        base += f"/filter/min-beds={int(beds)},max-beds={int(beds)}"
+        bed_filter = f"/filter/min-beds={int(beds)},max-beds={int(beds)}"
 
     async with _search_semaphore, async_playwright() as p:
         browser = await p.chromium.launch(
@@ -1110,11 +1164,38 @@ async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
         )
 
-        try:
-            await page.goto(base, wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            await browser.close()
-            return {"error": "Could not connect to Redfin."}
+        if is_zip:
+            # Zip code — navigate directly
+            base = f"https://www.redfin.com/zipcode/{query}/apartments-for-rent{bed_filter}"
+            try:
+                await page.goto(base, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                await browser.close()
+                return {"error": "Could not connect to Redfin."}
+        else:
+            # City name — use Redfin search bar to resolve, then switch to rentals
+            try:
+                await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
+                search_input = page.locator(
+                    "input[type='text'][placeholder*='Search'], input[type='search'], "
+                    "#search-box-input, [data-testid='search-box-input']"
+                ).first
+                await search_input.fill(query)
+                await page.wait_for_timeout(1500)
+                await search_input.press("Enter")
+                await page.wait_for_timeout(3000)
+                # Now on the for-sale page; switch to rentals
+                current_url = page.url
+                # Replace for-sale path with rental path
+                rental_url = re.sub(
+                    r"(/filter/.*)?$", "/apartments-for-rent" + bed_filter, current_url.rstrip("/")
+                )
+                if "/apartments-for-rent" not in rental_url:
+                    rental_url = current_url.rstrip("/") + "/apartments-for-rent" + bed_filter
+                await page.goto(rental_url, wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                await browser.close()
+                return {"error": "Could not connect to Redfin."}
 
         try:
             await page.wait_for_selector(

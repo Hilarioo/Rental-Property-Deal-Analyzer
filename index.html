@@ -2266,6 +2266,9 @@
     var rent = userRent;
     if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, numericScore: 0, details: [], cssClass: 'score-0' };
 
+    // Flag suspiciously cheap listings (likely vacant lots or teardowns)
+    var isLikelyLot = price < 20000;
+
     var stars = 0;
     var details = [];
     var numericScore = 0; // 0-100 continuous score for ranking
@@ -2348,6 +2351,11 @@
     details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: trCls });
 
     numericScore = Math.round(Math.min(100, Math.max(0, numericScore)));
+
+    // Warn on suspiciously cheap properties (vacant lots, teardowns)
+    if (isLikelyLot) {
+      details.push({ text: 'Verify: may be land only', cls: 'warn' });
+    }
 
     var cssClass = 'score-' + Math.min(stars, 4);
     return { stars: stars, numericScore: numericScore, details: details, cssClass: cssClass };
