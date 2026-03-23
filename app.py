@@ -478,9 +478,16 @@ async def _fetch_with_playwright(url: str) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+IS_CLOUD = bool(os.environ.get("RENDER") or os.environ.get("RAILWAY_ENVIRONMENT"))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    return Path("index.html").read_text(encoding="utf-8")
+    html = Path("index.html").read_text(encoding="utf-8")
+    if IS_CLOUD:
+        # Inject flag so frontend can disable scraping-dependent features
+        html = html.replace("</head>", '<script>window.__CLOUD_DEMO__=true;</script></head>')
+    return html
 
 
 def _detect_source(hostname: str) -> str:
@@ -1001,7 +1008,7 @@ async def smart_search(request: Request):
     # once we know the smart price cap from rental data.
     initial_filters = {
         "min_price": min_price,
-        "max_price": 500000,  # generous cap; will narrow after rent data
+        "max_price": 750000,  # generous cap; will narrow after rent data
         "min_beds": user_min_beds,
         "property_type": user_property_type or "house",
         "max_results": min(user_max_results + 20, 80),
@@ -1052,8 +1059,10 @@ async def smart_search(request: Request):
     if overall_median > 0:
         # Use overall median (not max across bedrooms) to avoid
         # inflated caps from high-bedroom luxury rentals.
+        # Multiplier of 250 ≈ GRM 20.8, upper bound for viable investment deals.
+        # See README "Smart Price Cap" section for the multiplier table.
         best_rent = overall_median
-        smart_max_price = int(best_rent * 225)
+        smart_max_price = int(best_rent * 250)
         smart_max_price = ((smart_max_price + 24999) // 25000) * 25000
         smart_max_price = max(smart_max_price, 75000)
 
@@ -1496,7 +1505,6 @@ AI_SYSTEM_PROMPT = (
     "property deal and provide a plain-English investment summary "
     "with: 1) Overall Assessment, 2) Key Strengths, 3) Key Risks, "
     "4) Recommendation. Be concise but thorough. "
-    "Do NOT include internal reasoning, thinking process, or chain-of-thought. "
     "Jump straight to the analysis."
 )
 

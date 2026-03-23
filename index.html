@@ -307,8 +307,10 @@
     font-size: 0.8rem;
     white-space: nowrap;
   }
+  .quick-score.score-6 { background: var(--green-bg); color: var(--green); }
+  .quick-score.score-5 { background: var(--green-bg); color: var(--green); }
   .quick-score.score-4 { background: var(--green-bg); color: var(--green); }
-  .quick-score.score-3 { background: var(--green-bg); color: var(--green); }
+  .quick-score.score-3 { background: var(--yellow-bg); color: var(--yellow); }
   .quick-score.score-2 { background: var(--yellow-bg); color: var(--yellow); }
   .quick-score.score-1 { background: var(--red-bg); color: var(--red); }
   .score-num { font-size: 0.75em; opacity: 0.7; margin-left: 4px; }
@@ -1251,6 +1253,16 @@
       <button data-mode="smart" onclick="toggleSearchMode('smart')">Smart Deal Finder</button>
     </div>
 
+    <!-- Cloud demo notice (hidden by default, shown via JS when __CLOUD_DEMO__ is set) -->
+    <div id="cloudDemoNotice" style="display:none;background:rgba(99,102,241,0.12);border:1px solid var(--accent);border-radius:var(--radius);padding:16px 20px;margin-bottom:16px;">
+      <strong style="color:var(--accent);">Live Demo Limitation</strong>
+      <p style="margin:6px 0 0;color:var(--text-muted);font-size:0.9rem;">
+        Neighborhood Search and Smart Deal Finder require scraping Redfin, which is blocked from cloud servers.
+        These features work when you <strong>run locally</strong>. Clone the repo and run <code>python app.py</code> to use them.
+        <a href="https://github.com/berkcankapusuzoglu/Rental-Property-Deal-Analyzer#quick-start" target="_blank" rel="noopener" style="color:var(--accent);">Setup instructions &rarr;</a>
+      </p>
+    </div>
+
     <!-- ===== Single Property Mode ===== -->
     <div id="singlePropertyMode">
       <div class="section-title">Property URL &amp; Purchase Details</div>
@@ -1384,7 +1396,7 @@
           <div class="search-toolbar">
             <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;margin-right:8px;">
               <input type="checkbox" id="filterGoodDeals" onchange="applyDealAlerts()" style="cursor:pointer;accent-color:var(--accent);">
-              Good deals only (★★+)
+              Good deals only (★★★+)
             </label>
             <button class="btn btn-small btn-secondary" onclick="toggleAlertConfig()">Deal Alerts</button>
             <button class="btn btn-small btn-secondary" onclick="exportSearchCSV()">Export CSV</button>
@@ -1482,8 +1494,8 @@
           <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="smartResultsTitle">Results</div>
           <div class="search-toolbar">
             <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;margin-right:8px;">
-              <input type="checkbox" id="smartFilterGood" checked onchange="renderSmartResults()" style="cursor:pointer;accent-color:var(--accent);">
-              Good deals only (&#9733;&#9733;&#9733;+)
+              <input type="checkbox" id="smartFilterGood" onchange="renderSmartResults()" style="cursor:pointer;accent-color:var(--accent);">
+              Good deals only (&#9733;&#9733;&#9733;&#9733;+)
             </label>
             <button class="btn btn-small btn-secondary" onclick="exportSmartCSV()">Export CSV</button>
           </div>
@@ -2201,12 +2213,18 @@
     $('singlePropertyMode').style.display = mode === 'single' ? '' : 'none';
     $('searchMode').style.display = mode === 'search' ? '' : 'none';
     $('smartMode').style.display = mode === 'smart' ? '' : 'none';
+    // Show cloud demo notice when search features are selected on hosted demo
+    var cloudNotice = $('cloudDemoNotice');
+    if (cloudNotice) {
+      cloudNotice.style.display = (window.__CLOUD_DEMO__ && mode !== 'single') ? '' : 'none';
+    }
     document.querySelectorAll('#modeToggle button').forEach(function(b) {
       b.classList.toggle('active', b.dataset.mode === mode);
     });
   };
 
   window.runNeighborhoodSearch = async function() {
+    if (window.__CLOUD_DEMO__) { showSearchStatus('Search features are only available when running locally. Clone the repo and run python app.py.', true); return; }
     var location = $('searchLocation').value.trim();
     var targetRent = parseFloat($('searchTargetRent').value);
     if (!location) {
@@ -2286,98 +2304,92 @@
     var details = [];
     var numericScore = 0; // 0-100 continuous score for ranking
 
-    // --- Rent-to-Price ratio (rate-adaptive) ---
-    // At 5% rate: 0.50% good. At 7%: 0.60% good. At 8%: 0.65% good.
-    // Formula: 0.50 + (rate% - 5) * 0.05
-    var rentToPriceRatio = rent / price;
-    var rtpPct = (rentToPriceRatio * 100).toFixed(2);
-    var rtpGood = (0.50 + (rate * 100 - 5) * 0.05) / 100;
-    var rtpWarn = rtpGood - 0.0015;
-    // Continuous score: 25 pts max, scaled 0-1% range
-    numericScore += Math.min(25, (rentToPriceRatio / 0.01) * 25);
-    if (rentToPriceRatio >= rtpGood) {
-      stars++;
-      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'pass' });
-    } else if (rentToPriceRatio >= rtpWarn) {
-      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'warn' });
-    } else {
-      details.push({ text: 'Rent/Price: ' + rtpPct + '%', cls: 'fail' });
-    }
-
-    // --- Expense Ratio (tiered by price band) ---
-    // Cheaper properties have higher operating costs (older, more maintenance).
+    // --- Common calculations ---
     var expenseRatio = price >= 250000 ? 0.45 : price >= 100000 ? 0.50 : 0.55;
+    var loanAmt = price * 0.8;
+    var monthlyRate = rate / 12;
+    var nPayments = 360;
+    var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
+    var noi = rent * (1 - expenseRatio);
+    var cashFlow = noi - mortgage;
+    var downPayment = price * 0.2;
 
-    // --- Estimated Cap Rate: (annual_rent * expenseRatio) / price * 100 ---
-    // Dynamic thresholds: good if cap >= rate-3%, decent if >= rate-4%.
+    // === 1. Cap Rate (aligned with full scorecard: 6%+ strong, 4%+ ok) ===
     var capRate = (rent * 12 * (1 - expenseRatio)) / price * 100;
-    var capGoodThreshold = Math.max(3, rate * 100 - 3);
-    var capWarnThreshold = Math.max(2, rate * 100 - 4);
-    // Continuous score: 30 pts max (cap rate is the most meaningful metric)
-    numericScore += Math.min(30, (capRate / 8) * 30);
-    if (capRate >= capGoodThreshold) {
+    numericScore += Math.min(20, (capRate / 8) * 20);
+    if (capRate >= 6) {
       stars++;
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'pass' });
-    } else if (capRate >= capWarnThreshold) {
+    } else if (capRate >= 4) {
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'warn' });
     } else {
       details.push({ text: 'Est. Cap: ' + capRate.toFixed(1) + '%', cls: 'fail' });
     }
 
-    // --- Estimated Monthly Cash Flow ---
-    // Mortgage: 20% down, current rate (from FRED), 30yr
-    // Negative CF is common at current rates — equity + appreciation
-    // can still make total return positive
-    var loanAmt = price * 0.8;
-    var monthlyRate = rate / 12;
-    var nPayments = 360;
-    var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
-    var cashFlow = rent - (rent * expenseRatio) - mortgage;
-    // Continuous score: 25 pts max, scaled from -$500 to +$500
-    numericScore += Math.min(25, Math.max(0, ((cashFlow + 500) / 1000) * 25));
-    // Scale the negative-CF tolerance by price. -$200/mo on a $50K property
-    // is -12% annual drag (devastating), but on a $300K property it's -0.8% (fine).
-    var cfTolerance = Math.min(-50, -(price * 0.001));  // -0.1% of price/mo, min -$50
-    if (cashFlow >= 0) {
+    // === 2. Estimated DSCR (aligned: 1.25+ strong, 1.0+ ok) ===
+    var dscr = mortgage > 0 ? noi / mortgage : 99;
+    numericScore += Math.min(20, Math.max(0, (dscr / 1.5) * 20));
+    if (dscr >= 1.25) {
       stars++;
-      details.push({ text: 'Est. CF: +$' + Math.round(cashFlow), cls: 'pass' });
-    } else if (cashFlow >= cfTolerance) {
+      details.push({ text: 'Est. DSCR: ' + dscr.toFixed(2), cls: 'pass' });
+    } else if (dscr >= 1.0) {
+      details.push({ text: 'Est. DSCR: ' + dscr.toFixed(2), cls: 'warn' });
+    } else {
+      details.push({ text: 'Est. DSCR: ' + dscr.toFixed(2), cls: 'fail' });
+    }
+
+    // === 3. Estimated Monthly Cash Flow ===
+    numericScore += Math.min(20, Math.max(0, ((cashFlow + 500) / 1000) * 20));
+    if (cashFlow >= 100) {
       stars++;
-      details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)) + '/mo', cls: 'warn' });
+      details.push({ text: 'Est. CF: +$' + Math.round(cashFlow) + '/mo', cls: 'pass' });
+    } else if (cashFlow >= 0) {
+      details.push({ text: 'Est. CF: +$' + Math.round(cashFlow) + '/mo', cls: 'warn' });
     } else {
       details.push({ text: 'Est. CF: -$' + Math.abs(Math.round(cashFlow)) + '/mo', cls: 'fail' });
     }
 
-    // --- Gross Rent Multiplier (GRM): price / annual rent ---
-    // Lower is better. Thresholds adjust with rate:
-    // At 7%: <=12 good, <=15 ok. At 6%: <=13 good, <=16 ok.
+    // === 4. 1% Rule (aligned with full scorecard: pass/fail) ===
+    var onePercentPct = (rent / price) * 100;
+    numericScore += Math.min(15, (onePercentPct / 1.0) * 15);
+    if (onePercentPct >= 1.0) {
+      stars++;
+      details.push({ text: '1% Rule: ' + onePercentPct.toFixed(2) + '%', cls: 'pass' });
+    } else if (onePercentPct >= 0.75) {
+      details.push({ text: '1% Rule: ' + onePercentPct.toFixed(2) + '%', cls: 'warn' });
+    } else {
+      details.push({ text: '1% Rule: ' + onePercentPct.toFixed(2) + '%', cls: 'fail' });
+    }
+
+    // === 5. GRM (lower is better) ===
     var grm = price / (rent * 12);
-    var grmGood = Math.round(12 + (7 - rate * 100)); // lower rates allow higher GRM
-    var grmOk = grmGood + 3;
-    // Continuous score: 15 pts max (GRM ignores expenses, so lower weight)
     numericScore += Math.min(15, Math.max(0, ((20 - grm) / 20) * 15));
-    if (grm <= grmGood) {
+    if (grm <= 12) {
       stars++;
       details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'pass' });
-    } else if (grm <= grmOk) {
+    } else if (grm <= 15) {
       details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'warn' });
     } else {
       details.push({ text: 'GRM: ' + grm.toFixed(1), cls: 'fail' });
     }
 
-    // --- Estimated Year-1 Total Return (cash flow + equity + appreciation) ---
-    // Shows the full picture: even negative CF deals can return 8-15%
-    var downPayment = price * 0.2;
-    var yearlyAppreciation = price * 0.03; // 3% appreciation
-    var yearlyEquity = (mortgage * 12) - (loanAmt * monthlyRate * 12); // rough principal paydown yr1
+    // === 6. Estimated Year-1 Total Return ===
+    var yearlyAppreciation = price * 0.03;
+    var yearlyEquity = (mortgage * 12) - (loanAmt * monthlyRate * 12);
     var yearlyCashFlow = cashFlow * 12;
     var totalReturn = yearlyCashFlow + yearlyAppreciation + yearlyEquity;
     var totalReturnPct = downPayment > 0 ? (totalReturn / downPayment * 100) : 0;
-    var trCls = totalReturnPct >= 10 ? 'pass' : totalReturnPct >= 5 ? 'warn' : 'fail';
-    details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: trCls });
+    numericScore += Math.min(10, Math.max(0, (totalReturnPct / 15) * 10));
+    if (totalReturnPct >= 10) {
+      stars++;
+      details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: 'pass' });
+    } else if (totalReturnPct >= 5) {
+      details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: 'warn' });
+    } else {
+      details.push({ text: 'Est. Return: ' + totalReturnPct.toFixed(0) + '% yr1', cls: 'fail' });
+    }
 
-    // Apply condition risk discount for cheap properties (step function).
-    // Risk jumps sharply below $75K — not linear.
+    // Apply condition risk discount for cheap properties
     if (price < 100000) {
       var riskPenalty = 0;
       if (price < 50000) { riskPenalty = 25; stars = Math.min(stars, 2); }
@@ -2400,7 +2412,7 @@
       details.push({ text: 'Verify rent estimate', cls: 'warn' });
     }
 
-    var cssClass = 'score-' + Math.min(stars, 4);
+    var cssClass = 'score-' + Math.min(stars, 6);
     return { stars: stars, numericScore: numericScore, details: details, cssClass: cssClass };
   }
 
@@ -2444,11 +2456,11 @@
     var alertMinBeds = parseInt($('alertMinBeds').value) || 0;
     var shown = 0;
     searchResults.forEach(function(l, i) {
-      if (filterGood && l._score.stars < 2) return;
+      if (filterGood && l._score.stars < 3) return;
       var s = l._score;
       var starStr = '';
       for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
-      for (var j = s.stars; j < 4; j++) starStr += '&#9734;';
+      for (var j = s.stars; j < 6; j++) starStr += '&#9734;';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
 
       var meetsAlert = s.stars >= alertStars
@@ -2471,7 +2483,7 @@
         + '</tr>';
     });
     if (filterGood && shown === 0) {
-      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No listings with 2+ stars. Try a higher target rent or lower price range.</td></tr>';
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No listings with 3+ stars. Try a higher target rent or lower price range.</td></tr>';
     }
     tbody.innerHTML = html;
   }
@@ -2531,6 +2543,7 @@
   var smartSortAsc = false;
 
   window.runSmartSearch = async function() {
+    if (window.__CLOUD_DEMO__) { showSmartStatus('Smart Deal Finder is only available when running locally. Clone the repo and run python app.py.', true); return; }
     var location = $('smartLocation').value.trim();
     if (!location) {
       showSmartStatus('Please enter a location (zip code or city).', true);
@@ -2607,7 +2620,7 @@
       smartSortCol = 'score';
       smartSortAsc = false;
       sortSmartAndRender();
-      var goodCount = smartResults.filter(function(l) { return l._score.stars >= 3; }).length;
+      var goodCount = smartResults.filter(function(l) { return l._score.stars >= 4; }).length;
       var totalInArea = data.total || smartResults.length;
       var priceInfo = data.smart_max_price ? ' under $' + fmtInt(data.smart_max_price) : '';
       $('smartResultsTitle').textContent = goodCount + ' potential deals found — ' + smartResults.length + ' of ' + totalInArea + ' listings' + priceInfo + ' in ' + (data.location_label || location);
@@ -2665,11 +2678,11 @@
     var filterGood = $('smartFilterGood').checked;
     var shown = 0;
     smartResults.forEach(function(l, i) {
-      if (filterGood && l._score.stars < 3) return;
+      if (filterGood && l._score.stars < 4) return;
       var s = l._score;
       var starStr = '';
       for (var j = 0; j < s.stars; j++) starStr += '&#9733;';
-      for (var j = s.stars; j < 4; j++) starStr += '&#9734;';
+      for (var j = s.stars; j < 6; j++) starStr += '&#9734;';
       var scoreLabel = ' <span class="score-num">' + s.numericScore + '/100</span>';
       var detailHtml = s.details.map(function(d) { return '<span class="' + d.cls + '">' + esc(d.text) + '</span>'; }).join(' &middot; ');
       shown++;
@@ -2686,7 +2699,7 @@
         + '</tr>';
     });
     if (shown === 0 && filterGood) {
-      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No 3+ star deals found. Uncheck "Good deals only" to see all listings ranked by score, or try a different area with higher rent-to-price ratios.</td></tr>';
+      html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No 4+ star deals found. Uncheck "Good deals only" to see all listings ranked by score, or try a different area with higher rent-to-price ratios.</td></tr>';
     } else if (shown === 0) {
       html = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No listings found. Try a different location or adjust filters.</td></tr>';
     }

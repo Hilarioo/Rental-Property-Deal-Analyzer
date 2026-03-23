@@ -10,7 +10,7 @@ Free, open-source rental property investment calculator with AI-powered analysis
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![GitHub release](https://img.shields.io/github/v/release/berkcankapusuzoglu/Rental-Property-Deal-Analyzer)
 
-[**Try the Live Demo**](https://rental-property-deal-analyzer.onrender.com)
+[**Try the Live Demo**](https://rental-property-deal-analyzer.onrender.com) · [**Run Locally for Full Features**](#quick-start)
 
 <a href="https://buymeacoffee.com/bkapu"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
 <a href="https://github.com/sponsors/berkcankapusuzoglu"><img src="https://img.shields.io/badge/Sponsor-ea4aaa?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="GitHub Sponsors"></a>
@@ -105,7 +105,7 @@ Opens automatically at **http://localhost:8000**. No build step required.
 
 ## How It Works
 
-The app has two modes, toggled on the first step:
+The app has three modes, toggled on the first step:
 
 ### Single Property (default)
 
@@ -121,6 +121,17 @@ A **6-step wizard** for analyzing a specific property:
 ### Neighborhood Search
 
 Search a zip code or city to **discover** deals — enter a location and target rent, get a scored table of listings, then click **Analyze →** on any result to jump into the full wizard with data pre-filled. See the [Neighborhood Search](#neighborhood-search) section below for details.
+
+### Smart Deal Finder
+
+Fully automated deal discovery — enter a location and the app will:
+1. Scrape Redfin rental listings to auto-detect market rents
+2. Calculate a smart price cap based on median rent (see [Smart Price Cap](#smart-price-cap))
+3. Search for-sale listings under that cap
+4. Score each listing with a [6-star Quick Score](#quick-score-6-stars) using estimated rent
+5. Show all results ranked by deal quality
+
+> **Note:** Neighborhood Search and Smart Deal Finder require **running locally** — Redfin blocks requests from cloud servers. The [live demo](https://rental-property-deal-analyzer.onrender.com) supports Single Property mode with manual entry and the "Try Example Deal" button.
 
 ## Metrics Reference
 
@@ -293,19 +304,22 @@ Search an entire zip code or city to **discover** investment deals — not just 
 | Target Monthly Rent | Yes | — | Your rent estimate for the area (used for scoring) |
 | Max Results | No | 20 | 10, 15, 20, or 25 |
 
-### Quick Score (0-3 Stars)
+### Quick Score (6 Stars)
 
-Each listing is scored on three investor rules using just its price and your rent estimate:
+Each listing is scored on six investor checks, aligned with the full [14-point scorecard](#deal-scorecard-14-point-system) so high quick scores reliably predict good full-analysis results:
 
-| Check | Pass Condition | What It Tells You |
-|-------|---------------|-------------------|
-| **1% Rule** | `monthly_rent / price >= 1%` | Rent is high enough relative to price |
-| **Est. Cap Rate** | `(annual_rent x 0.5) / price >= 6%` | Decent return after typical expenses (50% rule) |
-| **Est. Cash Flow** | `rent - expenses - mortgage > $0` | Positive cash flow at 20% down, 7% rate |
+| Check | ★ Condition | What It Tells You |
+|-------|-------------|-------------------|
+| **Est. Cap Rate** | >= 6% | Decent return after estimated expenses |
+| **Est. DSCR** | >= 1.25 | NOI comfortably covers debt service |
+| **Est. Cash Flow** | >= $100/mo | Positive cash flow after mortgage |
+| **1% Rule** | rent/price >= 1% | Rent high enough relative to price |
+| **GRM** | <= 12 | Low price relative to annual rent |
+| **Est. Total Return** | >= 10% yr1 | Strong combined return (CF + appreciation + equity) |
 
-Stars are color-coded: **3 = green** (strong deal), **2 = yellow** (borderline), **1 = red** (weak), **0 = gray** (doesn't pass any check).
+Stars are color-coded: **5-6 = green** (strong deal), **3-4 = yellow** (borderline), **1-2 = red** (weak), **0 = gray** (doesn't pass any check). Each check also has a numeric score (0-100) for ranking.
 
-> **Why "Target Monthly Rent" instead of automatic estimates?** No free rent API exists. You know your target market better than any estimate. This keeps the feature zero-cost and gives you control.
+> **Why "Target Monthly Rent" on Neighborhood Search?** You know your market — Smart Deal Finder auto-estimates rent, but Neighborhood Search lets you set it manually for more control.
 
 ### Analyze → Full Wizard
 
@@ -340,9 +354,32 @@ Search filters (location, price range, beds, property type, rent, max results) a
 
 Neighborhood Search is limited to **3 searches per minute** to avoid overloading Redfin. If you hit the limit, wait 60 seconds and try again.
 
+### Smart Price Cap
+
+Smart Deal Finder calculates a maximum property price from median market rent to focus on listings that could actually pencil out as investments. The formula is:
+
+```
+smart_max_price = median_rent × 250    (rounded up to nearest $25K, min $75K)
+```
+
+The multiplier (250) corresponds to a GRM of ~20.8 — the upper bound of "worth analyzing" for rental investments. Here's how different multipliers translate:
+
+| Multiplier | Implied Rent/Price | GRM | Example ($1,127 median rent) |
+|---|---|---|---|
+| 100 | 1.00% | 8.3 | $112,700 (strict 1% rule) |
+| 150 | 0.67% | 12.5 | $169,050 |
+| 200 | 0.50% | 16.7 | $225,400 |
+| **250** | **0.40%** | **20.8** | **$281,750 (current default)** |
+| 300 | 0.33% | 25.0 | $338,100 |
+
+At current ~6-7% mortgage rates, almost nothing meets the 1% rule. The 250 multiplier balances showing enough listings to find deals while filtering out properties where the numbers can never work. Properties above this cap are almost certainly negative cash flow with no path to viability.
+
+> **To change the multiplier:** Edit `smart_max_price = int(best_rent * 250)` in `app.py` (search for "smart_max_price"). Lower = stricter filtering, higher = more results.
+
 ### Known Limitations
 
 - **Redfin only** — Zillow blocks automated search pages too aggressively
+- **Cloud servers blocked** — Redfin blocks datacenter IPs; search features require running locally
 - **No map view** — results are table-only for now
 - **One search at a time** — no batch analysis of multiple listings simultaneously
 - **City search** requires Redfin to recognize the city name — use zip codes for best reliability
