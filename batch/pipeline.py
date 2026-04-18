@@ -1,0 +1,992 @@
+"""End-to-end per-URL orchestration for the batch endpoint (§N).
+
+Workflow per URL:
+    1. url_hash = sha256(normalize(url))
+    2. Read cached `properties` + `property_enrichment` rows
+    3. Scrape fresh (always) → insert scrape_snapshot row
+    4. cache staleness check (§L.1)
+    5. if stale or new: geocode, enrichment (FEMA/CalFire/Overpass), LLM extract
+    6. compute insurance heuristic, criteria matrix, Jose verdict
+    7. UPSERT properties with analysis + insurance
+
+Batch-wide:
+    8. Pareto + TOPSIS across non-hard-fail rows
+    9. Write `batches` + `rankings` rows inside BEGIN IMMEDIATE
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import sqlite3
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from . import enrichment as enrichment_mod
+from . import llm as llm_mod
+from . import ranking as ranking_mod
+from .db import (
+    get_connection,
+    new_uuid_hex,
+    url_hash as compute_url_hash,
+    utc_now_iso,
+    with_immediate_tx,
+)
+from .insurance import compute_insurance
+from .verdict import classify_zip_tier, compute_jose_verdict
+
+logger = logging.getLogger(__name__)
+
+# Jose-ish defaults mirroring USER_PROFILE.md §10 / Sprint 2 DEFAULTS.
+DEFAULTS = {
+    "buyerMonthlyIncomeW2": 4506,
+    "downPaymentPct": 3.5,
+    "interestRatePct": 6.5,
+    "termYears": 30,
+    "fhaUpfrontMipPct": 1.75,
+    "fhaAnnualMipPct": 0.55,
+    "propertyTaxRatePct": 1.1,
+    "baselineInsuranceAnnual": 1800,
+    "vacancyPct": 5.0,
+    "maintenancePct": 5.0,
+    "closingCostsPct": 3.0,
+    "rentalOffsetPct": 75.0,
+    "maxCashToClose": 45000,
+}
+
+# Rough per-unit market rent by Tier (USER_PROFILE §9). Used only when rent
+# comps are unavailable.
+TIER_DEFAULT_RENT_2BR = {
+    "tier1": 2100,
+    "tier2": 2300,
+    "tier3": 2150,
+    "outside": 2000,
+}
+
+
+# --------------------------------------------------------------------------
+# Math helpers (mirror calc.js)
+# --------------------------------------------------------------------------
+
+
+def _monthly_pi(loan: float, annual_rate_pct: float, term_years: int) -> float:
+    if loan <= 0 or term_years <= 0:
+        return 0.0
+    n = term_years * 12
+    r = annual_rate_pct / 100 / 12
+    if r == 0:
+        return loan / n
+    return loan * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
+
+
+def _fha_loan(price: float, down_pct: float) -> dict[str, float]:
+    base = price * (1 - down_pct / 100)
+    upfront_mip = base * 0.0175
+    return {
+        "base": base,
+        "upfront_mip": upfront_mip,
+        "financed": base + upfront_mip,
+    }
+
+
+def _effective_rehab(rehab_band: dict[str, Any]) -> tuple[float, float]:
+    """Return (effective_rehab, contractor_edge_savings).
+
+    C-39 roofing at 0.60x retail (Jose). Cosmetic at 0.80x (partial DIY).
+    Everything else at 1.0x.
+    """
+    retail = 0.0
+    effective = 0.0
+    for cat, band in (rehab_band or {}).items():
+        mid = float((band or {}).get("mid") or 0.0)
+        retail += mid
+        mult = {
+            "roof": 0.60,
+            "cosmetic": 0.80,
+        }.get(cat, 1.0)
+        effective += mid * mult
+    return effective, max(0.0, retail - effective)
+
+
+def _extract_zip(address: str | None) -> str | None:
+    if not address:
+        return None
+    m = re.search(r"\b(\d{5})(?:-\d{4})?\b", address)
+    return m.group(1) if m else None
+
+
+def _looks_excluded(address: str | None) -> bool:
+    """Cheap substring check against USER_PROFILE §7 exclusion list."""
+    if not address:
+        return False
+    a = address.lower()
+    for needle in (
+        "benicia", "glen cove", "hiddenbrooke", "mare island",
+        "oakland", "berkeley", "point richmond",
+    ):
+        if needle in a:
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# Scrape wrapper (delegates to existing app._fetch_and_parse_redfin path)
+# --------------------------------------------------------------------------
+
+
+async def _scrape_url(url: str) -> dict[str, Any]:
+    """Call the existing app-internal scrape path and normalize the result.
+
+    Re-uses the same httpx + playwright fallback as `/api/scrape`. Returns
+    a dict that always contains `ok: bool` and (when ok) the extracted fields.
+    """
+    import app as main_app
+    from bs4 import BeautifulSoup
+
+    HEADERS = main_app.HEADERS
+
+    parsed = urlparse(url)
+    source = main_app._detect_source(parsed.hostname)
+    if source == "unknown":
+        return {"ok": False, "error": "unsupported_url"}
+    if source == "zillow" and not re.search(r"/homedetails/|/zpid_|/homes/", parsed.path or ""):
+        return {"ok": False, "error": "invalid_zillow_path"}
+    if source == "redfin" and not re.search(r"/home/\d+", parsed.path or ""):
+        return {"ok": False, "error": "invalid_redfin_path"}
+
+    html_text: str | None = None
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+            resp = await client.get(url, headers=HEADERS)
+        lowered = resp.text[:3000].lower()
+        if resp.status_code < 400 and "captcha" not in resp.text[:2000].lower() and "access to this page has been denied" not in lowered:
+            html_text = resp.text
+    except httpx.HTTPError:
+        pass
+
+    if html_text is None:
+        try:
+            html_text = await main_app._fetch_with_playwright(url)
+            if html_text and "access to this page has been denied" in html_text[:3000].lower():
+                html_text = None
+        except Exception:
+            pass
+
+    if not html_text:
+        return {"ok": False, "error": "fetch_failed"}
+
+    try:
+        soup = BeautifulSoup(html_text, "lxml")
+    except Exception:
+        return {"ok": False, "error": "parse_failed"}
+
+    extract = None
+    if source == "redfin":
+        extract = main_app._extract_redfin(soup)
+    else:
+        extract = (
+            main_app._extract_from_next_data(soup)
+            or main_app._extract_from_ld_json(soup)
+            or main_app._extract_from_dom(soup)
+        )
+
+    if not extract:
+        return {"ok": False, "error": "extract_failed"}
+
+    # Best-effort lat/lng scan.
+    lat = None
+    lng = None
+    for m in re.finditer(r'"latitude"\s*:\s*([\-0-9\.]+)', html_text):
+        try:
+            lat = float(m.group(1))
+            break
+        except ValueError:
+            continue
+    for m in re.finditer(r'"longitude"\s*:\s*([\-0-9\.]+)', html_text):
+        try:
+            lng = float(m.group(1))
+            break
+        except ValueError:
+            continue
+
+    dom = None
+    for m in re.finditer(r'"daysOnMarket"\s*:\s*(\d+)', html_text):
+        try:
+            dom = int(m.group(1))
+            break
+        except ValueError:
+            continue
+
+    units = None
+    for m in re.finditer(r'"numberOfUnits"[^0-9]*(\d+)', html_text):
+        try:
+            units = int(m.group(1))
+            break
+        except ValueError:
+            continue
+
+    # Very cheap duplex / triplex hint from address + description.
+    if not units:
+        haystack = (extract.get("description") or "").lower() + " " + (extract.get("propertyType") or "").lower()
+        if "duplex" in haystack or "2 unit" in haystack or "two unit" in haystack:
+            units = 2
+        elif "triplex" in haystack or "3 unit" in haystack:
+            units = 3
+        elif "fourplex" in haystack or "four" in haystack and "unit" in haystack:
+            units = 4
+
+    normalized = {
+        "ok": True,
+        "source": source,
+        "address": extract.get("address"),
+        "price": _as_int(extract.get("price")),
+        "beds": _as_int(extract.get("beds")),
+        "baths": _as_float(extract.get("baths")),
+        "sqft": _as_int(extract.get("sqft")),
+        "year_built": _as_int(extract.get("yearBuilt")),
+        "units": units,
+        "dom": dom,
+        "description": extract.get("description"),
+        "image_url": extract.get("imageUrl"),
+        "lat": lat,
+        "lng": lng,
+    }
+    return normalized
+
+
+def _as_int(v: Any) -> int | None:
+    try:
+        if v is None or v == "":
+            return None
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(v: Any) -> float | None:
+    try:
+        if v is None or v == "":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+# --------------------------------------------------------------------------
+# Metrics computation
+# --------------------------------------------------------------------------
+
+
+def compute_property_metrics(
+    *,
+    price: int | None,
+    units: int | None,
+    year_built: int | None,
+    beds: int | None,
+    baths: float | None,
+    dom: int | None,
+    zip_code: str | None,
+    address: str | None,
+    llm_analysis: dict[str, Any],
+    enrichment_row: dict[str, Any] | None,
+    insurance_breakdown: dict[str, Any],
+    rent_per_unit: float,
+    hard_fail_units_unknown: bool = False,
+) -> dict[str, Any]:
+    """Compute the full set of metrics the ranker and verdict need."""
+    p = float(price or 0)
+    # When units is None, assume duplex (2) for numeric math but signal the
+    # unknown-units hard-fail via `hard_fail_units_unknown`.
+    u = int(units) if units else 2
+    zip_tier = classify_zip_tier(zip_code)
+
+    fha = _fha_loan(p, DEFAULTS["downPaymentPct"])
+    pi = _monthly_pi(fha["financed"], DEFAULTS["interestRatePct"], DEFAULTS["termYears"])
+    annual_taxes = p * (DEFAULTS["propertyTaxRatePct"] / 100)
+    annual_ins = float(insurance_breakdown.get("annual_usd") or DEFAULTS["baselineInsuranceAnnual"])
+    mip_monthly = fha["base"] * (DEFAULTS["fhaAnnualMipPct"] / 100) / 12
+    piti = pi + annual_taxes / 12 + annual_ins / 12 + mip_monthly
+
+    # Per-unit rents (owner occupies unit 0).
+    rent_per_unit = float(rent_per_unit or 0.0)
+    rented_units = max(0, u - 1) if u > 1 else 0
+    gross_rent_monthly_all = rent_per_unit * u
+    gross_rent_monthly_rented = rent_per_unit * rented_units
+    rental_offset = gross_rent_monthly_rented * (DEFAULTS["rentalOffsetPct"] / 100)
+    net_piti = max(0.0, piti - rental_offset)
+
+    qualifying_income = DEFAULTS["buyerMonthlyIncomeW2"] + rental_offset
+    dti_headroom = max(0.0, qualifying_income * 0.50 - piti)
+
+    down_payment = p * (DEFAULTS["downPaymentPct"] / 100)
+    closing_costs = p * (DEFAULTS["closingCostsPct"] / 100)
+
+    effective_rehab, contractor_edge = _effective_rehab(llm_analysis.get("rehabBand") or {})
+    cash_to_close = down_payment + closing_costs
+    all_in_cost = p + closing_costs + effective_rehab
+
+    # Opex monthly (ex-PITI).
+    maint = gross_rent_monthly_all * (DEFAULTS["maintenancePct"] / 100)
+    vac = gross_rent_monthly_all * (DEFAULTS["vacancyPct"] / 100)
+    opex_monthly = maint + vac  # taxes/insurance already in PITI
+
+    annual_cf = 12 * (gross_rent_monthly_all - opex_monthly) - 12 * piti
+    coc_pct = (annual_cf / cash_to_close * 100) if cash_to_close > 0 else 0.0
+    noi_annual = 12 * gross_rent_monthly_all - 12 * opex_monthly
+    cap_rate = (noi_annual / p * 100) if p > 0 else 0.0
+
+    arv = p  # V1: no Zestimate scrape.
+    brrrr_eq = ranking_mod.brrrr_equity_capture(arv, all_in_cost)
+    npv = ranking_mod.npv_5yr(
+        purchase=p,
+        gross_rent_monthly=gross_rent_monthly_all,
+        piti_monthly=piti,
+        opex_monthly=opex_monthly,
+        loan_amount=fha["financed"],
+        rate_pct=DEFAULTS["interestRatePct"],
+        term_years=DEFAULTS["termYears"],
+    )
+
+    roof_age = None
+    roof = llm_analysis.get("roofAgeYears") or {}
+    if isinstance(roof, dict) and isinstance(roof.get("value"), (int, float)):
+        roof_age = float(roof["value"])
+    if roof_age is None:
+        roof_age = 10.0  # spec default when unknown (§C.1 row 12)
+
+    # Hard-fail flags — combine LLM risk flags + ZIP exclusions.
+    risk_flags = llm_analysis.get("riskFlags") or {}
+    has_flat_roof = bool(risk_flags.get("flatRoof", {}).get("present"))
+    has_unpermitted_adu = bool(risk_flags.get("unpermittedAdu", {}).get("present"))
+    gal = risk_flags.get("galvanizedPlumbing", {}).get("present")
+    knob = risk_flags.get("knobAndTubeElectrical", {}).get("present")
+    is_pre1978_gal = bool(gal and knob and (year_built or 9999) < 1978)
+    is_excluded = zip_tier == "excluded" or _looks_excluded(address)
+
+    verdict_ctx = {
+        "zip": zip_code,
+        "zipTier": zip_tier if zip_tier != "excluded" else "outside",
+        "isExcludedByZipTier": is_excluded,
+        "hasFlatRoof": has_flat_roof,
+        "hasUnpermittedAdu": has_unpermitted_adu,
+        "isPre1978WithGalvanized": is_pre1978_gal,
+        "propertyType": "multi" if u > 1 else "sfh",
+        "units": u,
+        "price": p,
+        "netPiti": net_piti,
+        "piti": piti,
+        "qualifyingIncome": qualifying_income,
+        "cashToClose": cash_to_close,
+        "effectiveRehab": effective_rehab,
+        "roofAgeYears": roof_age,
+        "hardFailUnitsUnknown": bool(hard_fail_units_unknown),
+    }
+    verdict_result = compute_jose_verdict(verdict_ctx)
+
+    # Hard fail = verdict is red due to hard-fail gates (excluded/flat/adu/pre78/dti).
+    hard_fail_reasons = [
+        is_excluded, has_flat_roof, has_unpermitted_adu, is_pre1978_gal,
+        u <= 1,  # SFR without legal ADU
+        (qualifying_income > 0 and (piti / qualifying_income) > 0.55),
+        bool(hard_fail_units_unknown),
+    ]
+    hard_fail = any(hard_fail_reasons)
+
+    metrics = {
+        "piti": round(piti, 2),
+        "net_piti": round(net_piti, 2),
+        "cash_to_close": round(cash_to_close, 2),
+        "effective_rehab": round(effective_rehab, 2),
+        "contractor_edge": round(contractor_edge, 2),
+        "dti_headroom": round(dti_headroom, 2),
+        "coc_pct": round(coc_pct, 2),
+        "cap_rate": round(cap_rate, 2),
+        "npv_5yr": round(npv, 2),
+        "brrrr_equity_capture": round(brrrr_eq, 4),
+        "zip_tier": zip_tier,
+        "dom": int(dom or 0),
+        "roof_age": roof_age,
+        "price_vs_zip_median": 0.0,  # §C.3 derived metric; 0 until we have history
+        "qualifying_income": round(qualifying_income, 2),
+        "gross_rent_monthly_all": round(gross_rent_monthly_all, 2),
+    }
+
+    return {
+        "metrics": metrics,
+        "verdict": verdict_result["verdict"],
+        "verdict_reasons": verdict_result["reasons"],
+        "hard_fail": hard_fail,
+        "verdict_ctx": verdict_ctx,
+    }
+
+
+# --------------------------------------------------------------------------
+# DB helpers
+# --------------------------------------------------------------------------
+
+
+def _read_property(conn: sqlite3.Connection, url_hash: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        "SELECT * FROM properties WHERE url_hash = ?", (url_hash,)
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _read_enrichment(conn: sqlite3.Connection, url_hash: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        "SELECT * FROM property_enrichment WHERE url_hash = ?", (url_hash,)
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _upsert_property_row(
+    conn: sqlite3.Connection,
+    *,
+    url_hash: str,
+    canonical_url: str,
+    address: str | None,
+    zip_code: str | None,
+    last_price: int | None,
+    last_dom: int | None,
+    now_iso: str,
+) -> None:
+    existing = _read_property(conn, url_hash)
+    if existing:
+        conn.execute(
+            """UPDATE properties
+               SET last_scraped_at = ?, scrape_count = scrape_count + 1,
+                   last_price = ?, last_dom = ?, address = COALESCE(?, address),
+                   zip_code = COALESCE(?, zip_code)
+               WHERE url_hash = ?""",
+            (now_iso, last_price, last_dom, address, zip_code, url_hash),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO properties
+               (url_hash, canonical_url, address, zip_code, first_seen_at,
+                last_scraped_at, scrape_count, last_price, last_dom)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+            (url_hash, canonical_url, address, zip_code, now_iso, now_iso,
+             last_price, last_dom),
+        )
+
+
+def _insert_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    url_hash: str,
+    now_iso: str,
+    scrape: dict[str, Any],
+) -> None:
+    conn.execute(
+        """INSERT INTO scrape_snapshots
+           (url_hash, scraped_at, price, beds, baths, sqft, year_built, units,
+            dom, description, image_url, raw_json, scrape_ok, error_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            url_hash, now_iso,
+            scrape.get("price"), scrape.get("beds"), scrape.get("baths"),
+            scrape.get("sqft"), scrape.get("year_built"), scrape.get("units"),
+            scrape.get("dom"), scrape.get("description"), scrape.get("image_url"),
+            json.dumps(scrape),
+            1 if scrape.get("ok") else 0,
+            scrape.get("error") if not scrape.get("ok") else None,
+        ),
+    )
+
+
+def _upsert_enrichment(
+    conn: sqlite3.Connection,
+    *,
+    url_hash: str,
+    enrichment: dict[str, Any],
+    now_iso: str,
+) -> None:
+    conn.execute(
+        """INSERT INTO property_enrichment
+           (url_hash, lat, lng, geocode_source, flood_zone, flood_zone_risk,
+            fire_zone, fire_zone_risk, amenity_counts, walkability_index,
+            enriched_at, fetch_errors_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(url_hash) DO UPDATE SET
+             lat = excluded.lat, lng = excluded.lng,
+             geocode_source = excluded.geocode_source,
+             flood_zone = excluded.flood_zone,
+             flood_zone_risk = excluded.flood_zone_risk,
+             fire_zone = excluded.fire_zone,
+             fire_zone_risk = excluded.fire_zone_risk,
+             amenity_counts = excluded.amenity_counts,
+             walkability_index = excluded.walkability_index,
+             enriched_at = excluded.enriched_at,
+             fetch_errors_json = excluded.fetch_errors_json
+        """,
+        (
+            url_hash,
+            enrichment.get("lat"), enrichment.get("lng"),
+            enrichment.get("geocode_source"),
+            enrichment.get("flood_zone"), enrichment.get("flood_zone_risk"),
+            enrichment.get("fire_zone"), enrichment.get("fire_zone_risk"),
+            json.dumps(enrichment.get("amenity_counts")) if enrichment.get("amenity_counts") is not None else None,
+            enrichment.get("walkability_index"),
+            now_iso,
+            json.dumps(enrichment.get("fetch_errors")) if enrichment.get("fetch_errors") else None,
+        ),
+    )
+
+
+def _update_analysis_cache(
+    conn: sqlite3.Connection,
+    *,
+    url_hash: str,
+    llm_analysis: dict[str, Any],
+    llm_tokens: dict[str, int],
+    insurance_breakdown: dict[str, Any],
+    cache_stale_reason: str | None,
+    analyzed_at: str | None,
+) -> None:
+    conn.execute(
+        """UPDATE properties
+           SET llm_analysis = ?, llm_analyzed_at = ?, llm_model = ?,
+               llm_input_tokens = ?, llm_cached_input_tokens = ?,
+               llm_output_tokens = ?,
+               cached_insurance = ?, cached_insurance_breakdown = ?,
+               cache_stale_reason = ?
+           WHERE url_hash = ?""",
+        (
+            json.dumps(llm_analysis) if llm_analysis else None,
+            analyzed_at,
+            llm_mod.LLM_MODEL,
+            llm_tokens.get("input"),
+            llm_tokens.get("cached_input_read"),
+            llm_tokens.get("output"),
+            insurance_breakdown.get("annual_usd"),
+            json.dumps(insurance_breakdown),
+            cache_stale_reason,
+            url_hash,
+        ),
+    )
+
+
+def _insert_claude_run(
+    conn: sqlite3.Connection,
+    *,
+    batch_id: str,
+    url_hash: str,
+    tokens: dict[str, int],
+    status: str,
+    error_reason: str | None,
+    now_iso: str,
+) -> None:
+    conn.execute(
+        """INSERT INTO claude_runs
+           (run_id, batch_id, url_hash, mode, prompt_cache_hit,
+            input_tokens, cached_input_tokens, output_tokens, cost_usd,
+            created_at, completed_at, status, error_reason)
+           VALUES (?, ?, ?, 'sync', ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
+        (
+            new_uuid_hex(),
+            batch_id,
+            url_hash,
+            1 if tokens.get("cached_input_read") else 0,
+            tokens.get("input"), tokens.get("cached_input_read"), tokens.get("output"),
+            now_iso, now_iso, status, error_reason,
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Main entry: run_sync_batch
+# --------------------------------------------------------------------------
+
+
+async def _process_url(
+    *,
+    url: str,
+    http_client: httpx.AsyncClient,
+    api_key: str | None,
+    db_path: str,
+    client_ip: str | None = None,
+) -> dict[str, Any]:
+    """Process one URL fully. Returns a dict the caller stores in rankings."""
+    now_iso = utc_now_iso()
+    uh = compute_url_hash(url)
+
+    # Read cached state (quick read, no lock).
+    conn = get_connection(db_path)
+    try:
+        cached = _read_property(conn, uh)
+        cached_enrichment = _read_enrichment(conn, uh)
+    finally:
+        conn.close()
+
+    # Per-scrape rate-limit charge (Security M-4). Batch must not amplify past
+    # the /api/scrape 5/min-per-IP bucket. Skip check if no IP supplied (e.g.
+    # internal callers / tests).
+    if client_ip:
+        try:
+            import app as main_app
+            if not main_app._check_rate_limit(f"scrape:{client_ip}", 5):
+                return {
+                    "url": url,
+                    "url_hash": uh,
+                    "canonical_url": url,
+                    "scrape_ok": False,
+                    "scrape_error": "rate_limited",
+                    "address": cached.get("address") if cached else None,
+                    "hard_fail": True,
+                    "criteria": {name: 0.0 for name in ranking_mod.CRITERION_NAMES},
+                    "metrics": {},
+                    "derived_metrics": {},
+                    "verdict": "red",
+                    "verdict_reasons": ["Rate limited — skipped"],
+                    "llm_analysis": None,
+                    "insurance_breakdown": {},
+                    "cache_stale_reason": None,
+                    "scrape": {"ok": False, "error": "rate_limited"},
+                    "enrichment": None,
+                    "llm_tokens": {"input": 0, "cached_input_read": 0, "output": 0},
+                    "llm_ok": None,
+                }
+        except Exception:  # pragma: no cover - import/runtime guard
+            pass
+
+    # Scrape (always).
+    scrape = await _scrape_url(url)
+    if not scrape.get("ok"):
+        return {
+            "url": url,
+            "url_hash": uh,
+            "canonical_url": url,
+            "scrape_ok": False,
+            "scrape_error": scrape.get("error", "unknown"),
+            "address": cached.get("address") if cached else None,
+            "hard_fail": True,
+            "criteria": {name: 0.0 for name in ranking_mod.CRITERION_NAMES},
+            "metrics": {},
+            "derived_metrics": {},
+            "verdict": "red",
+            "verdict_reasons": [f"Scrape failed — cannot evaluate ({scrape.get('error', 'unknown')})"],
+            "llm_analysis": None,
+            "insurance_breakdown": {},
+            "cache_stale_reason": None,
+            "scrape": {"ok": False, "error": scrape.get("error")},
+            "enrichment": None,
+            "llm_tokens": {"input": 0, "cached_input_read": 0, "output": 0},
+            "llm_ok": None,
+        }
+
+    zip_code = _extract_zip(scrape.get("address"))
+
+    # Cache staleness check.
+    stale, stale_reason = llm_mod.is_cache_stale(
+        cached_row=cached,
+        fresh_price=scrape.get("price"),
+        fresh_dom=scrape.get("dom"),
+    )
+
+    # Enrichment — re-use cached row if we have one and it isn't missing.
+    enrichment_row: dict[str, Any] | None = None
+    if cached_enrichment and not cached_enrichment.get("fetch_errors_json"):
+        enrichment_row = {
+            "lat": cached_enrichment.get("lat"),
+            "lng": cached_enrichment.get("lng"),
+            "geocode_source": cached_enrichment.get("geocode_source"),
+            "flood_zone": cached_enrichment.get("flood_zone"),
+            "flood_zone_risk": cached_enrichment.get("flood_zone_risk"),
+            "fire_zone": cached_enrichment.get("fire_zone"),
+            "fire_zone_risk": cached_enrichment.get("fire_zone_risk"),
+            "amenity_counts": json.loads(cached_enrichment["amenity_counts"]) if cached_enrichment.get("amenity_counts") else None,
+            "walkability_index": cached_enrichment.get("walkability_index"),
+            "fetch_errors": {},
+            "enrichment_missing": False,
+        }
+    else:
+        enrichment_row = await enrichment_mod.enrich_property(
+            client=http_client,
+            lat=scrape.get("lat"),
+            lng=scrape.get("lng"),
+            address=scrape.get("address"),
+        )
+
+    # LLM extraction — cache hit branch.
+    if not stale and cached and cached.get("llm_analysis"):
+        try:
+            llm_analysis = json.loads(cached["llm_analysis"])
+        except json.JSONDecodeError:
+            llm_analysis = llm_mod.default_llm_analysis(failed=True)
+        llm_tokens = {"input": 0, "cached_input_read": 0, "output": 0}
+        llm_ok = True
+        final_stale_reason = None
+        analyzed_at = cached.get("llm_analyzed_at")
+    else:
+        llm_result = await llm_mod.extract_property(
+            client=http_client,
+            api_key=api_key,
+            address=scrape.get("address"),
+            price=scrape.get("price"),
+            beds=scrape.get("beds"),
+            baths=scrape.get("baths"),
+            sqft=scrape.get("sqft"),
+            year_built=scrape.get("year_built"),
+            units=scrape.get("units"),
+            dom=scrape.get("dom"),
+            description=scrape.get("description"),
+            image_url=scrape.get("image_url"),
+        )
+        llm_analysis = llm_result["analysis"]
+        llm_tokens = llm_result["tokens"]
+        llm_ok = bool(llm_result["ok"])
+        final_stale_reason = stale_reason or "new_url"
+        analyzed_at = now_iso
+
+    # Insurance heuristic.
+    insurance = compute_insurance(
+        price=scrape.get("price"),
+        year_built=scrape.get("year_built"),
+        flood_zone=(enrichment_row or {}).get("flood_zone"),
+        fire_zone=(enrichment_row or {}).get("fire_zone"),
+        llm_uplift=((llm_analysis.get("insuranceUplift") or {}).get("suggested")),
+        enrichment_missing=bool((enrichment_row or {}).get("enrichment_missing")),
+    )
+
+    # Rent comps — use tier default in V1 (rent-comps-cache wiring skipped here;
+    # real values will flow through once /api/rent-estimate caching lands).
+    zip_tier = classify_zip_tier(zip_code)
+    rent_per_unit = TIER_DEFAULT_RENT_2BR.get(zip_tier, 2000)
+
+    # Metrics + verdict. Units-unknown silently DTI-passed duplex math before;
+    # now we surface it as its own hard-fail reason while still running the math.
+    scraped_units = scrape.get("units")
+    units_unknown = scraped_units is None
+    computed = compute_property_metrics(
+        price=scrape.get("price"),
+        units=scraped_units,  # None → verdict flags hardFailUnitsUnknown
+        year_built=scrape.get("year_built"),
+        beds=scrape.get("beds"),
+        baths=scrape.get("baths"),
+        dom=scrape.get("dom"),
+        zip_code=zip_code,
+        address=scrape.get("address"),
+        llm_analysis=llm_analysis,
+        enrichment_row=enrichment_row,
+        insurance_breakdown=insurance,
+        rent_per_unit=rent_per_unit,
+        hard_fail_units_unknown=units_unknown,
+    )
+
+    criteria = ranking_mod.criteria_from_metrics(computed["metrics"])
+    derived_metrics = {
+        "price_velocity": None,
+        "dom_percentile_zip": None,
+        "price_per_sqft_median_zip": None,
+        "topsis_percentile_alltime": None,
+        "reappearance_count": (cached.get("scrape_count") if cached else 0),
+    }
+
+    return {
+        "url": url,
+        "url_hash": uh,
+        "canonical_url": url,
+        "scrape_ok": True,
+        "scrape_error": None,
+        "address": scrape.get("address"),
+        "zip_code": zip_code,
+        "price": scrape.get("price"),
+        "hard_fail": computed["hard_fail"],
+        "criteria": criteria,
+        "metrics": computed["metrics"],
+        "derived_metrics": derived_metrics,
+        "verdict": computed["verdict"],
+        "verdict_reasons": computed["verdict_reasons"],
+        "llm_analysis": llm_analysis,
+        "insurance_breakdown": insurance,
+        "cache_stale_reason": final_stale_reason,
+        "scrape": scrape,
+        "enrichment": enrichment_row,
+        "llm_tokens": llm_tokens,
+        "llm_ok": llm_ok,
+        "analyzed_at": analyzed_at,
+    }
+
+
+async def run_sync_batch(
+    urls: list[str],
+    *,
+    db_path: str,
+    api_key: str | None,
+    preset_name: str | None = None,
+    include_narrative: bool = True,
+    client_ip: str | None = None,
+) -> dict[str, Any]:
+    """End-to-end sync batch. Returns the full response envelope (§B.1)."""
+    # Dedupe while preserving order.
+    seen = set()
+    deduped: list[str] = []
+    for u in urls:
+        u = (u or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+
+    batch_id = new_uuid_hex()
+    created_at = utc_now_iso()
+
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        # Cap concurrency at 4 workers per §N.2.
+        sem = asyncio.Semaphore(4)
+
+        async def _worker(u: str) -> dict[str, Any]:
+            async with sem:
+                try:
+                    return await _process_url(
+                        url=u, http_client=client, api_key=api_key, db_path=db_path,
+                        client_ip=client_ip,
+                    )
+                except Exception as exc:  # pragma: no cover - safety net
+                    logger.exception("Batch worker failed for %s", u)
+                    return {
+                        "url": u,
+                        "url_hash": compute_url_hash(u),
+                        "canonical_url": u,
+                        "scrape_ok": False,
+                        "scrape_error": f"worker_exception:{type(exc).__name__}",
+                        "address": None,
+                        "hard_fail": True,
+                        "criteria": {name: 0.0 for name in ranking_mod.CRITERION_NAMES},
+                        "metrics": {},
+                        "derived_metrics": {},
+                        "verdict": "red",
+                        "verdict_reasons": [f"Worker exception: {type(exc).__name__}"],
+                        "llm_analysis": None,
+                        "insurance_breakdown": {},
+                        "cache_stale_reason": None,
+                        "scrape": {"ok": False},
+                        "enrichment": None,
+                        "llm_tokens": {"input": 0, "cached_input_read": 0, "output": 0},
+                        "llm_ok": None,
+                    }
+
+        results = await asyncio.gather(*(_worker(u) for u in deduped))
+
+    # Rank across non-hard-fail.
+    ranked = ranking_mod.rank_batch(results)
+
+    # Persist everything inside BEGIN IMMEDIATE.
+    now_iso = utc_now_iso()
+    conn = get_connection(db_path)
+    try:
+        def _write(c: sqlite3.Connection) -> None:
+            c.execute(
+                """INSERT INTO batches
+                   (batch_id, created_at, completed_at, mode, input_count,
+                    status, preset_name, error_reason)
+                   VALUES (?, ?, ?, 'sync', ?, 'complete', ?, NULL)""",
+                (batch_id, created_at, now_iso, len(deduped), preset_name),
+            )
+            for row in ranked:
+                _upsert_property_row(
+                    c,
+                    url_hash=row["url_hash"],
+                    canonical_url=row["canonical_url"],
+                    address=row.get("address"),
+                    zip_code=row.get("zip_code"),
+                    last_price=row.get("price"),
+                    last_dom=row.get("metrics", {}).get("dom"),
+                    now_iso=now_iso,
+                )
+                _insert_snapshot(
+                    c, url_hash=row["url_hash"], now_iso=now_iso,
+                    scrape=row.get("scrape") or {"ok": False},
+                )
+                if row.get("enrichment"):
+                    _upsert_enrichment(
+                        c, url_hash=row["url_hash"],
+                        enrichment=row["enrichment"], now_iso=now_iso,
+                    )
+                if row.get("scrape_ok"):
+                    _update_analysis_cache(
+                        c,
+                        url_hash=row["url_hash"],
+                        llm_analysis=row["llm_analysis"],
+                        llm_tokens=row["llm_tokens"],
+                        insurance_breakdown=row["insurance_breakdown"],
+                        cache_stale_reason=row.get("cache_stale_reason"),
+                        analyzed_at=row.get("analyzed_at"),
+                    )
+                    if row.get("cache_stale_reason") is not None and row.get("llm_ok") is not None:
+                        _insert_claude_run(
+                            c,
+                            batch_id=batch_id,
+                            url_hash=row["url_hash"],
+                            tokens=row["llm_tokens"],
+                            status="ok" if row["llm_ok"] else "failed",
+                            error_reason=None if row["llm_ok"] else "extraction_failed",
+                            now_iso=now_iso,
+                        )
+                c.execute(
+                    """INSERT INTO rankings
+                       (batch_id, url_hash, rank, topsis_score, pareto_efficient,
+                        verdict, hard_fail, reasons_json, criteria_json,
+                        derived_metrics_json, claude_narrative, narrative_status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        batch_id, row["url_hash"], row["rank"],
+                        float(row.get("topsis_score") or 0.0),
+                        1 if row.get("pareto_efficient") else 0,
+                        row.get("verdict", "red"),
+                        1 if row.get("hard_fail") else 0,
+                        json.dumps(row.get("verdict_reasons") or []),
+                        json.dumps(row.get("criteria") or {}),
+                        json.dumps(row.get("derived_metrics") or {}),
+                        (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+                        "ok" if include_narrative and row.get("scrape_ok") else "skipped",
+                    ),
+                )
+
+        with_immediate_tx(conn, _write)
+    finally:
+        conn.close()
+
+    # Build response envelope.
+    response_rankings: list[dict[str, Any]] = []
+    for row in ranked:
+        response_rankings.append({
+            "rank": row["rank"],
+            "url_hash": row["url_hash"],
+            "canonical_url": row["canonical_url"],
+            "address": row.get("address"),
+            "zip_code": row.get("zip_code"),
+            "price": row.get("price"),
+            "topsis_score": row.get("topsis_score", 0.0),
+            "pareto_efficient": bool(row.get("pareto_efficient")),
+            "verdict": row.get("verdict", "red"),
+            "hard_fail": bool(row.get("hard_fail")),
+            "reasons": row.get("verdict_reasons") or [],
+            "criteria": row.get("criteria") or {},
+            "metrics": row.get("metrics") or {},
+            "derived_metrics": row.get("derived_metrics") or {},
+            "cache_stale_reason": row.get("cache_stale_reason"),
+            "insurance_breakdown": row.get("insurance_breakdown") or {},
+            "llm_analysis": row.get("llm_analysis"),
+            "enrichment": row.get("enrichment"),
+            "claude_narrative": (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+        })
+
+    return {
+        "batch_id": batch_id,
+        "created_at": created_at,
+        "completed_at": now_iso,
+        "mode": "sync",
+        "input_count": len(deduped),
+        "duplicates_removed": len(urls) - len(deduped),
+        "status": "complete",
+        "preset_name": preset_name,
+        "rankings": response_rankings,
+    }

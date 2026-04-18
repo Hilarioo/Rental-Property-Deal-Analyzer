@@ -9,3 +9,7 @@ docs/plans
 .pytest_cache/
 .coverage
 htmlcov/
+data/
+logs/
+.DS_Store
+.idea/

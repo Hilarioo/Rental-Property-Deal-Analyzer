@@ -1375,6 +1375,21 @@
     <!-- ===== Neighborhood Search Mode ===== -->
     <div id="searchMode" style="display:none">
       <div class="section-title">Neighborhood Search</div>
+
+      <!-- ===== Batch Analyze (Commit 1, sync mode only) ===== -->
+      <details id="batch-panel" style="margin-bottom:20px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;background:rgba(99,102,241,0.04);">
+        <summary style="cursor:pointer;font-weight:600;color:var(--text);list-style:revert;">Batch Analyze Multiple URLs</summary>
+        <p style="color:var(--text-muted);font-size:0.82rem;margin:10px 0 6px;">Paste Redfin URLs (one per line). Batch runs the Jose G/Y/R gates + TOPSIS ranking across all of them and returns a ranked table. Up to 30 URLs per sync batch.</p>
+        <textarea id="batch-urls" rows="6" placeholder="https://www.redfin.com/CA/Vallejo/..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;"></textarea>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+          <span id="batch-url-count" style="font-size:0.82rem;color:var(--text-muted);">0 URLs</span>
+          <button id="batch-submit" class="btn btn-small" type="button" onclick="runBatchAnalyze()">Analyze batch</button>
+        </div>
+        <div id="batch-loading" style="display:none;margin-top:10px;color:var(--text-muted);font-size:0.85rem;">Analyzing... this can take 30-90s for 3 URLs (scrape + FEMA + Cal Fire + OSM Overpass + LLM per property).</div>
+        <div id="batch-error" style="display:none;margin-top:10px;color:#f87171;font-size:0.85rem;"></div>
+        <div id="batch-results" style="display:none;margin-top:14px;"></div>
+      </details>
+
       <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px;">Search for listings in a zip code, city, or neighborhood. Results are scored using your target rent to find the best deals.</p>
 
       <div class="search-filters">
@@ -5128,6 +5143,152 @@
   loadSearchFilters();
   loadAlertPrefs();
 
+})();
+</script>
+
+<!-- ===== Batch Analyze controller (Commit 1 — sync mode only) ===== -->
+<script>
+(function() {
+  'use strict';
+  var BATCH_STORAGE_KEY = 'batchanalyzer.lastBatch';
+
+  function $(id) { return document.getElementById(id); }
+
+  function urlLines(text) {
+    return (text || '').split(/\n+/).map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0 && /^https?:\/\//i.test(s); });
+  }
+
+  function updateCount() {
+    var ta = $('batch-urls');
+    var n = urlLines(ta && ta.value).length;
+    var el = $('batch-url-count');
+    if (el) el.textContent = n + ' URL' + (n === 1 ? '' : 's');
+  }
+
+  function escapeHtml(s) {
+    return (s == null ? '' : String(s))
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  }
+
+  function fmtUsd(n) {
+    if (n == null || isNaN(n)) return '—';
+    return '$' + Math.round(Number(n)).toLocaleString();
+  }
+
+  function renderResults(envelope) {
+    var root = $('batch-results');
+    if (!root) return;
+    var rows = envelope.rankings || [];
+    if (!rows.length) {
+      root.innerHTML = '<p style="color:var(--text-muted);">No rankings returned.</p>';
+      root.style.display = 'block';
+      return;
+    }
+    var html = '';
+    html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">';
+    html += '<strong>Batch ' + escapeHtml(envelope.batch_id.slice(0, 8)) + '</strong>';
+    html += '<span style="font-size:0.78rem;color:var(--text-muted);">' + rows.length + ' ranked · ' + (envelope.duplicates_removed || 0) + ' dupes removed</span>';
+    html += '</div>';
+    html += '<div style="overflow-x:auto;">';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
+    html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
+    ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', ''].forEach(function (h) {
+      html += '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">' + h + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var verdictBg = r.verdict === 'green' ? 'rgba(22,163,74,0.18);color:#16a34a;border:1px solid rgba(22,163,74,0.4)'
+        : r.verdict === 'yellow' ? 'rgba(202,138,4,0.18);color:#ca8a04;border:1px solid rgba(202,138,4,0.4)'
+        : 'rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4)';
+      var star = r.pareto_efficient ? ' ★' : '';
+      var addr = r.address ? (r.address.length > 48 ? r.address.slice(0, 46) + '…' : r.address) : '(no address)';
+      var reasons = (r.reasons || []).slice(0, 2).join(' · ');
+      if (reasons.length > 110) reasons = reasons.slice(0, 108) + '…';
+      html += '<tr style="border-bottom:1px solid var(--border);">';
+      html += '<td style="padding:6px 8px;white-space:nowrap;">' + r.rank + star + '</td>';
+      html += '<td style="padding:6px 8px;">' + escapeHtml(addr) + '</td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtUsd(r.price) + '</td>';
+      html += '<td style="padding:6px 8px;"><span style="background:' + verdictBg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">' + escapeHtml(r.verdict) + '</span></td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
+      html += '<td style="padding:6px 8px;color:var(--text-muted);">' + escapeHtml(reasons) + '</td>';
+      html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + JSON.stringify(r.canonical_url).replace(/"/g, '&quot;') + ')">Open</button></td>';
+      html += '</tr>';
+      // Cache-reason badge row (optional).
+      if (r.cache_stale_reason) {
+        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">LLM re-ran: ' + escapeHtml(r.cache_stale_reason) + '</td></tr>';
+      } else {
+        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">LLM cache hit (0 tokens)</td></tr>';
+      }
+    });
+    html += '</tbody></table></div>';
+    root.innerHTML = html;
+    root.style.display = 'block';
+  }
+
+  window.__openBatchRow = function (url) {
+    var input = $('zillowUrl');
+    if (input) {
+      input.value = url;
+      // Switch back to single-property mode (keeps Sprint 4 wizard flow).
+      if (typeof toggleSearchMode === 'function') toggleSearchMode('single');
+      if (typeof fetchZillow === 'function') fetchZillow();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+  };
+
+  window.runBatchAnalyze = async function () {
+    var ta = $('batch-urls');
+    var urls = urlLines(ta && ta.value);
+    if (!urls.length) {
+      var err = $('batch-error');
+      if (err) { err.textContent = 'Paste at least one Redfin URL.'; err.style.display = 'block'; }
+      return;
+    }
+    var btn = $('batch-submit'); if (btn) btn.disabled = true;
+    var load = $('batch-loading'); if (load) load.style.display = 'block';
+    var err = $('batch-error'); if (err) err.style.display = 'none';
+    var out = $('batch-results'); if (out) out.style.display = 'none';
+
+    try {
+      var resp = await fetch('/api/batch-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: urls, include_narrative: true }),
+      });
+      var envelope = await resp.json();
+      if (!resp.ok) {
+        var msg = (envelope.error && envelope.error.message) || 'Batch failed.';
+        var rid = (envelope.error && envelope.error.request_id) ? ' (request ' + envelope.error.request_id.slice(0, 8) + ')' : '';
+        if (err) { err.textContent = msg + rid; err.style.display = 'block'; }
+        return;
+      }
+      try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
+      renderResults(envelope);
+    } catch (e) {
+      if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
+    } finally {
+      if (btn) btn.disabled = false;
+      if (load) load.style.display = 'none';
+    }
+  };
+
+  // Wire events + restore last-run results on reload.
+  document.addEventListener('DOMContentLoaded', function () {
+    var ta = $('batch-urls');
+    if (ta) ta.addEventListener('input', updateCount);
+    try {
+      var raw = localStorage.getItem(BATCH_STORAGE_KEY);
+      if (raw) {
+        var env = JSON.parse(raw);
+        if (env && env.rankings) renderResults(env);
+      }
+    } catch (_) {}
+    updateCount();
+  });
 })();
 </script>
 </body>

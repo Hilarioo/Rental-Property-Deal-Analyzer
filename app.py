@@ -1,4 +1,5 @@
-import os, json, re, webbrowser, threading, time, asyncio
+import os, json, re, webbrowser, threading, time, asyncio, logging, uuid
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
 from collections import defaultdict
@@ -11,7 +12,39 @@ from bs4 import BeautifulSoup
 import uvicorn
 
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Logging — file rotation under ./logs/ (gitignored). Used by the M1/M3
+# security-hardened handlers to record full tracebacks keyed by request_id
+# without leaking them to the client (BATCH_DESIGN.md §G.3).
+# ---------------------------------------------------------------------------
+_LOG_DIR = Path("logs")
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_log_handler = TimedRotatingFileHandler(
+    _LOG_DIR / "app.log", when="W0", backupCount=4, encoding="utf-8"
+)
+_log_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+))
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler, logging.StreamHandler()])
+logger = logging.getLogger("analyzer")
+
+
+def _error_envelope(code: str, message: str, request_id: str) -> dict:
+    """Uniform error shape per BATCH_DESIGN §B.7. `message` is always generic
+    (never str(exc)); the request_id correlates to the server-side traceback."""
+    return {"error": {"code": code, "message": message, "request_id": request_id}}
+
+
 app = FastAPI()
+
+# Ensure ./data/ directory exists and the schema is applied before any route
+# can hit it. Idempotent — no-op on subsequent starts.
+try:
+    from scripts.init_db import init_db as _init_db
+    _init_db()
+except Exception as _db_exc:  # pragma: no cover - startup diagnostic
+    logger.exception("DB init failed: %s", _db_exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1683,9 +1716,14 @@ async def analyze_ai(request: Request):
             {"error": "Could not reach AI service. Check your connection and try again."},
             status_code=502,
         )
-    except Exception as exc:
+    except Exception:
+        # M1 fix (BATCH_DESIGN §G.1): never return str(exc) to clients. The
+        # upstream exception may contain API response bodies, stack frames, or
+        # file paths. Log the traceback server-side keyed by request_id.
+        request_id = uuid.uuid4().hex
+        logger.exception("analyze-ai Anthropic call failed (request_id=%s)", request_id)
         return JSONResponse(
-            {"error": str(exc)},
+            _error_envelope("AI_SERVICE_ERROR", "AI service error", request_id),
             status_code=502,
         )
 
@@ -1927,8 +1965,18 @@ async def _stream_anthropic(metrics: str, api_key: str, model_override: str | No
             },
         ) as resp:
             if resp.status_code != 200:
+                # M3 fix (BATCH_DESIGN §G.1): do not forward the upstream
+                # response body to the client — it can contain API keys in
+                # error reflections, upstream request IDs, or provider PII.
+                # Log full body server-side, emit a generic SSE error with a
+                # correlation request_id.
                 body = await resp.aread()
-                yield f"data: {json.dumps({'error': f'Anthropic error: {resp.status_code} - {body[:200].decode()}'})}\n\n"
+                request_id = uuid.uuid4().hex
+                logger.error(
+                    "Anthropic stream HTTP %s (request_id=%s): %s",
+                    resp.status_code, request_id, body[:500].decode(errors="replace"),
+                )
+                yield f"data: {json.dumps({'error': 'AI service error', 'request_id': request_id})}\n\n"
                 return
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
@@ -2091,6 +2139,361 @@ async def analyze_ai_stream(request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch analyze + supporting endpoints (BATCH_DESIGN.md §B).
+# Imports are module-local so a missing dependency (e.g. nothing in `batch/`)
+# can't crash app boot; the handlers error out gracefully instead.
+# ---------------------------------------------------------------------------
+
+from batch.db import get_connection as _batch_conn  # noqa: E402
+from batch.db import url_hash as _batch_url_hash  # noqa: E402
+from batch.pipeline import run_sync_batch as _run_sync_batch  # noqa: E402
+from batch.pipeline import _process_url as _batch_process_url  # noqa: E402
+from batch.llm import extract_property as _llm_extract_property  # noqa: E402
+from batch.llm import is_cache_stale as _llm_is_cache_stale  # noqa: E402
+from scripts.init_db import DEFAULT_DB_PATH as _BATCH_DB_PATH  # noqa: E402
+
+
+_BATCH_MAX_URLS_SYNC = 30
+_BATCH_HARD_CAP = 50
+
+_URL_HASH_RE = re.compile(r"[a-f0-9]{64}")
+
+
+def _validate_url_hash(url_hash: str):
+    """Return a 400 JSONResponse if url_hash is malformed, else None."""
+    if not _URL_HASH_RE.fullmatch(url_hash or ""):
+        return JSONResponse(
+            _error_envelope(
+                "VALIDATION_ERROR",
+                "Invalid url_hash format",
+                uuid.uuid4().hex,
+            ),
+            status_code=400,
+        )
+    return None
+
+
+@app.post("/api/batch-analyze")
+async def batch_analyze(request: Request):
+    """Sync batch endpoint — BATCH_DESIGN §B.1."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"batch:{client_ip}", 3):
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many batch requests.", request_id),
+            status_code=429,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
+            status_code=400,
+        )
+
+    urls = body.get("urls") or []
+    preset_name = body.get("preset_name")
+    include_narrative = bool(body.get("include_narrative", True))
+
+    if not isinstance(urls, list) or not urls:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "`urls` must be a non-empty array.", request_id),
+            status_code=400,
+        )
+    if len(urls) > _BATCH_MAX_URLS_SYNC:
+        if len(urls) > _BATCH_HARD_CAP:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope(
+                    "VALIDATION_ERROR",
+                    f"Too many URLs. Sync cap is {_BATCH_MAX_URLS_SYNC}; hard cap {_BATCH_HARD_CAP}.",
+                    request_id,
+                ),
+                status_code=400,
+            )
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope(
+                "VALIDATION_ERROR",
+                f"Sync batch supports up to {_BATCH_MAX_URLS_SYNC} URLs — use async mode (Commit 2).",
+                request_id,
+            ),
+            status_code=400,
+        )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+
+    try:
+        envelope = await _run_sync_batch(
+            urls,
+            db_path=str(_BATCH_DB_PATH),
+            api_key=api_key,
+            preset_name=preset_name,
+            include_narrative=include_narrative,
+            client_ip=client_ip,
+        )
+        return JSONResponse(envelope)
+    except Exception:
+        request_id = uuid.uuid4().hex
+        logger.exception("batch-analyze failed (request_id=%s)", request_id)
+        return JSONResponse(
+            _error_envelope("INTERNAL_ERROR", "Batch processing failed.", request_id),
+            status_code=500,
+        )
+
+
+@app.post("/api/property/extract")
+async def property_extract(request: Request):
+    """Single-property structured extraction (BATCH_DESIGN §B.5a).
+
+    Scrapes (if needed) then runs the cached LLM extraction call. Honors
+    `force: true` to bypass the cache.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"prop-extract:{client_ip}", 10):
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many requests.", request_id),
+            status_code=429,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
+            status_code=400,
+        )
+
+    url = (body.get("url") or "").strip()
+    provided_hash = (body.get("url_hash") or "").strip() or None
+    force = bool(body.get("force"))
+
+    if not url and not provided_hash:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "`url` or `url_hash` required.", request_id),
+            status_code=400,
+        )
+
+    # If only url_hash is provided, look up the canonical_url from the DB.
+    if not url and provided_hash:
+        conn = _batch_conn(_BATCH_DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT canonical_url FROM properties WHERE url_hash = ?",
+                (provided_hash,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("PROPERTY_NOT_FOUND", "Unknown url_hash.", request_id),
+                status_code=404,
+            )
+        url = row["canonical_url"]
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+
+    # Run the single-URL pipeline via the batch machinery (guarantees parity).
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            # Soft-force: if force=True, delete cached llm_analysis first so the
+            # pipeline re-runs extraction.
+            if force and provided_hash is None:
+                provided_hash = _batch_url_hash(url)
+            if force:
+                conn = _batch_conn(_BATCH_DB_PATH)
+                try:
+                    conn.execute(
+                        "UPDATE properties SET llm_analysis = NULL, llm_analyzed_at = NULL WHERE url_hash = ?",
+                        (provided_hash,),
+                    )
+                finally:
+                    conn.close()
+
+            # Run through the full per-URL pipeline.
+            processed = await _batch_process_url(
+                url=url,
+                http_client=client,
+                api_key=api_key,
+                db_path=str(_BATCH_DB_PATH),
+            )
+        cached = processed.get("cache_stale_reason") is None and not force
+        return JSONResponse({
+            "url_hash": processed["url_hash"],
+            "canonical_url": processed["canonical_url"],
+            "cached": cached,
+            "cache_stale_reason": "forced" if force else processed.get("cache_stale_reason"),
+            "llm_analysis": processed.get("llm_analysis"),
+            "tokens_used": {
+                "input": processed.get("llm_tokens", {}).get("input"),
+                "cached_input_read": processed.get("llm_tokens", {}).get("cached_input_read"),
+                "output": processed.get("llm_tokens", {}).get("output"),
+            },
+            "insurance_breakdown": processed.get("insurance_breakdown"),
+        })
+    except Exception:
+        request_id = uuid.uuid4().hex
+        logger.exception("property-extract failed (request_id=%s)", request_id)
+        return JSONResponse(
+            _error_envelope("LLM_EXTRACTION_FAILED", "Extraction failed.", request_id),
+            status_code=502,
+        )
+
+
+@app.get("/api/property/{url_hash}")
+async def property_cached(url_hash: str):
+    """Read-only projection of everything we know about a url_hash (§B.5b)."""
+    bad = _validate_url_hash(url_hash)
+    if bad is not None:
+        return bad
+    conn = _batch_conn(_BATCH_DB_PATH)
+    try:
+        prop = conn.execute(
+            "SELECT * FROM properties WHERE url_hash = ?", (url_hash,)
+        ).fetchone()
+        if not prop:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("PROPERTY_NOT_FOUND", "Unknown url_hash.", request_id),
+                status_code=404,
+            )
+        snap = conn.execute(
+            "SELECT * FROM scrape_snapshots WHERE url_hash = ? ORDER BY scraped_at DESC LIMIT 1",
+            (url_hash,),
+        ).fetchone()
+        enrich = conn.execute(
+            "SELECT * FROM property_enrichment WHERE url_hash = ?", (url_hash,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    def _maybe_json(s):
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            return None
+
+    return JSONResponse({
+        "url_hash": url_hash,
+        "canonical_url": prop["canonical_url"],
+        "address": prop["address"],
+        "zip_code": prop["zip_code"],
+        "latest_snapshot": {
+            "scraped_at": snap["scraped_at"] if snap else None,
+            "price": snap["price"] if snap else None,
+            "beds": snap["beds"] if snap else None,
+            "baths": snap["baths"] if snap else None,
+            "sqft": snap["sqft"] if snap else None,
+            "year_built": snap["year_built"] if snap else None,
+            "units": snap["units"] if snap else None,
+            "dom": snap["dom"] if snap else None,
+            "description": snap["description"] if snap else None,
+            "image_url": snap["image_url"] if snap else None,
+        } if snap else None,
+        "enrichment": {
+            "lat": enrich["lat"],
+            "lng": enrich["lng"],
+            "flood_zone": enrich["flood_zone"],
+            "flood_zone_risk": enrich["flood_zone_risk"],
+            "fire_zone": enrich["fire_zone"],
+            "fire_zone_risk": enrich["fire_zone_risk"],
+            "amenity_counts": _maybe_json(enrich["amenity_counts"]),
+            "walkability_index": enrich["walkability_index"],
+            "enriched_at": enrich["enriched_at"],
+        } if enrich else None,
+        "llm_analysis": _maybe_json(prop["llm_analysis"]),
+        "llm_analyzed_at": prop["llm_analyzed_at"],
+        "insurance": {
+            "annual_usd": prop["cached_insurance"],
+            "breakdown": _maybe_json(prop["cached_insurance_breakdown"]),
+        },
+        "cache_stale_reason": prop["cache_stale_reason"],
+    })
+
+
+@app.get("/api/batches")
+async def list_batches(limit: int = 20, offset: int = 0):
+    """Historical batches for the My Batches view (§B.4)."""
+    limit = max(1, min(100, int(limit or 20)))
+    offset = max(0, int(offset or 0))
+    conn = _batch_conn(_BATCH_DB_PATH)
+    try:
+        total_row = conn.execute("SELECT COUNT(*) AS n FROM batches").fetchone()
+        total = int(total_row["n"])
+        rows = conn.execute(
+            """SELECT b.batch_id, b.created_at, b.completed_at, b.mode,
+                      b.input_count, b.status, b.preset_name,
+                      (SELECT p.address FROM rankings r
+                         JOIN properties p ON p.url_hash = r.url_hash
+                        WHERE r.batch_id = b.batch_id
+                        ORDER BY r.rank ASC LIMIT 1) AS top_rank_address
+                 FROM batches b
+                 ORDER BY b.created_at DESC
+                 LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+    finally:
+        conn.close()
+    return JSONResponse({
+        "total": total,
+        "batches": [dict(r) for r in rows],
+    })
+
+
+@app.get("/api/properties/{url_hash}/history")
+async def property_history(url_hash: str):
+    """Scrape history + every rank this property received (§B.5)."""
+    bad = _validate_url_hash(url_hash)
+    if bad is not None:
+        return bad
+    conn = _batch_conn(_BATCH_DB_PATH)
+    try:
+        prop = conn.execute(
+            "SELECT canonical_url, address, scrape_count FROM properties WHERE url_hash = ?",
+            (url_hash,),
+        ).fetchone()
+        if not prop:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("PROPERTY_NOT_FOUND", "Unknown url_hash.", request_id),
+                status_code=404,
+            )
+        snaps = conn.execute(
+            """SELECT scraped_at, price, dom, scrape_ok
+                 FROM scrape_snapshots
+                WHERE url_hash = ?
+                ORDER BY scraped_at DESC""",
+            (url_hash,),
+        ).fetchall()
+        ranks = conn.execute(
+            """SELECT r.batch_id, r.rank, r.topsis_score, r.verdict, b.created_at
+                 FROM rankings r JOIN batches b ON b.batch_id = r.batch_id
+                WHERE r.url_hash = ?
+                ORDER BY b.created_at DESC""",
+            (url_hash,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return JSONResponse({
+        "url_hash": url_hash,
+        "canonical_url": prop["canonical_url"],
+        "address": prop["address"],
+        "scrape_count": prop["scrape_count"],
+        "snapshots": [dict(s) for s in snaps],
+        "rankings": [dict(r) for r in ranks],
+    })
 
 
 def open_browser():
