@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 CLAUDE.md
 .claude/
 docs/plans
+.pytest_cache/
+.coverage
+htmlcov/
