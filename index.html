@@ -1535,6 +1535,14 @@
     <div id="loanFields">
       <div class="input-grid">
         <div class="input-group">
+          <label for="loanType">Loan Type</label>
+          <select id="loanType" onchange="calculate()">
+            <option value="FHA" selected>FHA (owner-occupied)</option>
+            <option value="CONV">Conventional</option>
+          </select>
+          <div class="helper">FHA: 3.5% down, includes MIP</div>
+        </div>
+        <div class="input-group">
           <label for="downPayment">Down Payment (%)</label>
           <input type="number" id="downPayment" value="20" min="0" max="100" step="0.5">
           <div class="helper" id="dpHelper">$40,000</div>
@@ -1550,6 +1558,29 @@
         <div class="input-group">
           <label for="points">Loan Points</label>
           <input type="number" id="points" value="0" min="0" max="10" step="0.25">
+        </div>
+      </div>
+
+      <!-- Sprint 1: Qualifying income inputs (FHA DTI) -->
+      <div class="section-title" style="font-size:0.95rem; margin-top:16px;">Qualifying Income (for DTI)</div>
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="buyerMonthlyIncomeW2">W-2 Monthly Gross ($)</label>
+          <input type="number" id="buyerMonthlyIncomeW2" value="4506" min="0" step="1" onchange="calculate()">
+          <div class="helper">Lender-qualifying W-2 income only</div>
+        </div>
+        <div class="input-group">
+          <label for="monthlyDebts">Monthly Debts ($)</label>
+          <input type="number" id="monthlyDebts" value="0" min="0" step="1" onchange="calculate()">
+          <div class="helper">Car, student, minimum cc payments</div>
+        </div>
+        <div class="input-group">
+          <label for="ownerOccupied">Owner-Occupied?</label>
+          <select id="ownerOccupied" onchange="calculate()">
+            <option value="true" selected>Yes (FHA house-hack)</option>
+            <option value="false">No (pure investment)</option>
+          </select>
+          <div class="helper">FHA requires owner-occupy ≥ 1 yr</div>
         </div>
       </div>
     </div>
@@ -1759,6 +1790,27 @@
       <div class="metric-card"><div class="label">Annual Depreciation</div><div class="value" id="resDepreciation">--</div></div>
       <div class="metric-card" id="resPricePerSqftCard" style="display:none;"><div class="label">Price / Sqft</div><div class="value" id="resPricePerSqft">--</div></div>
       <div class="metric-card" id="resRentPerSqftCard" style="display:none;"><div class="label">Rent / Sqft</div><div class="value" id="resRentPerSqft">--</div></div>
+    </div>
+
+    <!-- Sprint 1: FHA / DTI Panel -->
+    <div class="section-title" id="fhaDtiTitle" style="display:none;">FHA Loan & Qualifying DTI</div>
+    <div class="detail-grid" id="fhaDetailGrid" style="display:none;">
+      <div class="metric-card"><div class="label">Base Loan</div><div class="value" id="resFhaBaseLoan">--</div></div>
+      <div class="metric-card"><div class="label">Upfront MIP (financed)</div><div class="value" id="resFhaUpfrontMip">--</div></div>
+      <div class="metric-card"><div class="label">Financed Loan</div><div class="value" id="resFhaFinancedLoan">--</div></div>
+      <div class="metric-card"><div class="label">Monthly MIP</div><div class="value" id="resFhaMonthlyMip">--</div></div>
+    </div>
+
+    <div class="detail-grid" id="dtiPanel" style="display:none;">
+      <div class="metric-card"><div class="label">W-2 Monthly Gross</div><div class="value" id="resW2Monthly">--</div></div>
+      <div class="metric-card"><div class="label">Rental Offset (75%)</div><div class="value" id="resRentalOffset">--</div></div>
+      <div class="metric-card"><div class="label">Total Qualifying Income</div><div class="value" id="resQualifyingIncome">--</div></div>
+      <div class="metric-card"><div class="label">Max PITI @ 45% DTI</div><div class="value" id="resMaxPiti45">--</div></div>
+      <div class="metric-card"><div class="label">Max PITI @ 50% DTI</div><div class="value" id="resMaxPiti50">--</div></div>
+      <div class="metric-card"><div class="label">Max PITI @ 55% DTI</div><div class="value" id="resMaxPiti55">--</div></div>
+    </div>
+    <div id="dtiNote" style="display:none; font-size:0.82rem; color:var(--text-muted); margin-top:8px;">
+      Default 45% DTI — conservative until lender selected. 50%/55% shown as stretch reference.
     </div>
 
     <!-- D) Deal Score -->
@@ -2305,16 +2357,31 @@
     var numericScore = 0; // 0-100 continuous score for ranking
 
     // --- Common calculations ---
+    // Sprint 1 (task 1.10): thresholds annotated. Tiered expense ratio
+    // reflects that larger-value props absorb fixed costs better (45%)
+    // while sub-$100K properties need a bigger maintenance buffer (55%).
     var expenseRatio = price >= 250000 ? 0.45 : price >= 100000 ? 0.50 : 0.55;
-    var loanAmt = price * 0.8;
+    // Sprint 1 (task 1.9): honor the user-entered down payment. Previously
+    // hardcoded 20% (price * 0.8 loan, price * 0.2 down), which silently
+    // inflated quick-scores for FHA 3.5% buyers. Read from the form when
+    // available; fall back to 20% (conventional) for listing-search flows
+    // where the form hasn't been filled yet.
+    var dpInput = $('downPayment');
+    var downPct = (dpInput && val(dpInput, 0, 100) > 0) ? val(dpInput, 0, 100) / 100 : 0.20;
+    var loanAmt = price * (1 - downPct);
     var monthlyRate = rate / 12;
     var nPayments = 360;
     var mortgage = monthlyRate > 0 ? loanAmt * (monthlyRate * Math.pow(1 + monthlyRate, nPayments)) / (Math.pow(1 + monthlyRate, nPayments) - 1) : 0;
     var noi = rent * (1 - expenseRatio);
     var cashFlow = noi - mortgage;
-    var downPayment = price * 0.2;
+    var downPayment = price * downPct;
 
     // === 1. Cap Rate (aligned with full scorecard: 6%+ strong, 4%+ ok) ===
+    // Sprint 1 (task 1.10) thresholds audit:
+    //   - 6%  strong: matches Deal Scorecard §3258 Cap Rate strong tier
+    //   - 4%  ok:     matches Scorecard ok tier
+    //   - <4% weak:   matches Scorecard weak tier
+    //   - /8 normalizer: 8% cap = 100% of 20 ranking points (arbitrary cap ceiling)
     var capRate = (rent * 12 * (1 - expenseRatio)) / price * 100;
     numericScore += Math.min(20, (capRate / 8) * 20);
     if (capRate >= 6) {
@@ -2374,6 +2441,10 @@
     }
 
     // === 6. Estimated Year-1 Total Return ===
+    // Sprint 1 (task 1.10) thresholds audit:
+    //   - 0.03 appreciation: long-run US housing inflation (~3%/yr). Sprint 4 scope to expose as input.
+    //   - yearlyEquity ≈ first-year principal paid (interest approx = loanAmt * rate for year 1, crude).
+    //   - 10% total return = strong, 5% ok, <5% weak.
     var yearlyAppreciation = price * 0.03;
     var yearlyEquity = (mortgage * 12) - (loanAmt * monthlyRate * 12);
     var yearlyCashFlow = cashFlow * 12;
@@ -3093,6 +3164,15 @@
   // ======================================================================
   // Calculation Engine
   // ======================================================================
+  // Sprint 1: FHA MIP constants. Mirror of calc.js FHA_MIP_UPFRONT_RATE /
+  // FHA_MIP_ANNUAL_STANDARD / FHA_BASELINE_LOAN_LIMIT. Any change here must
+  // also change calc.js (and vice versa). See calc.js header comment.
+  var FHA_MIP_UPFRONT_RATE = 0.0175;         // 1.75% of base loan, financed in
+  var FHA_MIP_ANNUAL_STANDARD = 0.0055;      // 0.55% annual, base loan ≤ $726,200
+  var FHA_MIP_ANNUAL_HIGH = 0.0075;          // 0.75% annual, base loan > $726,200
+  var FHA_BASELINE_LOAN_LIMIT = 726200;      // 2025 FHA conforming baseline
+  var FHA_RENTAL_OFFSET = 0.75;              // 75% of non-owner-unit rents counts
+
   function calculate() {
     var price = val($('purchasePrice'), 0);
     var arvVal = val($('arv'), 0);
@@ -3105,6 +3185,9 @@
     var rate = isCash ? 0 : val($('interestRate'), 0, 30);
     var termYears = isCash ? 0 : Math.max(1, Math.round(val($('loanTerm'), 1, 50)));
     var pointsVal = isCash ? 0 : val($('points'), 0, 10);
+    // Sprint 1: loan type (FHA vs Conventional). Default FHA for Jose.
+    var loanTypeEl = $('loanType');
+    var loanType = loanTypeEl ? loanTypeEl.value : 'CONV';
 
     var totalRent = getTotalRent();
     var otherInc = val($('otherIncome'), 0);
@@ -3124,7 +3207,18 @@
 
     // Loan
     var dpAmount = isCash ? price : price * dpPct / 100;
-    var loanAmount = isCash ? 0 : price - dpAmount;
+    var baseLoanAmount = isCash ? 0 : price - dpAmount;
+    // Sprint 1: FHA upfront MIP (1.75%) is financed into the loan amount.
+    // P&I is calculated on financedLoan (base + upfront MIP); monthly MIP
+    // is a HUD fixed schedule on the BASE loan, not the financed amount.
+    // Mirror of calc.js computeFhaLoanAmount + computeFhaPITI.
+    var isFha = !isCash && loanType === 'FHA';
+    var upfrontMip = isFha ? baseLoanAmount * FHA_MIP_UPFRONT_RATE : 0;
+    var loanAmount = isCash ? 0 : baseLoanAmount + upfrontMip; // what P&I amortizes
+    var annualMipRate = isFha
+      ? (baseLoanAmount > FHA_BASELINE_LOAN_LIMIT ? FHA_MIP_ANNUAL_HIGH : FHA_MIP_ANNUAL_STANDARD)
+      : 0;
+    var monthlyMip = isFha ? baseLoanAmount * annualMipRate / 12 : 0;
     var n = termYears * 12;
     var monthlyRate = rate / 100 / 12;
 
@@ -3139,7 +3233,8 @@
 
     var monthlyTaxes = taxesYr / 12;
     var monthlyInsurance = insuranceYr / 12;
-    var piti = monthlyPI + monthlyTaxes + monthlyInsurance;
+    // Sprint 1: PITI now includes monthly MIP for FHA loans (0 otherwise).
+    var piti = monthlyPI + monthlyTaxes + monthlyInsurance + monthlyMip;
 
     // Monthly operating expenses
     var maintExp = totalMonthlyIncome * maintPct / 100;
@@ -3319,6 +3414,36 @@
       dealExpl = dealPoints + '/' + dealMaxPoints + ' points — Most metrics fall below investment thresholds.';
     }
 
+    // Sprint 1: Qualifying income + DTI (FHA 75% rental offset).
+    // Mirror of calc.js computeQualifyingIncome / maxPitiAtDti.
+    var w2Monthly = val($('buyerMonthlyIncomeW2'), 0);
+    var monthlyDebts = val($('monthlyDebts'), 0);
+    var ownerOccupied = ($('ownerOccupied') && $('ownerOccupied').value === 'true');
+    // Sprint 1 scope: per-unit rents are Sprint 2. For now, split totalRent
+    // evenly across units using Math.floor, and treat unit 0 as owner-occupied.
+    var perUnitRents = [];
+    if (propertyType === 'sfh') {
+      perUnitRents = [totalRent];
+    } else {
+      var unitCountForDti = Math.max(1, parseInt($('unitCount').value) || 1);
+      var perUnit = Math.floor(totalRent / unitCountForDti);
+      for (var ui = 0; ui < unitCountForDti; ui++) perUnitRents.push(perUnit);
+    }
+    var rentableRents;
+    if (ownerOccupied && perUnitRents.length > 1) {
+      rentableRents = perUnitRents.slice(1).reduce(function(s, r) { return s + (r || 0); }, 0);
+    } else {
+      rentableRents = perUnitRents.reduce(function(s, r) { return s + (r || 0); }, 0);
+      if (ownerOccupied && perUnitRents.length === 1) rentableRents = 0; // SFH owner-occ has no offset
+    }
+    var rentalOffsetContribution = FHA_RENTAL_OFFSET * rentableRents;
+    var qualifyingIncome = w2Monthly + rentalOffsetContribution;
+    // Clamp at 0 — mirrors calc.js maxPitiAtDti. Prevents "-$500" UI nonsense
+    // when a heavily-indebted borrower trips negative.
+    var maxPiti45 = Math.max(0, qualifyingIncome * 0.45 - monthlyDebts);
+    var maxPiti50 = Math.max(0, qualifyingIncome * 0.50 - monthlyDebts);
+    var maxPiti55 = Math.max(0, qualifyingIncome * 0.55 - monthlyDebts);
+
     // Store results
     lastCalcResults = {
       price: price, arv: arvVal, closingCosts: closingCostsVal, rehab: rehabVal,
@@ -3345,7 +3470,14 @@
       totalReturnDebtPaydown: totalReturnDebtPaydown, totalReturnTaxBenefits: totalReturnTaxBenefits,
       totalReturn5yr: totalReturn5yr,
       projRows: projRows, amortSchedule: amortSchedule, monthlyRate: monthlyRate,
-      propertyType: propertyType, n: n
+      propertyType: propertyType, n: n,
+      // Sprint 1: FHA + DTI
+      loanType: loanType, isFha: isFha, baseLoanAmount: baseLoanAmount,
+      upfrontMip: upfrontMip, monthlyMip: monthlyMip, annualMipRate: annualMipRate,
+      w2Monthly: w2Monthly, monthlyDebts: monthlyDebts, ownerOccupied: ownerOccupied,
+      rentalOffsetContribution: rentalOffsetContribution,
+      qualifyingIncome: qualifyingIncome,
+      maxPiti45: maxPiti45, maxPiti50: maxPiti50, maxPiti55: maxPiti55
     };
 
     // Only update DOM if on step 6
@@ -3483,6 +3615,33 @@
       setMetricText('resRentPerSqft', '$' + fmt(r.rentPerSqft));
     } else {
       $('resRentPerSqftCard').style.display = 'none';
+    }
+
+    // Sprint 1: FHA detail panel + Qualifying DTI panel
+    // DTI panel is FHA-specific (75% rental offset is an FHA rule) AND requires
+    // owner-occupancy (the offset only applies to non-owner-occupied units).
+    // Conventional loans and investor purchases have different qualifying math
+    // and must not see this panel — see Code Review sprint1 blocker.
+    var showFhaPanel = !!r.isFha;
+    var showDtiPanel = showFhaPanel && !!r.ownerOccupied && r.qualifyingIncome > 0;
+    $('fhaDtiTitle').style.display = (showFhaPanel || showDtiPanel) ? '' : 'none';
+    $('fhaDetailGrid').style.display = showFhaPanel ? '' : 'none';
+    if (showFhaPanel) {
+      setMetricText('resFhaBaseLoan', fmtDollar(r.baseLoanAmount));
+      setMetricText('resFhaUpfrontMip', fmtDollar(r.upfrontMip));
+      setMetricText('resFhaFinancedLoan', fmtDollar(r.loanAmount));
+      setMetricText('resFhaMonthlyMip', fmtDollar(r.monthlyMip) + '/mo');
+    }
+    $('dtiPanel').style.display = showDtiPanel ? '' : 'none';
+    $('dtiNote').style.display = showDtiPanel ? '' : 'none';
+    if (showDtiPanel) {
+      setMetricText('resW2Monthly', fmtDollar(r.w2Monthly));
+      setMetricText('resRentalOffset', fmtDollar(r.rentalOffsetContribution));
+      setMetricText('resQualifyingIncome', fmtDollar(r.qualifyingIncome));
+      // Pass/fail coloring: PITI must be ≤ max at that DTI tier.
+      setMetricColor('resMaxPiti45', fmtDollar(r.maxPiti45) + (r.piti <= r.maxPiti45 ? ' PASS' : ' FAIL'), r.piti <= r.maxPiti45 ? 1 : -1);
+      setMetricColor('resMaxPiti50', fmtDollar(r.maxPiti50) + (r.piti <= r.maxPiti50 ? ' PASS' : ' FAIL'), r.piti <= r.maxPiti50 ? 1 : -1);
+      setMetricColor('resMaxPiti55', fmtDollar(r.maxPiti55) + (r.piti <= r.maxPiti55 ? ' PASS' : ' FAIL'), r.piti <= r.maxPiti55 ? 1 : -1);
     }
 
     // D) Deal Score
