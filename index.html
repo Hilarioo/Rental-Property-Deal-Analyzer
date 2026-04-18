@@ -1312,8 +1312,8 @@
           <label for="closingCosts">Closing Costs ($)</label>
           <input type="number" id="closingCosts" value="6000" min="0" step="100">
         </div>
-        <div class="input-group">
-          <label for="rehabBudget">Rehab / Repair Budget ($)</label>
+        <div class="input-group" id="rehabBudgetLegacyGroup" style="display:none;">
+          <label for="rehabBudget">Rehab / Repair Budget ($) <span style="color:var(--text-muted);font-weight:normal;font-size:0.75rem;">(Simple — legacy)</span></label>
           <input type="number" id="rehabBudget" value="0" min="0" step="500">
         </div>
         <div class="input-group">
@@ -1331,6 +1331,36 @@
         <div class="input-group">
           <label for="taxRate">Marginal Tax Rate (%)</label>
           <input type="number" id="taxRate" value="25" min="0" max="50" step="1">
+        </div>
+      </div>
+
+      <!-- Sprint 4: Rehab category table (Jose C-39 contractor edge). Renders into #rehabCategories
+           via renderRehabCategoryTable(). Toggle switches between categorized and legacy scalar input. -->
+      <div class="section-title" style="font-size:0.95rem; margin-top:18px;">Rehab Breakdown</div>
+      <div style="margin-bottom:10px; font-size:0.85rem;">
+        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+          <input type="checkbox" id="useRehabCategories" checked> Use rehab category breakdown (apply C-39 contractor edge)
+        </label>
+      </div>
+      <div id="rehabCategories" style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-bottom:10px;"></div>
+
+      <!-- Sprint 4: Property risk flags feeding Jose's hard-fail gates. -->
+      <div class="section-title" style="font-size:0.95rem; margin-top:18px;">Property Risk Flags</div>
+      <div class="input-grid">
+        <div class="input-group">
+          <label for="roofAgeYears">Roof Age (years, optional)</label>
+          <input type="number" id="roofAgeYears" value="" min="0" max="100" step="1" placeholder="Unknown — enter after reading listing">
+        </div>
+        <div class="input-group" style="align-self:end;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:normal;">
+            <input type="checkbox" id="hasFlatRoof"> Flat roof / commercial conversion
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:normal; margin-top:4px;">
+            <input type="checkbox" id="hasUnpermittedAdu"> Unpermitted ADU / garage conversion
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:normal; margin-top:4px;">
+            <input type="checkbox" id="isPre1978WithGalvanized"> Pre-1978 with galvanized plumbing + knob-and-tube
+          </label>
         </div>
       </div>
 
@@ -1832,7 +1862,22 @@
     <!-- Sprint 3: ZIP tier banner — rendered by renderTierBanner(). -->
     <div id="tierBanner" style="display:none;margin:12px 0;padding:10px 14px;border-radius:6px;font-size:0.9rem;font-weight:600;border:1px solid transparent;"></div>
 
+    <!-- Sprint 4: Jose's verdict (FHA house-hack fit) — parallel to the generic investor score. -->
+    <div class="deal-score" id="joseVerdict" role="status" aria-live="polite" aria-atomic="true" style="margin-bottom:12px;">
+      <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-bottom:4px;">Jose's verdict (FHA house-hack)</div>
+      <div class="verdict" id="joseVerdictBadge">--</div>
+      <ul id="joseVerdictReasons" style="margin:8px 0 0 18px; padding:0; font-size:0.88rem;"></ul>
+    </div>
+
+    <!-- Sprint 4: contractor edge summary (retail vs effective rehab) -->
+    <div id="contractorEdgeSummary" class="detail-grid" style="display:none; margin-bottom:12px;">
+      <div class="metric-card"><div class="label">Rehab (retail)</div><div class="value" id="resRehabRetail">--</div></div>
+      <div class="metric-card"><div class="label">Rehab (your cost)</div><div class="value" id="resRehabEffective">--</div></div>
+      <div class="metric-card" id="resContractorEdgeCard" style="display:none;"><div class="label">Contractor edge savings</div><div class="value" id="resContractorEdge">--</div></div>
+    </div>
+
     <!-- D) Deal Score — aria-live so SR users hear PASS/FAIL flips on recalc -->
+    <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-bottom:4px; margin-top:6px;">Generic investor score (reference)</div>
     <div class="deal-score" id="dealScore" role="status" aria-live="polite" aria-atomic="true">
       <div class="verdict" id="dealVerdict">--</div>
       <div class="explanation" id="dealExplanation">--</div>
@@ -2118,6 +2163,218 @@
   window.__getZipTier__ = getZipTier;
 
   // ======================================================================
+  // Sprint 4: Rehab category table (Jose C-39 contractor edge)
+  // ======================================================================
+  // Multipliers live in this constant map, not inline in the render. If
+  // Jose upgrades classification, edit here. See USER_PROFILE §5.
+  var REHAB_CATEGORIES = Object.freeze([
+    Object.freeze({ key: 'roof',       label: 'Roof',       selfPerformMultiplier: 0.60, defaultSelfPerform: true  }),
+    Object.freeze({ key: 'plumbing',   label: 'Plumbing',   selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
+    Object.freeze({ key: 'electrical', label: 'Electrical', selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
+    Object.freeze({ key: 'cosmetic',   label: 'Cosmetic',   selfPerformMultiplier: 0.80, defaultSelfPerform: false }),
+    Object.freeze({ key: 'hvac',       label: 'HVAC',       selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
+    Object.freeze({ key: 'other',      label: 'Other',      selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
+  ]);
+
+  // Render the rehab category table into #rehabCategories.
+  function renderRehabCategoryTable() {
+    var host = $('rehabCategories');
+    if (!host) return;
+    var html = '';
+    REHAB_CATEGORIES.forEach(function(cat) {
+      var checked = cat.defaultSelfPerform ? 'checked' : '';
+      var discountNote = cat.selfPerformMultiplier < 1
+        ? ' <span style="color:var(--text-muted);font-size:0.72rem;">(save ' + Math.round((1 - cat.selfPerformMultiplier) * 100) + '%)</span>'
+        : '';
+      html += '<div class="input-group" style="margin-bottom:0;">';
+      html += '  <label for="rehab_' + cat.key + '">' + cat.label + ' ($)</label>';
+      html += '  <input type="number" id="rehab_' + cat.key + '" value="0" min="0" step="500">';
+      html += '  <label style="display:flex; align-items:center; gap:6px; margin-top:4px; cursor:pointer; font-weight:normal; font-size:0.8rem;">';
+      html += '    <input type="checkbox" id="rehabSelf_' + cat.key + '" ' + checked + '> Self-perform' + discountNote;
+      html += '  </label>';
+      html += '</div>';
+    });
+    host.innerHTML = html;
+  }
+
+  // Read current rehab line items from the form.
+  function getRehabLineItems() {
+    return REHAB_CATEGORIES.map(function(cat) {
+      var costEl = $('rehab_' + cat.key);
+      var selfEl = $('rehabSelf_' + cat.key);
+      var retail = costEl ? (parseFloat(costEl.value) || 0) : 0;
+      var selfPerform = selfEl ? !!selfEl.checked : false;
+      return {
+        key: cat.key,
+        label: cat.label,
+        retailCost: retail,
+        selfPerform: selfPerform,
+        multiplier: cat.selfPerformMultiplier,
+        effectiveCost: retail * (selfPerform ? cat.selfPerformMultiplier : 1.0),
+      };
+    });
+  }
+
+  // Returns { retailRehab, effectiveRehab, contractorEdgeSavings, useCategories }.
+  // If the category toggle is unchecked, falls back to the legacy scalar rehabBudget.
+  function computeRehabTotals() {
+    var useCatEl = $('useRehabCategories');
+    var useCategories = useCatEl ? !!useCatEl.checked : true;
+    if (!useCategories) {
+      var legacy = val($('rehabBudget'), 0);
+      return { retailRehab: legacy, effectiveRehab: legacy, contractorEdgeSavings: 0, useCategories: false };
+    }
+    var items = getRehabLineItems();
+    var retail = items.reduce(function(s, it) { return s + it.retailCost; }, 0);
+    var effective = items.reduce(function(s, it) { return s + it.effectiveCost; }, 0);
+    return {
+      retailRehab: retail,
+      effectiveRehab: effective,
+      contractorEdgeSavings: Math.max(0, retail - effective),
+      useCategories: true,
+    };
+  }
+  window.__computeRehabTotals__ = computeRehabTotals;
+
+  // Toggle legacy rehab input visibility based on category checkbox.
+  function updateRehabMode() {
+    var useCatEl = $('useRehabCategories');
+    var useCategories = useCatEl ? !!useCatEl.checked : true;
+    var catHost = $('rehabCategories');
+    var legacyGroup = $('rehabBudgetLegacyGroup');
+    if (catHost) catHost.style.display = useCategories ? '' : 'none';
+    if (legacyGroup) legacyGroup.style.display = useCategories ? 'none' : '';
+  }
+  window.__updateRehabMode__ = updateRehabMode;
+
+  // ======================================================================
+  // Sprint 4: Jose-tuned GREEN / YELLOW / RED scorer
+  // ======================================================================
+  // Thresholds from USER_PROFILE.md §11. Tune here, nowhere else.
+  var JOSE_THRESHOLDS = Object.freeze({
+    netPitiGreen: 2500,
+    netPitiRed:   3200,
+    cashCloseGreen: 45000,
+    cashCloseRed:   60000,
+    rehabGreen: 60000,
+    rehabRed:   80000,
+    priceCeilingDuplex:  525000,
+    priceCeilingTriplex: 650000,
+    maxDtiPct: 55,        // PITI > 55% of qualifying income => hard RED
+    roofAgeYellow: 15,    // > 15 years => FHA appraisal risk
+  });
+  window.__JOSE_THRESHOLDS__ = JOSE_THRESHOLDS;
+
+  // Compute Jose's verdict. Returns { verdict: 'green'|'yellow'|'red', reasons: [...] }.
+  // Up to 3 reasons. Ordering: hard-fail gates first, then numeric predicates, then soft flags.
+  // NOTE intentional: predicate 1 (net PITI absolute cap) and the DTI gate both
+  // can fire — they measure different things (budget vs lender formula).
+  function computeJoseVerdict(ctx) {
+    var c = ctx || {};
+    var T = JOSE_THRESHOLDS;
+    var reasons = [];
+    var redReasons = [];
+    var yellowReasons = [];
+    var fmt$ = function(n) { return '$' + Math.round(n).toLocaleString(); };
+
+    // ---- Hard-fail gates (all RED, listed first) ----
+    if (c.isExcludedByZipTier) {
+      redReasons.push('ZIP ' + (c.zip || '') + ' on excluded list');
+    }
+    if (c.hasFlatRoof) {
+      redReasons.push('Flat roof / commercial conversion — FHA disqualifier');
+    }
+    if (c.hasUnpermittedAdu) {
+      redReasons.push('Unpermitted ADU / garage conversion — FHA disqualifier');
+    }
+    if (c.isPre1978WithGalvanized) {
+      redReasons.push('Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier');
+    }
+    if (c.propertyType === 'sfh' && (c.units || 1) <= 1) {
+      redReasons.push('SFR without legal ADU — no 75% rental offset possible');
+    }
+    // DTI hard fail
+    if (c.qualifyingIncome > 0 && c.piti > 0) {
+      var dtiPct = (c.piti / c.qualifyingIncome) * 100;
+      if (dtiPct > T.maxDtiPct) {
+        redReasons.push('PITI ' + fmt$(c.piti) + ' is ' + Math.round(dtiPct) + '% of qualifying income — exceeds ' + T.maxDtiPct + '% DTI gate');
+      }
+    }
+
+    // ---- Numeric predicates ----
+    // Price ceiling (duplex $525K / triplex $650K; fourplex uses triplex number as a generous proxy).
+    var units = c.units || 1;
+    var priceCeiling = (units >= 3) ? T.priceCeilingTriplex : T.priceCeilingDuplex;
+    if (c.price > priceCeiling) {
+      var over = c.price - priceCeiling;
+      var overPct = over / priceCeiling;
+      var msg = 'Price ' + fmt$(c.price) + ' exceeds ' + (units >= 3 ? 'triplex+' : 'duplex') + ' ceiling ' + fmt$(priceCeiling) + ' by ' + fmt$(over);
+      if (overPct > 0.10) redReasons.push(msg); else yellowReasons.push(msg);
+    }
+
+    // Net PITI
+    if (c.netPiti > T.netPitiGreen) {
+      var netOver = c.netPiti - T.netPitiGreen;
+      var netOverPct = netOver / T.netPitiGreen;
+      var netMsg = 'Net PITI ' + fmt$(c.netPiti) + ' exceeds ' + fmt$(T.netPitiGreen) + ' by ' + fmt$(netOver);
+      if (c.netPiti > T.netPitiRed || netOverPct > 0.10) redReasons.push(netMsg);
+      else yellowReasons.push(netMsg);
+    }
+
+    // Cash to close
+    if (c.cashToClose > T.cashCloseGreen) {
+      var cashOver = c.cashToClose - T.cashCloseGreen;
+      var cashOverPct = cashOver / T.cashCloseGreen;
+      var cashMsg = 'Cash to close ' + fmt$(c.cashToClose) + ' exceeds ' + fmt$(T.cashCloseGreen) + ' by ' + fmt$(cashOver);
+      if (c.cashToClose > T.cashCloseRed || cashOverPct > 0.10) redReasons.push(cashMsg);
+      else yellowReasons.push(cashMsg);
+    }
+
+    // Effective rehab (post contractor edge)
+    if (c.effectiveRehab > T.rehabGreen) {
+      var rehabOver = c.effectiveRehab - T.rehabGreen;
+      var rehabOverPct = rehabOver / T.rehabGreen;
+      var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(rehabOver);
+      if (c.effectiveRehab > T.rehabRed || rehabOverPct > 0.10) redReasons.push(rehabMsg);
+      else yellowReasons.push(rehabMsg);
+    }
+
+    // ZIP tier
+    if (c.zipTier === 'outside') {
+      redReasons.push('ZIP outside all target market tiers');
+    } else if (c.zipTier === 'tier3') {
+      yellowReasons.push('Tier 3 ZIP — Richmond motivated sellers, underwrite conservatively');
+    }
+
+    // Roof age soft flag
+    if (typeof c.roofAgeYears === 'number' && c.roofAgeYears > T.roofAgeYellow) {
+      yellowReasons.push('Roof ' + c.roofAgeYears + ' yrs old — FHA appraisal risk');
+    }
+
+    var verdict;
+    if (redReasons.length > 0) {
+      verdict = 'red';
+      reasons = redReasons.concat(yellowReasons);
+    } else if (yellowReasons.length > 0) {
+      verdict = 'yellow';
+      reasons = yellowReasons;
+    } else {
+      verdict = 'green';
+      // Green — compose plain-English confirmations so the UI isn't empty.
+      reasons = [
+        'Net PITI ' + fmt$(c.netPiti || 0) + ' under ' + fmt$(T.netPitiGreen) + ' cap',
+        'Cash to close ' + fmt$(c.cashToClose || 0) + ' under ' + fmt$(T.cashCloseGreen) + ' cap',
+      ];
+      if (c.zipTier === 'tier1' || c.zipTier === 'tier2') {
+        reasons.push((c.zipTier === 'tier1' ? 'Tier 1' : 'Tier 2') + ' priority ZIP' + (c.zip ? ' ' + c.zip : ''));
+      }
+    }
+    // Cap at 3 reasons (noise budget per spec).
+    return { verdict: verdict, reasons: reasons.slice(0, 3) };
+  }
+  window.__computeJoseVerdict__ = computeJoseVerdict;
+
+  // ======================================================================
   // State
   // ======================================================================
   var currentStep = 1;
@@ -2331,6 +2588,14 @@
     var vac = $('vacancy');                if (vac) vac.value = DEFAULTS.vacancyPct;
     var mgmt = $('management');            if (mgmt) mgmt.value = DEFAULTS.propertyManagementPct;
     var hoa = $('hoa');                    if (hoa) hoa.value = DEFAULTS.hoaMonthly;
+    // Sprint 4: render rehab category table + wire category/legacy toggle.
+    try { renderRehabCategoryTable(); } catch(e) {}
+    try { updateRehabMode(); } catch(e) {}
+    var toggleEl = $('useRehabCategories');
+    if (toggleEl && !toggleEl._sprint4Wired) {
+      toggleEl.addEventListener('change', function() { updateRehabMode(); calculate(); });
+      toggleEl._sprint4Wired = true;
+    }
   }
 
   initDefaults();
@@ -3538,7 +3803,13 @@
     var price = val($('purchasePrice'), 0);
     var arvVal = val($('arv'), 0);
     var closingCostsVal = val($('closingCosts'), 0);
-    var rehabVal = val($('rehabBudget'), 0);
+    // Sprint 4: rehab now sources from category table (with C-39 self-perform multipliers).
+    // `rehabVal` retains its name downstream so existing calcs (70% rule, total cash invested,
+    // cashflow) keep working unchanged — but it now represents the EFFECTIVE (post-edge) cost.
+    var rehabTotals = computeRehabTotals();
+    var rehabVal = rehabTotals.effectiveRehab;
+    var rehabRetail = rehabTotals.retailRehab;
+    var contractorEdgeSavings = rehabTotals.contractorEdgeSavings;
     var valueGrowthPct = val($('valueGrowth'), 0, 50);
 
     var isCash = $('cashPurchase').checked;
@@ -3799,6 +4070,35 @@
     var maxPiti50 = Math.max(0, qualifyingIncome * 0.50 - monthlyDebts);
     var maxPiti55 = Math.max(0, qualifyingIncome * 0.55 - monthlyDebts);
 
+    // Sprint 4: Jose verdict context.
+    // Net PITI = PITI minus 75% rental offset dollars (rentalOffsetContribution).
+    // Matches USER_PROFILE §11 predicate 2.
+    var netPiti = Math.max(0, piti - rentalOffsetContribution);
+    var zipAddr = (window.scrapedData && window.scrapedData.address) || ($('propName') && $('propName').value) || '';
+    var zipMatch = zipAddr.match(/\b\d{5}\b/);
+    var zipStr = zipMatch ? zipMatch[0] : '';
+    var zipTier = getZipTier(zipStr, zipAddr);
+    var roofAgeInput = $('roofAgeYears');
+    var roofAgeVal = (roofAgeInput && roofAgeInput.value !== '') ? parseFloat(roofAgeInput.value) : null;
+    var joseContext = {
+      price: price,
+      effectiveRehab: rehabVal,
+      cashToClose: totalCashInvested,
+      netPiti: netPiti,
+      piti: piti,
+      qualifyingIncome: qualifyingIncome,
+      zip: zipStr,
+      zipTier: zipTier,
+      isExcludedByZipTier: zipTier === 'excluded',
+      units: unitCount,
+      propertyType: propertyType,
+      roofAgeYears: (roofAgeVal !== null && !isNaN(roofAgeVal)) ? roofAgeVal : null,
+      hasFlatRoof: !!($('hasFlatRoof') && $('hasFlatRoof').checked),
+      hasUnpermittedAdu: !!($('hasUnpermittedAdu') && $('hasUnpermittedAdu').checked),
+      isPre1978WithGalvanized: !!($('isPre1978WithGalvanized') && $('isPre1978WithGalvanized').checked),
+    };
+    var joseVerdict = computeJoseVerdict(joseContext);
+
     // Store results
     lastCalcResults = {
       price: price, arv: arvVal, closingCosts: closingCostsVal, rehab: rehabVal,
@@ -3832,7 +4132,14 @@
       w2Monthly: w2Monthly, monthlyDebts: monthlyDebts, ownerOccupied: ownerOccupied,
       rentalOffsetContribution: rentalOffsetContribution,
       qualifyingIncome: qualifyingIncome,
-      maxPiti45: maxPiti45, maxPiti50: maxPiti50, maxPiti55: maxPiti55
+      maxPiti45: maxPiti45, maxPiti50: maxPiti50, maxPiti55: maxPiti55,
+      // Sprint 4: contractor edge + Jose verdict
+      rehabRetail: rehabRetail,
+      rehabEffective: rehabVal,
+      contractorEdgeSavings: contractorEdgeSavings,
+      netPiti: netPiti,
+      joseVerdict: joseVerdict,
+      joseContext: joseContext
     };
 
     // Only update DOM if on step 6
@@ -4001,6 +4308,52 @@
 
     // Sprint 3: ZIP tier banner (before deal score).
     try { renderTierBanner(); } catch(e) {}
+
+    // Sprint 4: contractor edge summary
+    var edgeHost = $('contractorEdgeSummary');
+    if (edgeHost) {
+      var showEdge = (r.rehabRetail > 0 || r.rehabEffective > 0);
+      edgeHost.style.display = showEdge ? '' : 'none';
+      if (showEdge) {
+        setMetricText('resRehabRetail', fmtDollar(r.rehabRetail));
+        // Effective shown green-tinted when lower than retail.
+        var effEl = $('resRehabEffective');
+        if (effEl) {
+          effEl.textContent = fmtDollar(r.rehabEffective);
+          effEl.className = 'value' + (r.contractorEdgeSavings > 0 ? ' positive' : '');
+        }
+        var edgeCard = $('resContractorEdgeCard');
+        if (edgeCard) {
+          edgeCard.style.display = r.contractorEdgeSavings > 0 ? '' : 'none';
+          if (r.contractorEdgeSavings > 0) {
+            var edgeValEl = $('resContractorEdge');
+            if (edgeValEl) {
+              edgeValEl.textContent = fmtDollar(r.contractorEdgeSavings);
+              edgeValEl.className = 'value positive';
+            }
+          }
+        }
+      }
+    }
+
+    // Sprint 4: Jose verdict — big badge + up to 3 reason bullets.
+    var jv = r.joseVerdict || { verdict: 'yellow', reasons: [] };
+    var jvHost = $('joseVerdict');
+    var jvBadge = $('joseVerdictBadge');
+    var jvReasons = $('joseVerdictReasons');
+    if (jvHost && jvBadge && jvReasons) {
+      jvHost.classList.remove('great', 'borderline', 'pass');
+      // Reuse existing .deal-score color classes (great=green, borderline=yellow, pass=red)
+      var colorClass = jv.verdict === 'green' ? 'great' : (jv.verdict === 'yellow' ? 'borderline' : 'pass');
+      jvHost.classList.add(colorClass);
+      jvBadge.textContent = jv.verdict.toUpperCase();
+      var rHtml = '';
+      (jv.reasons || []).forEach(function(reason) {
+        rHtml += '<li>' + esc(reason) + '</li>';
+      });
+      if (!rHtml) rHtml = '<li style="color:var(--text-muted);">No reasons</li>';
+      jvReasons.innerHTML = rHtml;
+    }
 
     // D) Deal Score
     var ds = $('dealScore');
@@ -4195,7 +4548,12 @@
     var arvV = val($('arv'), 0);
     if (arvV > 0) html += reviewItem('ARV', fmtDollar(arvV));
     html += reviewItem('Closing Costs', fmtDollar(val($('closingCosts'), 0)) + badge('closingCosts'));
-    html += reviewItem('Rehab Budget', fmtDollar(val($('rehabBudget'), 0)));
+    // Sprint 4: show effective rehab (post C-39 edge) and, when savings exist, retail too.
+    var rehabTot = computeRehabTotals();
+    html += reviewItem('Rehab (retail)', fmtDollar(rehabTot.retailRehab));
+    if (rehabTot.contractorEdgeSavings > 0) {
+      html += reviewItem('Rehab (your cost)', fmtDollar(rehabTot.effectiveRehab) + ' <span style="color:var(--green);font-size:0.72rem;">(saves ' + fmtDollar(rehabTot.contractorEdgeSavings) + ')</span>');
+    }
     html += reviewItem('Value Growth', val($('valueGrowth'), 0) + '%/yr');
     var sqftV = val($('sqft'), 0);
     if (sqftV > 0) html += reviewItem('Square Footage', fmtInt(sqftV) + ' sqft' + badge('sqft'));
@@ -4465,7 +4823,10 @@
     'sqft','buildingPct','taxRate','downPayment','interestRate','loanTerm','points',
     'monthlyRent','otherIncome','incomeGrowth','propertyTaxes','insurance',
     'maintenance','vacancy','capex','management','hoa','utilities','otherExpenses',
-    'expenseGrowth','unitCount'
+    'expenseGrowth','unitCount',
+    // Sprint 4: rehab categories + risk flags
+    'rehab_roof','rehab_plumbing','rehab_electrical','rehab_cosmetic','rehab_hvac','rehab_other',
+    'roofAgeYears'
   ];
 
   function getSavedScenarios() {
@@ -4740,6 +5101,11 @@
     if ($('monthlyDebts')) $('monthlyDebts').value = DEFAULTS.monthlyDebts;
     if ($('ownerOccupied')) $('ownerOccupied').value = DEFAULTS.ownerOccupied ? 'true' : 'false';
     if ($('cashPurchase')){ $('cashPurchase').checked=false; toggleCashPurchase(); }
+    // Sprint 4: seed rehab categories — roof $15K self-perform, cosmetic $8K, plumbing $5K.
+    if ($('rehab_roof'))       $('rehab_roof').value = '15000';
+    if ($('rehabSelf_roof'))   $('rehabSelf_roof').checked = true;
+    if ($('rehab_plumbing'))   $('rehab_plumbing').value = '5000';
+    if ($('rehab_cosmetic'))   $('rehab_cosmetic').value = '8000';
     updateDpHelper();
     goToStep(6);
   };
