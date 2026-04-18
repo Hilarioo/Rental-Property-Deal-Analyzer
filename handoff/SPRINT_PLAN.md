@@ -6,6 +6,8 @@
 **Plan date:** 2026-04-17
 **Status:** Authoritative. Supersedes any ad-hoc plans in prior chats.
 
+> **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See README.md "V1 philosophy".
+
 ---
 
 ## 1. Overview
@@ -39,17 +41,18 @@ The existing codebase is functionally close but **quantitatively wrong for FHA o
 
 ### Effort rollup
 
-| Sprint | Name | Hours |
-| --- | --- | ---: |
-| 0 | Foundation (branch + pins + tests) | 4.0 |
-| 1 | Core FHA math | 8.0 |
-| 2 | Jose profile defaults | 3.0 |
-| 3 | Presets & market guardrails | 3.0 |
-| 4 | Contractor edge + Jose-tuned G/Y/R scorer | 8.0 |
-| 5 | Quality gates + RUN_ME | 1.5 |
-| | **Total** | **27.5** |
+| Sprint | Name | Hours | Status |
+| --- | --- | ---: | --- |
+| 0 | Foundation (branch + pins + tests) | 4.0 | DONE |
+| 1 | Core FHA math | 8.0 | DONE |
+| 2 | Jose profile defaults | 3.0 | DONE |
+| 3 | Presets & market guardrails | 2.5 | remaining |
+| 4 | Contractor edge + Jose-tuned G/Y/R scorer | 6.0 | remaining |
+| 5 | Live deal run-through + RUN_ME | 1.0 | remaining |
+| | **Remaining** | **9.5** | |
+| | **Total (incl. landed)** | **24.5** | |
 
-Add ~15% buffer (~4h) for reality. Budget 32h end-to-end.
+Remaining scope was deliberately cut from 12.5h to 9.5h on 2026-04-17: Sprint 3–5 test tasks, a11y work, and UI polish were pulled out. Rationale: the north star is Jose making a real offer on a real Vallejo duplex, not a publication-quality codebase. Existing Sprint 0–2 tests (61) stay as a free regression net; `make test` still works; no new tests are gated.
 
 ### Sprint dependency graph
 
@@ -202,7 +205,7 @@ None. This is the root of the tree.
 
 ## 5. Sprint 3 — Presets & market guardrails
 
-**Duration:** 3 hours
+**Duration:** 2.5 hours
 **Goal:** Support multiple named presets so Jose can jump between "Vallejo Priority," "East Bay Nearby," and "Richmond Motivated Sellers" with one click, and warn when a property's ZIP isn't in his target list.
 
 ### User-visible outcome
@@ -221,7 +224,8 @@ None. This is the root of the tree.
 | 3.3 | Preset dropdown UI + "Apply preset" button in header | `index.html` header | 0.6h |
 | 3.4 | ZIP-tier constants: `TIER_1 = ['94590','94591']`, `TIER_2 = [...Hercules/Rodeo/Crockett/Pinole ZIPs...]`, `TIER_3 = ['94801','94804','94805']` | `index.html` | 0.2h |
 | 3.5 | Look up tier from analyzed property ZIP; render banner with matching severity | `index.html` Review step | 0.6h |
-| 3.6 | Tests: (a) preset apply changes form values, (b) tier lookup returns correct label for each of the 3 lists and "outside" for a non-match | `tests/calc.test.mjs` | 0.3h |
+
+(Task 3.6 removed 2026-04-17 under scope cut — no new tests required. Existing Sprint 0–2 tests continue to run.)
 
 ### Preset contents (starter values — refine after first real scrape)
 
@@ -232,6 +236,8 @@ None. This is the root of the tree.
 | Richmond Motivated | 1.35% | $2,100/yr | 8% | Live fetch, fallback 6.75% |
 
 ### Acceptance criteria
+
+All checks are visual / manual in the browser.
 
 - [ ] Dropdown shows 3 presets; selecting each overwrites the relevant DEFAULTS overrides and re-renders.
 - [ ] Analyzing a property at 94590 shows a green "Tier 1 — Vallejo priority" banner.
@@ -252,7 +258,7 @@ None. This is the root of the tree.
 
 ## 6. Sprint 4 — Contractor edge + Jose-tuned G/Y/R scorer
 
-**Duration:** 8 hours
+**Duration:** 6 hours
 **Goal:** Model Jose's C-39 roofing self-perform discount as a rehab line item, and replace the generic quick-score with a Green/Yellow/Red overlay calibrated to his specific budget and tolerance — not investor-quality scoring.
 
 ### User-visible outcome
@@ -275,7 +281,8 @@ None. This is the root of the tree.
 | 4.8 | Define RED as: any GREEN criterion missed by >10%, OR ZIP outside tiers, OR PITI exceeds 55% DTI max | same | 0.5h |
 | 4.9 | Render verdict badge with up to 3 reasons (e.g., "Net PITI $2,780 exceeds $2,500 target by $280") | `index.html` Review step | 1.2h |
 | 4.10 | Keep the original quick-score visible but label it "Generic investor score (reference)" to avoid confusion | `index.html:2320-2373` | 0.3h |
-| 4.11 | Tests: (a) roof self-perform applies 40% discount, (b) GREEN fixture passes all predicates, (c) YELLOW fixture trips exactly one by ≤10%, (d) RED fixture trips one by >10%, (e) ZIP-outside-tiers forces RED regardless of other criteria | `tests/calc.test.mjs` | 1.0h |
+
+(Task 4.11 removed 2026-04-17 under scope cut — no new predicate tests required. A regression test in `tests/calc.test.mjs` is encouraged but NOT acceptance-gated.)
 
 ### Jose verdict predicates (table form)
 
@@ -289,13 +296,15 @@ None. This is the root of the tree.
 
 ### Acceptance criteria
 
+All checks are manual in the browser against a real Vallejo listing (Jose's choice — typically a current duplex he is actively considering).
+
 - [ ] Rehab table with 6 seed categories renders; each row has retail-cost input and self-perform checkbox.
 - [ ] Setting roof = $20,000, self-perform = true, shows effective = $12,000 and feeds downstream cash-to-close.
-- [ ] A fixture hitting all GREEN predicates renders a green badge with 0 warning reasons.
-- [ ] A fixture with PITI $2,600 (4% over $2,500) renders YELLOW with exactly one reason about PITI.
-- [ ] A fixture at ZIP 95670 renders RED regardless of numeric pass, with reason "ZIP outside target markets."
+- [ ] Jose eyeballs a real Vallejo listing he believes should be GREEN (priority ZIP, within budget) and the badge comes back GREEN with plausible reasons.
+- [ ] Jose eyeballs a real listing he believes should be YELLOW (one criterion marginal) and the badge comes back YELLOW; the reason names the criterion he expected.
+- [ ] Jose eyeballs a real listing at an outside-tier ZIP (e.g. Oakland / 95670 / Sacramento) and the badge comes back RED with reason "ZIP outside target markets."
 - [ ] The generic investor score is still visible, labeled as reference only.
-- [ ] `node --test` and `pytest` green.
+- [ ] Verdict matches Jose's gut within his tolerance ("yes I'd offer" / "no I wouldn't"). If it disagrees, the predicate table gets re-tuned before merge.
 
 ### Dependencies
 
@@ -311,42 +320,29 @@ None. This is the root of the tree.
 
 ---
 
-## 7. Sprint 5 — Quality gates & RUN_ME
+## 7. Sprint 5 — Live deal run-through + RUN_ME
 
-**Duration:** 1.5 hours
-**Goal:** Execute the Phase 3 test plan end-to-end on Jose's real profile, fix any regressions, and write a one-page quick-start so Jose can re-derive the whole workflow in six months when he's forgotten it.
+**Duration:** 1 hour
+**Goal:** Jose personally runs 2–3 currently-listed Vallejo properties through the tool, confirms the numbers pass his sniff test, and writes a one-page quick-start so he can re-derive the workflow in six months.
 
 ### User-visible outcome
 
-1. All 7 Phase 3 test cases pass from the handoff doc (see table below).
+1. Jose has analyzed 2–3 real Vallejo/East Bay listings end-to-end and the numbers match his own back-of-napkin math.
 2. A `RUN_ME.md` at repo root tells Jose how to start the server, paste a URL, and interpret the verdict.
 
 ### Tasks
 
 | # | Task | Est. |
 | --- | --- | ---: |
-| 5.1 | Run the 7 Phase 3 test cases; log results in `tests/phase3_results.md` | 0.6h |
-| 5.2 | Fix any regressions found (budget; may be zero) | 0.4h |
-| 5.3 | Write `RUN_ME.md` — start server, paste URL, read verdict, tune presets | 0.5h |
-
-### Phase 3 test cases (reference table)
-
-| # | Case | Expected |
-| --- | --- | --- |
-| T1 | Paste Vallejo 94590 duplex listing URL | Scrapes in ≤60s, Tier 1 banner, full verdict |
-| T2 | $500K / 3.5% / 6.5% fixture | PITI = $4,004 ± $5 (FHA MIP included) |
-| T3 | Duplex with owner-occ + $2,000/mo rent on other unit | Qualifying income = $6,006/mo |
-| T4 | Triplex at $650K, 2 rented units at $1,800 each | DTI panel renders; max PITI at 50% shown |
-| T5 | Rehab: Roof $20K self-perform + Plumbing $10K retail | Effective rehab = $22,000 |
-| T6 | All GREEN fixture | Green verdict, 0 warning reasons |
-| T7 | ZIP 95670 (outside tiers) | RED verdict, reason includes "outside target markets" |
+| 5.1 | Jose picks 2–3 currently-active Vallejo / East Bay / Richmond listings, runs each through the tool end-to-end | 0.3h |
+| 5.2 | Jose confirms PITI, qualifying income, net PITI, cash-to-close, and verdict pass his sniff test; if anything looks off, re-tune predicates or defaults before merge | 0.3h |
+| 5.3 | Write `RUN_ME.md` — start server, paste URL, read verdict, tune presets | 0.4h |
 
 ### Acceptance criteria
 
-- [ ] All 7 test cases logged with PASS/FAIL.
-- [ ] Zero open FAIL items (fix or explicitly defer with written rationale).
+- [ ] Jose has run ≥2 live listings through the tool and the numbers match his gut / spreadsheet within his own tolerance.
+- [ ] Any discrepancy Jose flagged is either fixed or explicitly deferred with a one-line note.
 - [ ] `RUN_ME.md` exists at repo root and is ≤1 page.
-- [ ] `pytest` and `node --test` both green on `feature/jose-profile` HEAD.
 
 ### Dependencies
 
@@ -354,7 +350,8 @@ None. This is the root of the tree.
 
 ### Risks
 
-- **Scraper drift.** T1 depends on the scraper still working against whatever Vallejo listing source was used in the smoke test. If it breaks, fall back to a saved HTML fixture so the rest of the chain can be validated.
+- **Scraper drift.** Live listings depend on Redfin still working. If it breaks mid-sprint, fall back to a saved HTML fixture or manual entry so the math chain can still be validated.
+- **Jose's gut disagrees with the predicates.** This is the whole point of the sprint — catch the mismatch here, not after an offer goes out. Plan for one re-tune pass.
 
 ---
 
@@ -379,14 +376,16 @@ If any of these feel tempting mid-sprint, write a line in `BACKLOG.md` and move 
 | # | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- | --- |
 | R1 | Scraper breaks mid-sprint (listing source changes HTML) | Med | High — blocks T1, demo flow | Save 2–3 reference HTML fixtures in `tests/fixtures/`; scraper tests run against fixtures, not live |
-| R2 | Monolithic `index.html` (4,200 LOC) is fragile — edit in one place breaks another | High | Med | Test harness from Sprint 0 is the primary defense; keep edits surgical, prefer adding new functions over modifying |
+| R2 | No new tests in Sprints 3–5 — regressions may slip past the landed Sprint 0–2 harness | Med | Med | **Accepted risk under 2026-04-17 scope cut.** Sprint 0–2 tests (61) still run on every `make test`; new predicates and preset logic ship unverified. Jose catches misfires in Sprint 5 live run-through, not in CI. |
 | R3 | FHA MIP rate table changes (HUD updates) | Low | Med | Rates are constants in one place; TODO-comment the annual rate so re-tuning is trivial |
-| R4 | Lender rejects 75% offset without landlord history | Med | High — changes Jose's real approval path | Add "No rental offset (conservative)" toggle in Sprint 4 as stretch; otherwise note in RUN_ME that figures assume the offset is accepted |
+| R4 | Lender rejects 75% offset without landlord history | Med | High — changes Jose's real approval path | Note in RUN_ME that figures assume the offset is accepted; no new test will verify a "conservative" toggle — if it matters, Jose runs the math with rent = $0 by hand. |
 | R5 | Claude API costs spike during dev if tests call it live | Low | Low | Mock Claude responses in tests; only call live API from the UI, never from `pytest` |
 
 ---
 
 ## 10. Definition of Done (whole effort)
+
+The north star: **Jose pastes a Redfin URL of a real Vallejo duplex and, in ≤60 seconds, gets a GREEN / YELLOW / RED verdict he trusts enough to make an offer decision.** Everything else is scope creep.
 
 The effort is DONE when Jose can do the following, unassisted, in under 60 seconds per listing:
 
@@ -400,14 +399,15 @@ The effort is DONE when Jose can do the following, unassisted, in under 60 secon
    - A Green/Yellow/Red verdict badge with up to 3 plain-English reasons.
    - A ZIP-tier banner telling him whether this is a priority market.
 4. Do all of the above without editing any code, because defaults and presets land him on Jose's profile automatically.
+5. Decide — in that ≤60s window — whether to walk away or keep digging.
 
-**And** the following are true under the hood:
+**Under the hood (cut scope, 2026-04-17):**
 
-- [ ] `pytest` green on at least 15 assertions covering MIP, DTI, rehab, verdict.
-- [ ] `node --test` green on at least 12 assertions covering the same calc paths from the JS side.
-- [ ] `requirements.txt` fully pinned.
-- [ ] Every default lives in one `DEFAULTS` block — a profile swap is a single-file edit.
+- [x] Sprint 0–2 landed: `pytest` + `node --test` cover FHA MIP, DTI, per-unit rent, DEFAULTS (61 tests total).
+- [ ] Every default lives in one `DEFAULTS` block — a profile swap is a single-file edit. (landed Sprint 2; confirm still true after Sprints 3–4)
 - [ ] `RUN_ME.md` exists and is current.
-- [ ] All 7 Phase 3 test cases pass, logged in `tests/phase3_results.md`.
+- [ ] Jose has personally run ≥2 live listings end-to-end and the numbers match his gut.
+
+No assertion on test count for Sprints 3–5. No a11y assertion beyond Sprint 2's `aria-live`. No UI-polish assertion.
 
 When all of the above are true, merge `feature/jose-profile` to `main`, tag `v1.0-jose`, and stop. Future work is Phase 5 scope and waits for a real deal to motivate it.

@@ -5,6 +5,8 @@
 **Verdict:** **FIX** — customize, expect ~22–30 hours of real work
 **Code trust rating (local single-user):** YELLOW — math correct, structure fragile
 
+> **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See README.md "V1 philosophy".
+
 ---
 
 ## 1. Executive summary
@@ -164,18 +166,18 @@ Cloud-hosting confirmed infeasible: [app.py:481-489](../app.py) contains explici
 
 ## 7. Recommended engineering order
 
-**Critical: tests before math changes.**
+**Critical: tests before math changes** (landed in Sprint 0).
 
-1. **Sprint 0** (4h) — pin `requirements.txt`, add pytest + JS test harness, lock in baseline numbers
-2. **Sprint 1** (8h) — FHA MIP + 75% rental offset + DTI module; fix 20%-down hardcode
-3. **Sprint 2** (3h) — central DEFAULTS config; wire Jose's 17 fields; per-unit rent inputs
-4. **Sprint 3** (3h) — multi-preset storage + 3 market presets
-5. **Sprint 4** (8h) — rehab category model + C-39 toggle + Jose-tuned G/Y/R overlay
-6. **Sprint 5** (1.5h) — Phase 3 quality gates + `RUN_ME.md`
+1. **Sprint 0** (4h) — pin `requirements.txt`, add pytest + JS test harness, lock in baseline numbers — **DONE** (commit 609fb5d, 58 tests)
+2. **Sprint 1** (8h) — FHA MIP + 75% rental offset + DTI module; fix 20%-down hardcode — **DONE** (commit dd1737f, 61 tests)
+3. **Sprint 2** (3h) — central DEFAULTS config; wire Jose's 17 fields; per-unit rent inputs — **DONE** (commit b115e33, 61 tests)
+4. **Sprint 3** (2.5h, was 3h) — multi-preset storage + 3 market presets — remaining, scope cut: no new tests
+5. **Sprint 4** (6h, was 8h) — rehab category model + C-39 toggle + Jose-tuned G/Y/R overlay — remaining, scope cut: no predicate tests, tuning done against live listings
+6. **Sprint 5** (1h, was 1.5h) — live deal run-through + `RUN_ME.md` — remaining, scope cut: replaced 7-test gauntlet with Jose running 2–3 real listings
 
-Total: **~27.5h** (32h with buffer).
+Total landed: ~15h. Total remaining: **~9.5h** (was 12.5h before the 2026-04-17 scope cut).
 
-See [`SPRINT_PLAN.md`](./SPRINT_PLAN.md) for per-sprint detail and [`ACCEPTANCE_CRITERIA.md`](./ACCEPTANCE_CRITERIA.md) for the testable DoD.
+See [`SPRINT_PLAN.md`](./SPRINT_PLAN.md) for per-sprint detail and [`ACCEPTANCE_CRITERIA.md`](./ACCEPTANCE_CRITERIA.md) for the manual-check DoD.
 
 ---
 
@@ -187,7 +189,8 @@ See [`SPRINT_PLAN.md`](./SPRINT_PLAN.md) for per-sprint detail and [`ACCEPTANCE_
 | 4,200-line monolithic `index.html` makes changes slow | Certain | Medium | Add tests first (Sprint 0); consider factoring `calc.js` if velocity suffers |
 | FHA 75% offset rule interpretation differs by lender | Medium | Medium | Tool is decision-support, not underwriting — always verify with actual lender before offer |
 | Anthropic API costs spike during heavy analysis sessions | Low | Low | Rate limit is 10/min; fallback to Ollama available |
-| Zero tests = silent math regression | Certain without Sprint 0 | High | Sprint 0 is a hard gate before any other sprint |
+| Zero tests = silent math regression | Mitigated | High | Sprint 0 harness landed (61 tests). **Accepted tradeoff 2026-04-17:** no new tests in Sprints 3–5. New predicates / preset logic ship unverified by CI; Jose catches misfires in Sprint 5 live run-through. |
+| UI / a11y debt accumulates | Certain (frozen by design) | Low for personal use | **Accepted tradeoff 2026-04-17:** a11y frozen at Sprint 2 end (`aria-live` on verdict only). No WCAG audit, no keyboard-nav sweep, no CSS polish. Personal-scope V1 only. |
 | Default rate of 6.5% becomes stale | High | Low | Freddie Mac auto-fetch button exists — use it |
 
 ---
@@ -204,6 +207,8 @@ These Phase 5 items from `HANDOFF.md` are deferred:
 - Public deploy on any cloud
 - Full BRRRR refi modeling (focus is purchase qualification)
 - Tenant management / rent roll tracking
+- **Any test or a11y work beyond what already landed in Sprints 0–2.** No new pytest cases, no new `node --test` cases, no WCAG audit, no keyboard-nav sweep, no screen-reader testing. The Sprint 0–2 suite (61 tests + `aria-live` on verdict) is the ceiling for V1.
+- **UI polish.** No CSS refinement, no design-system, no layout overhaul. If functional but ugly, ship it.
 
 Any of these would exceed the V1 scope. Revisit after Jose closes his first deal.
 

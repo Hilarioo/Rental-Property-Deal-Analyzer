@@ -2,7 +2,15 @@
 
 Single source of truth for customizing this tool into Jose's FHA owner-occupied house-hack decision engine.
 
-**Status (2026-04-17):** Base install running on `http://localhost:8000`. Ready for Sprint 0.
+**Status (2026-04-17):** Sprints 0–2 complete. Sprints 3–5 remaining under a cut scope (see below).
+
+> **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See "V1 philosophy" below.
+
+---
+
+## V1 philosophy: ship the decision engine, not the codebase
+
+Jose is not shipping this to anyone. He needs the tool to tell him GREEN / YELLOW / RED on a real Vallejo duplex he's considering this quarter — and that's the entire goal. The already-landed test suite (58→61 tests across Sprints 0–2) stays as a free regression net, but no new tests are required in Sprints 3–5. No new accessibility work beyond the `aria-live` verdict that already landed. No CSS or layout polish. If the UI is ugly but the number is right, it ships. Every remaining hour goes to the math and flow that determine whether Jose makes an offer.
 
 ---
 
@@ -24,9 +32,10 @@ Single source of truth for customizing this tool into Jose's FHA owner-occupied 
 | Tool fit | **FIX** (customize, don't rebuild) |
 | AI provider | Anthropic Claude API (Jose added key to `.env`) |
 | Deployment | Local only — `http://localhost:8000` |
-| Total effort | **~27.5h** across 6 sprints (32h with buffer) |
-| Critical gate | Sprint 0 (tests) before any math changes |
-| North-star | Paste Redfin URL → ≤ 60s → FHA-aware G/Y/R verdict + reasons |
+| Effort landed | Sprints 0–2 complete (~15h) |
+| Effort remaining | **~9.5h** across Sprints 3–5 (was 12.5h; scope cut removed test/a11y/UI tasks) |
+| Critical gate | Sprint 0 (tests) landed — no new test gates going forward |
+| North-star | Paste Redfin URL → ≤ 60s → FHA-aware G/Y/R verdict + reasons Jose trusts enough to offer on |
 
 ---
 

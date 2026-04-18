@@ -6,6 +6,8 @@
 **Last Updated:** 2026-04-17
 **Scope:** Local-only customization of the base Rental Property Deal Analyzer to serve Jose's FHA owner-occupied house-hack workflow in the East Bay / Vallejo corridor.
 
+> **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See README.md "V1 philosophy".
+
 ---
 
 ## 0. How to Read This Document
@@ -30,6 +32,8 @@ A feature is only "done" when (a) its Given/When/Then criteria pass, (b) its own
 > **Jose pastes a Redfin multi-family URL and sees a complete, trustworthy FHA-aware analysis with green/yellow/red verdict and reasons in under 60 seconds.**
 
 That single sentence is the definition of V1 success. If anything in this document contradicts that outcome, the outcome wins.
+
+**Scope cut, in plain language (2026-04-17):** V1 is a personal-use tool for Jose. The remaining sprints (3, 4, 5) are optimized for one thing: can Jose make a real offer on a real Vallejo duplex this quarter. Things that do NOT matter: shipping new tests, perfecting accessibility, polishing the UI, or making the codebase presentable. Things that DO matter: FHA-correct numbers, a trustworthy GREEN/YELLOW/RED verdict, and getting there fast enough to triage a Redfin email in one sitting. The Sprint 0–2 test suite (61 tests) stays as a free regression net — but nothing in Sprints 3–5 is gated on adding more.
 
 **Three non-negotiables embedded in the north star:**
 1. **FHA-aware** — MIP, 75% rental offset, and DTI stretch ranges are first-class, not an afterthought.
@@ -151,59 +155,23 @@ All criteria are observable from the UI or API response. No criterion depends on
 
 ### F6 — Three Market Presets
 
-| # | Given | When | Then |
-|---|-------|------|------|
-| F6-AC1 | I click "Vallejo Priority" preset | The search fires | Query includes zips 94590, 94591; price $400K–$550K; property type = multi-family 2–4 unit |
-| F6-AC2 | I click "East Bay Nearby" preset | The search fires | Query includes Hercules, Rodeo, Crockett, Pinole; price range appropriate for duplex/triplex |
-| F6-AC3 | I click "Richmond Motivated Sellers" preset | The search fires | Query includes 94801, 94804, 94805; DOM > 30 filter applied; multi-family 2–4 unit |
-| F6-AC4 | Any preset click | I view the active search filters | All preset filters are visible and editable before I run; nothing is hidden |
-| F6-AC5 | Any preset click | The results render | Results exclude zips on Jose's excluded list (94803, 94806) even if they appear in the geographic area |
-| F6-AC6 | I modify a preset filter and search | I view results | The modified filter is respected; preset is not re-applied over my edit |
+Simplified criterion (2026-04-17): Jose can click one of three presets (Vallejo Priority, East Bay Nearby, Richmond Motivated Sellers) and see the form repopulate with that preset's ZIPs, price range, and market assumptions. Excluded ZIPs (94803, 94806) stay filtered. No Given/When/Then scaffolding.
 
 ### F7 — Contractor Rehab Edge
 
-| # | Given | When | Then |
-|---|-------|------|------|
-| F7-AC1 | Rehab estimate includes a roofing line item of $15,000 | I toggle "I self-perform roofing" ON | Roofing line reduces to ~$9,000 (≈40% reduction representing labor savings on a C-39 self-perform) |
-| F7-AC2 | Toggle is ON | I view rehab breakdown | A new line "Contractor edge savings: $6,000" is displayed separately, with label indicating it comes from the self-perform toggle |
-| F7-AC3 | Toggle is OFF (default) | I view rehab breakdown | No "Contractor edge savings" line; roofing at full market cost |
-| F7-AC4 | Toggle is ON, no roofing line item exists in rehab | I toggle | Contractor edge savings = $0; a note clarifies "No roofing scope identified in this rehab" |
-| F7-AC5 | Toggle is ON | I view the Green/Yellow/Red scorer inputs | Rehab total used for scoring is the post-edge (lower) figure |
-| F7-AC6 | Toggle state | I reload the page | Toggle state persists per-scenario via localStorage |
+Simplified criterion (2026-04-17): Jose can toggle self-perform on a roofing rehab line and see the effective rehab drop by ~40%, and that lower number is what feeds the G/Y/R scorer and cash-to-close. No Given/When/Then scaffolding.
 
 ### F8 — Excluded-Zip Guardrails
 
-| # | Given | When | Then |
-|---|-------|------|------|
-| F8-AC1 | I paste a URL for a listing in 94803 | Analysis starts | A banner appears: "Warning: 94803 is on your excluded list" — analysis still runs (non-blocking) |
-| F8-AC2 | I run a search preset that would include an excluded zip | Results render | Excluded-zip listings are filtered out AND a note says "N listings filtered: excluded zips 94803, 94806" |
-| F8-AC3 | Excluded zip banner shown | I view Jose-tuned scorer | Verdict = Red with reason "Zip on excluded list" |
-| F8-AC4 | I analyze an Oakland, Berkeley, or Sacramento address | Analysis runs | Banner + Red verdict both fire |
-| F8-AC5 | Banner is dismissible | I click dismiss | Banner hides for this session only; re-appears on next excluded-zip analysis |
+Simplified criterion (2026-04-17): Jose pastes a URL at an excluded ZIP (94803, 94806, Oakland, Berkeley, Sacramento) and sees a red banner plus a RED verdict with reason "Zip on excluded list". Analysis still runs; banner does not block. No Given/When/Then scaffolding.
 
 ### F9 — Roof Age Gate
 
-| # | Given | When | Then |
-|---|-------|------|------|
-| F9-AC1 | I start a new analysis | The form renders | A "Roof age (years)" input is visible in the property-condition section |
-| F9-AC2 | Roof age > 15 AND no seller credit for roof in listing | I view the scorer | Factor "Aging roof, no seller credit" is listed; pushes Yellow → Red or Green → Yellow |
-| F9-AC3 | Roof age > 15 AND "I self-perform roofing" toggled ON | I view the scorer | Factor is downgraded to informational (not scored against) because Jose can self-perform |
-| F9-AC4 | Roof age ≤ 15 | I view the scorer | No roof-age factor appears |
-| F9-AC5 | Roof age is blank/unknown | I view the scorer | A "Roof age unknown — inspect before offer" informational note is shown, not scored |
+Simplified criterion (2026-04-17): Jose enters a roof age; if it's >15 and self-perform-roof is OFF, the scorer flags it as a Yellow-to-Red factor. If self-perform is ON, it downgrades to informational. Unknown roof age shows a "inspect before offer" note. No Given/When/Then scaffolding.
 
 ### F10 — 60-Second Total Latency
 
-**Budget breakdown:** scrape < 5s, rate fetch < 2s, rent estimate < 5s, AI analysis < 30s, rendering < 1s. Total target ≤ 60s with ~17s headroom.
-
-| # | Given | When | Then |
-|---|-------|------|------|
-| F10-AC1 | I paste a Redfin multi-family URL and click Analyze | I start a stopwatch | Green/Yellow/Red verdict + reasons are visible in ≤ 60s wall-clock |
-| F10-AC2 | Same | I inspect network tab | Scrape request completes in ≤ 5s |
-| F10-AC3 | Same | Same | Rate fetch completes in ≤ 2s |
-| F10-AC4 | Same | Same | Rent estimate returns in ≤ 5s |
-| F10-AC5 | Same | Same | AI narrative completes in ≤ 30s |
-| F10-AC6 | Network is offline | I paste a URL | Math-only analysis renders in ≤ 10s; AI narrative section shows "offline — skipped" gracefully (non-blocking) |
-| F10-AC7 | Any step exceeds its budget by > 2x | I view the UI | A debug timing panel surfaces the slow step (optional dev-mode only) |
+Simplified criterion (2026-04-17): Jose pastes a Redfin URL, clicks Analyze, and sees a G/Y/R verdict with reasons within 60 seconds wall-clock. If any sub-step (scrape, rate fetch, rent estimate, AI narrative) times out, it degrades gracefully and the verdict still renders. No Given/When/Then scaffolding and no explicit per-step budget table.
 
 ---
 
@@ -301,32 +269,17 @@ Each DoD is testable, verifiable in under 10 minutes, and must be signed off by 
 - [ ] Test Case B qualifying income calculation verified
 - [ ] **Jose sign-off:** enters his W-2 + a $2,100 Unit 2 rent, confirms max PITI @ 50% DTI = $3,040
 
-### Sprint 3 — Jose Scorer, Roof Age, Excluded Zips (F3, F8, F9)
+### Sprint 3 — Presets & Market Guardrails (F6, F8)
 
-- [ ] F3-AC1 through F3-AC8 pass
-- [ ] F8-AC1 through F8-AC5 pass
-- [ ] F9-AC1 through F9-AC5 pass
-- [ ] Test Case B returns Green with correct reasons
-- [ ] Test Case C returns Red with correct reasons
-- [ ] Jose-tuned verdict and base investment score both visible and visually distinct
-- [ ] **Jose sign-off:** pastes a known-excluded-zip listing and a known-Green listing, verdicts match expectations
+Done when Jose can click one of three presets (Vallejo Priority / East Bay Nearby / Richmond Motivated Sellers) and see the form repopulate; analyzing a ZIP in tier 1/2/3 shows the matching banner; analyzing a ZIP outside all three tiers (or on the excluded list) shows a red banner. Manual check in the browser against Jose's current Redfin tabs. No test gate.
 
-### Sprint 4 — Presets & Contractor Edge (F6, F7)
+### Sprint 4 — Contractor Edge + Jose G/Y/R Scorer (F3, F7, F9)
 
-- [ ] F6-AC1 through F6-AC6 pass
-- [ ] F7-AC1 through F7-AC6 pass
-- [ ] All three presets (Vallejo Priority, East Bay Nearby, Richmond Motivated Sellers) fire correct filter payloads
-- [ ] Contractor edge savings line appears as a distinct, labeled row
-- [ ] **Jose sign-off:** clicks each preset, sees correct zips + price range; toggles self-perform roofing on a rehab estimate with a roofing line and sees ~40% reduction
+Done when Jose runs a real currently-listed Vallejo duplex through the tool and the GREEN / YELLOW / RED verdict plus reasons match his gut. If they don't, the predicate thresholds or self-perform multipliers get re-tuned until they do. Toggling self-perform on a roofing line drops the effective rehab by ~40%. Manual check against at least one real listing per verdict color Jose expects to see. No test gate.
 
-### Sprint 5 — Scenarios, PDF Export, Latency, Polish (US-08, US-09, F10)
+### Sprint 5 — Live Deal Run-Through + RUN_ME
 
-- [ ] Up to 3 scenarios can be saved and compared side-by-side
-- [ ] PDF export renders cleanly with all key numbers, verdict, and reasons
-- [ ] F10-AC1 through F10-AC7 pass
-- [ ] Test Case D (1035-1037 Virginia St) runs end-to-end in ≤ 60s
-- [ ] Offline math-only mode works (AI narrative degrades gracefully)
-- [ ] **Jose sign-off:** runs full paste-URL-to-verdict flow on a live Redfin URL with stopwatch, confirms ≤ 60s; exports a PDF and opens it
+Done when Jose personally runs 2–3 currently-listed Vallejo / East Bay / Richmond properties end-to-end, confirms the numbers (PITI, qualifying income, net PITI, cash-to-close, verdict) match his own back-of-napkin math, and `RUN_ME.md` exists at repo root explaining how to start the server and interpret output. Any discrepancy Jose flags is either fixed or explicitly deferred with a one-line note in the PR.
 
 ---
 
@@ -356,11 +309,10 @@ Explicit "no" list. Any of these can be revisited in V2, but adding them to V1 s
 | Auth | Single-user. No login screen, no session mgmt. | Visible in code review |
 | Persistence | localStorage only. No database, no server-side user state. | No migrations, no DB driver in requirements.txt |
 | Startup time | `python app.py` to listening on :8000 in ≤ 5s on Jose's MacBook. | Stopwatch test on Sprint 5 sign-off |
-| Offline behavior | Math (PITI, DTI, scorer) works offline. AI narrative degrades gracefully with a clear "offline" message — does not block verdict. | Toggle Wi-Fi off, run Test Case A |
 | Data freshness | Rates fetched per-analysis, not cached beyond current session. | Network tab inspection |
 | Browser support | Latest Chrome and Safari on macOS. No IE, no mobile-first requirement. | Manual check |
-| Accessibility | Keyboard-navigable forms; color + text for verdict (never color alone — see F3-AC4). | Manual check |
-| Error handling | Every external call (scrape, rate API, AI) has a timeout and user-visible fallback. | F10-AC6 covers AI; analogous for scrape/rate |
+| Error handling | Every external call (scrape, rate API, AI) has a timeout and user-visible fallback. | Manual check |
+| V1 scope freeze | Tests and accessibility are frozen at current state (Sprint 2 end: 61 tests, `aria-live` on verdict). No new tests or a11y work required to ship V1. | Explicit scope-cut decision 2026-04-17 |
 
 ---
 
