@@ -1,7 +1,7 @@
-fastapi
-uvicorn
-httpx
-beautifulsoup4
-lxml
-python-dotenv
-playwright
+fastapi==0.136.0
+uvicorn==0.44.0
+httpx==0.28.1
+beautifulsoup4==4.14.3
+lxml==6.0.4
+python-dotenv==1.2.2
+playwright==1.58.0
