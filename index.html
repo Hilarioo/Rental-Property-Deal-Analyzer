@@ -1544,12 +1544,14 @@
         </div>
         <div class="input-group">
           <label for="downPayment">Down Payment (%)</label>
-          <input type="number" id="downPayment" value="20" min="0" max="100" step="0.5">
+          <!-- Sprint 2: default populated from DEFAULTS.downPaymentPct in initDefaults() -->
+          <input type="number" id="downPayment" value="" min="0" max="100" step="0.5">
           <div class="helper" id="dpHelper">$40,000</div>
         </div>
         <div class="input-group">
           <label for="interestRate">Interest Rate (%) <button type="button" class="btn btn-small" id="fetchRateBtn" onclick="fetchMortgageRate()" style="padding:2px 8px;font-size:0.7rem;vertical-align:middle;">Current Rate</button></label>
-          <input type="number" id="interestRate" value="7" min="0" max="30" step="0.125">
+          <!-- Sprint 2: default populated from DEFAULTS.interestRate in initDefaults() -->
+          <input type="number" id="interestRate" value="" min="0" max="30" step="0.125">
         </div>
         <div class="input-group">
           <label for="loanTerm">Loan Term (years)</label>
@@ -1562,16 +1564,17 @@
       </div>
 
       <!-- Sprint 1: Qualifying income inputs (FHA DTI) -->
+      <!-- Sprint 2: defaults populated from DEFAULTS in initDefaults() -->
       <div class="section-title" style="font-size:0.95rem; margin-top:16px;">Qualifying Income (for DTI)</div>
       <div class="input-grid">
         <div class="input-group">
           <label for="buyerMonthlyIncomeW2">W-2 Monthly Gross ($)</label>
-          <input type="number" id="buyerMonthlyIncomeW2" value="4506" min="0" step="1" onchange="calculate()">
+          <input type="number" id="buyerMonthlyIncomeW2" value="" min="0" step="1" onchange="calculate()">
           <div class="helper">Lender-qualifying W-2 income only</div>
         </div>
         <div class="input-group">
           <label for="monthlyDebts">Monthly Debts ($)</label>
-          <input type="number" id="monthlyDebts" value="0" min="0" step="1" onchange="calculate()">
+          <input type="number" id="monthlyDebts" value="" min="0" step="1" onchange="calculate()">
           <div class="helper">Car, student, minimum cc payments</div>
         </div>
         <div class="input-group">
@@ -1632,12 +1635,11 @@
           </select>
         </div>
       </div>
-      <div class="unit-rents-grid" id="unitRentsGrid">
-        <div class="input-group"><label>Unit 1 Rent ($)</label><input type="number" class="unit-rent" value="900" min="0" step="25"></div>
-        <div class="input-group"><label>Unit 2 Rent ($)</label><input type="number" class="unit-rent" value="900" min="0" step="25"></div>
-        <div class="input-group" data-unit="3"><label>Unit 3 Rent ($)</label><input type="number" class="unit-rent" value="900" min="0" step="25"></div>
-        <div class="input-group" data-unit="4"><label>Unit 4 Rent ($)</label><input type="number" class="unit-rent" value="900" min="0" step="25"></div>
-      </div>
+      <!-- Sprint 2: per-unit rent inputs are now rendered dynamically by
+           renderPerUnitRentInputs(units, ownerOccupied). Each input gets
+           id="unitRent_<i>". The static rows that used to live here have
+           been removed. Unit 0 is owner-occupied when ownerOccupied=true. -->
+      <div class="unit-rents-grid" id="unitRentsGrid"></div>
     </div>
 
     <div class="input-grid">
@@ -1665,22 +1667,23 @@
   <div class="step-panel" data-step="4" id="step4" role="tabpanel">
     <div class="section-title">Operating Expenses</div>
 
+    <!-- Sprint 2: expense defaults populated from DEFAULTS in initDefaults() -->
     <div class="input-grid">
       <div class="input-group">
         <label for="propertyTaxes">Property Taxes / yr ($)</label>
-        <input type="number" id="propertyTaxes" value="3000" min="0" step="100">
+        <input type="number" id="propertyTaxes" value="" min="0" step="100">
       </div>
       <div class="input-group">
         <label for="insurance">Insurance / yr ($)</label>
-        <input type="number" id="insurance" value="1000" min="0" step="50">
+        <input type="number" id="insurance" value="" min="0" step="50">
       </div>
       <div class="input-group">
         <label for="maintenance">Repairs &amp; Maintenance (% of rent)</label>
-        <input type="number" id="maintenance" value="5" min="0" max="100" step="0.5">
+        <input type="number" id="maintenance" value="" min="0" max="100" step="0.5">
       </div>
       <div class="input-group">
         <label for="vacancy">Vacancy Rate (%)</label>
-        <input type="number" id="vacancy" value="8" min="0" max="100" step="0.5">
+        <input type="number" id="vacancy" value="" min="0" max="100" step="0.5">
       </div>
       <div class="input-group">
         <label for="capex">CapEx Reserve (% of rent)</label>
@@ -1688,11 +1691,11 @@
       </div>
       <div class="input-group">
         <label for="management">Property Management (%)</label>
-        <input type="number" id="management" value="10" min="0" max="100" step="0.5">
+        <input type="number" id="management" value="" min="0" max="100" step="0.5">
       </div>
       <div class="input-group">
         <label for="hoa">HOA / month ($)</label>
-        <input type="number" id="hoa" value="0" min="0" step="25">
+        <input type="number" id="hoa" value="" min="0" step="25">
       </div>
       <div class="input-group">
         <label for="utilities">Utilities / month ($)</label>
@@ -1805,16 +1808,20 @@
       <div class="metric-card"><div class="label">W-2 Monthly Gross</div><div class="value" id="resW2Monthly">--</div></div>
       <div class="metric-card"><div class="label">Rental Offset (75%)</div><div class="value" id="resRentalOffset">--</div></div>
       <div class="metric-card"><div class="label">Total Qualifying Income</div><div class="value" id="resQualifyingIncome">--</div></div>
-      <div class="metric-card"><div class="label">Max PITI @ 45% DTI</div><div class="value" id="resMaxPiti45">--</div></div>
-      <div class="metric-card"><div class="label">Max PITI @ 50% DTI</div><div class="value" id="resMaxPiti50">--</div></div>
-      <div class="metric-card"><div class="label">Max PITI @ 55% DTI</div><div class="value" id="resMaxPiti55">--</div></div>
+      <!-- Sprint 2: 45% is the DEFAULT (no lender selected — conservative per
+           USER_PROFILE §10). 50%/55% are STRETCH tiers shown for reference
+           once a lender commits. The label change here is purely cosmetic;
+           the math continues to display all three tiers. -->
+      <div class="metric-card"><div class="label">Max PITI @ 45% DTI <span style="color:var(--text-muted);font-weight:normal;font-size:0.7rem;">(Default — no lender)</span></div><div class="value" id="resMaxPiti45">--</div></div>
+      <div class="metric-card"><div class="label">Max PITI @ 50% DTI <span style="color:var(--text-muted);font-weight:normal;font-size:0.7rem;">(Stretch — lender confirms)</span></div><div class="value" id="resMaxPiti50">--</div></div>
+      <div class="metric-card"><div class="label">Max PITI @ 55% DTI <span style="color:var(--text-muted);font-weight:normal;font-size:0.7rem;">(Stretch — lender confirms)</span></div><div class="value" id="resMaxPiti55">--</div></div>
     </div>
     <div id="dtiNote" style="display:none; font-size:0.82rem; color:var(--text-muted); margin-top:8px;">
       Default 45% DTI — conservative until lender selected. 50%/55% shown as stretch reference.
     </div>
 
-    <!-- D) Deal Score -->
-    <div class="deal-score" id="dealScore">
+    <!-- D) Deal Score — aria-live so SR users hear PASS/FAIL flips on recalc -->
+    <div class="deal-score" id="dealScore" role="status" aria-live="polite" aria-atomic="true">
       <div class="verdict" id="dealVerdict">--</div>
       <div class="explanation" id="dealExplanation">--</div>
     </div>
@@ -1979,6 +1986,50 @@
   }
 
   // ======================================================================
+  // Sprint 2: DEFAULTS — single source of truth for all form defaults
+  // ======================================================================
+  // Authoritative source: handoff/USER_PROFILE.md §10 (Tool default field values).
+  // Every input that ships with a Jose-specific default MUST read from here,
+  // not from a hardcoded literal in the form HTML or elsewhere in JS. A
+  // profile swap (e.g. a different buyer) is then a single-edit diff.
+  //
+  // Unit conventions:
+  //   - Percentages are whole numbers (6.5 means 6.5%, not 0.065)
+  //   - Money is in dollars
+  //   - Booleans are true/false (not "yes"/"no" strings)
+  //   - Term is in years
+  var DEFAULTS = Object.freeze({
+    buyerAnnualIncomeW2: 54080,
+    buyerMonthlyIncomeW2: 4506,
+    seIncomeForQualifying: 0,
+    creditScore: 780,
+    monthlyDebts: 0,
+    downPaymentPct: 3.5,
+    loanType: 'FHA',
+    loanTerm: 30,
+    interestRate: 6.5,
+    fhaUpfrontMipPct: 1.75,
+    fhaAnnualMipPct: 0.55,
+    propertyTaxRatePct: 1.1,
+    insuranceAnnual: 1800,
+    hoaMonthly: 0,
+    vacancyPct: 5,
+    maintenancePct: 5,
+    propertyManagementPct: 0,
+    ownerOccupied: true,
+    unitsOccupiedByOwner: 1,
+    closingCostsPct: 3,
+    rentalOffsetPct: 75,
+    maxDtiPct: 45,        // conservative — no lender yet; 50/55 are stretch
+    maxNetPitiTarget: 3000,
+    maxCashToClose: 45000,
+    reserveMonths: 2,
+    selfPerformRoofing: true,
+    roofingCostMultiplier: 0.60,
+  });
+  window.__DEFAULTS__ = DEFAULTS; // expose for tests / dev-console inspection
+
+  // ======================================================================
   // State
   // ======================================================================
   var currentStep = 1;
@@ -2080,13 +2131,132 @@
     if (type === 'multi') updateUnitVisibility();
   };
 
-  window.updateUnitVisibility = function() {
-    var count = parseInt($('unitCount').value);
-    $('unitRentsGrid').querySelectorAll('[data-unit]').forEach(function(el) {
-      var u = parseInt(el.dataset.unit);
-      el.style.display = u <= count ? '' : 'none';
+  // ======================================================================
+  // Sprint 2: per-unit rent inputs (dynamic)
+  // ======================================================================
+  // Renders N rent inputs with ids unitRent_0 .. unitRent_(N-1). When the
+  // property is owner-occupied, index 0 is labeled as the owner unit and
+  // annotated with "(you live here — $0 toward qualifying)". It stays
+  // editable because Jose may want to track the market rent for a future
+  // refi/rental scenario; it just doesn't count toward the 75% offset.
+  //
+  // Existing values (user-entered) are preserved across re-renders by
+  // reading current values first. New inputs default to 0 (not a preset
+  // dollar amount) to avoid fabricating rent numbers the user didn't enter.
+  window.renderPerUnitRentInputs = function(units, ownerOccupied) {
+    var grid = $('unitRentsGrid');
+    if (!grid) return;
+    var existing = [];
+    // Preserve any values the user already typed.
+    for (var i = 0; i < 4; i++) {
+      var existingEl = $('unitRent_' + i);
+      existing[i] = existingEl ? existingEl.value : '';
+    }
+    var html = '';
+    for (var idx = 0; idx < units; idx++) {
+      var isOwner = ownerOccupied && idx === 0;
+      var label = 'Unit ' + (idx + 1) + ' Rent ($)';
+      // Annotation visible only for the owner-occupied unit (index 0).
+      var annotation = isOwner
+        ? '<span style="color:var(--text-muted);font-weight:normal;font-size:0.78rem;"> (you live here — $0 toward qualifying)</span>'
+        : '';
+      var labelStyle = isOwner ? ' style="color:var(--text-muted);"' : '';
+      // Default value: preserve existing, else 0. We deliberately do NOT
+      // preset $900 or any other rent number — that would fabricate data.
+      // Escape as attribute — defence in depth even though the only source
+      // is a type=number input that coerces out non-numeric chars.
+      var rawValue = existing[idx] !== '' ? existing[idx] : '0';
+      var value = String(rawValue).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      html += '<div class="input-group">'
+        + '<label for="unitRent_' + idx + '"' + labelStyle + '>'
+        + label + annotation
+        + '</label>'
+        + '<input type="number" id="unitRent_' + idx + '" class="unit-rent" '
+        + 'data-unit-index="' + idx + '" '
+        + 'value="' + value + '" min="0" step="25">'
+        + '</div>';
+    }
+    grid.innerHTML = html;
+    // Wire up change handlers (they're not inside .input-grid at page-scan
+    // time, so the generic allInputs listener doesn't auto-attach).
+    grid.querySelectorAll('input').forEach(function(inp) {
+      inp.addEventListener('input', function() { calculate(); });
     });
   };
+
+  // Read current per-unit rents from the rendered inputs. Returns an array
+  // of numbers of length equal to the current unitCount (or [monthlyRent]
+  // when propertyType === 'sfh').
+  window.getPerUnitRents = function() {
+    if (propertyType === 'sfh') {
+      return [val($('monthlyRent'), 0)];
+    }
+    var count = Math.max(1, parseInt($('unitCount').value) || 1);
+    var out = [];
+    for (var i = 0; i < count; i++) {
+      var el = $('unitRent_' + i);
+      out.push(el ? val(el, 0) : 0);
+    }
+    return out;
+  };
+
+  window.updateUnitVisibility = function() {
+    var count = parseInt($('unitCount').value) || 2;
+    var ownerOcc = getOwnerOccupied();
+    renderPerUnitRentInputs(count, ownerOcc);
+  };
+
+  function getOwnerOccupied() {
+    var el = $('ownerOccupied');
+    if (!el) return DEFAULTS.ownerOccupied;
+    return el.value === 'true';
+  }
+
+  // ======================================================================
+  // Sprint 2: initDefaults — populate all form fields from DEFAULTS on
+  // cold page load. MUST run before calculate() / updateDpHelper().
+  // ======================================================================
+  function initDefaults() {
+    // Loan fields
+    var dp = $('downPayment');             if (dp) dp.value = DEFAULTS.downPaymentPct;
+    var ir = $('interestRate');            if (ir) ir.value = DEFAULTS.interestRate;
+    var lt = $('loanTerm');                if (lt) lt.value = DEFAULTS.loanTerm;
+    var loanTypeEl = $('loanType');
+    if (loanTypeEl) loanTypeEl.value = DEFAULTS.loanType;
+    // Qualifying income
+    var w2 = $('buyerMonthlyIncomeW2');    if (w2) w2.value = DEFAULTS.buyerMonthlyIncomeW2;
+    var md = $('monthlyDebts');            if (md) md.value = DEFAULTS.monthlyDebts;
+    var oo = $('ownerOccupied');
+    if (oo) oo.value = DEFAULTS.ownerOccupied ? 'true' : 'false';
+    // Expenses — derived defaults that depend on price (taxes, insurance)
+    // are handled by updateClosingCostsDefault/updateInsuranceDefault on
+    // price change; initial values here are baseline.
+    var price = val($('purchasePrice'), 0);
+    var taxes = $('propertyTaxes');
+    if (taxes && !taxes.value) {
+      // Default annual taxes from DEFAULTS.propertyTaxRatePct × price (or 0).
+      taxes.value = price > 0 ? Math.round(price * DEFAULTS.propertyTaxRatePct / 100) : 0;
+    }
+    var ins = $('insurance');
+    if (ins && !ins.value) ins.value = DEFAULTS.insuranceAnnual;
+    var maint = $('maintenance');          if (maint) maint.value = DEFAULTS.maintenancePct;
+    var vac = $('vacancy');                if (vac) vac.value = DEFAULTS.vacancyPct;
+    var mgmt = $('management');            if (mgmt) mgmt.value = DEFAULTS.propertyManagementPct;
+    var hoa = $('hoa');                    if (hoa) hoa.value = DEFAULTS.hoaMonthly;
+  }
+
+  initDefaults();
+
+  // Re-render per-unit rents when ownerOccupied changes so the owner-unit
+  // annotation appears/disappears correctly.
+  (function wireOwnerOccupiedChange() {
+    var el = $('ownerOccupied');
+    if (el) {
+      el.addEventListener('change', function() {
+        if (propertyType === 'multi') updateUnitVisibility();
+      });
+    }
+  })();
 
   updateUnitVisibility();
 
@@ -2346,7 +2516,8 @@
   function computeQuickScore(listing, userRent, mortgageRate) {
     var price = listing.price;
     var rent = userRent;
-    var rate = mortgageRate || 0.07; // default 7% if not provided
+    // Sprint 2: default rate comes from DEFAULTS.interestRate (Jose's 6.5%).
+    var rate = mortgageRate || (DEFAULTS.interestRate / 100);
     if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, numericScore: 0, details: [], cssClass: 'score-0' };
 
     // Flag suspiciously cheap listings (likely vacant lots or teardowns)
@@ -2366,8 +2537,11 @@
     // inflated quick-scores for FHA 3.5% buyers. Read from the form when
     // available; fall back to 20% (conventional) for listing-search flows
     // where the form hasn't been filled yet.
+    // Sprint 2: default down-payment pct comes from DEFAULTS.downPaymentPct
+    // (Jose's 3.5% FHA). Preserved original precedence: read form first,
+    // fall back to DEFAULTS when the form hasn't been filled yet.
     var dpInput = $('downPayment');
-    var downPct = (dpInput && val(dpInput, 0, 100) > 0) ? val(dpInput, 0, 100) / 100 : 0.20;
+    var downPct = (dpInput && val(dpInput, 0, 100) > 0) ? val(dpInput, 0, 100) / 100 : (DEFAULTS.downPaymentPct / 100);
     var loanAmt = price * (1 - downPct);
     var monthlyRate = rate / 12;
     var nPayments = 360;
@@ -3149,16 +3323,14 @@
   // ======================================================================
   // Get Total Monthly Rent
   // ======================================================================
+  // Sprint 2: totalRent is the sum of the dynamic per-unit rent inputs so
+  // the user's per-unit entries ARE the total — no separate single-rent
+  // field can drift from a sum of unit rents.
   function getTotalRent() {
     if (propertyType === 'sfh') {
       return val($('monthlyRent'), 0);
-    } else {
-      var count = parseInt($('unitCount').value);
-      var inputs = $('unitRentsGrid').querySelectorAll('.unit-rent');
-      var total = 0;
-      inputs.forEach(function(inp, i) { if (i < count) total += val(inp, 0); });
-      return total;
     }
+    return getPerUnitRents().reduce(function(s, r) { return s + (r || 0); }, 0);
   }
 
   // ======================================================================
@@ -3419,16 +3591,10 @@
     var w2Monthly = val($('buyerMonthlyIncomeW2'), 0);
     var monthlyDebts = val($('monthlyDebts'), 0);
     var ownerOccupied = ($('ownerOccupied') && $('ownerOccupied').value === 'true');
-    // Sprint 1 scope: per-unit rents are Sprint 2. For now, split totalRent
-    // evenly across units using Math.floor, and treat unit 0 as owner-occupied.
-    var perUnitRents = [];
-    if (propertyType === 'sfh') {
-      perUnitRents = [totalRent];
-    } else {
-      var unitCountForDti = Math.max(1, parseInt($('unitCount').value) || 1);
-      var perUnit = Math.floor(totalRent / unitCountForDti);
-      for (var ui = 0; ui < unitCountForDti; ui++) perUnitRents.push(perUnit);
-    }
+    // Sprint 2: per-unit rents come from the dynamic rent inputs (not a
+    // floor-split of totalRent). getPerUnitRents handles both SFH and
+    // multifamily and returns an index-0-is-owner array when ownerOcc=true.
+    var perUnitRents = getPerUnitRents();
     var rentableRents;
     if (ownerOccupied && perUnitRents.length > 1) {
       rentableRents = perUnitRents.slice(1).reduce(function(s, r) { return s + (r || 0); }, 0);
@@ -3866,10 +4032,14 @@
     if (propertyType === 'sfh') {
       html += reviewItem('Monthly Rent', fmtDollar(val($('monthlyRent'), 0)) + badge('monthlyRent'));
     } else {
-      var count = parseInt($('unitCount').value);
-      var inputs = $('unitRentsGrid').querySelectorAll('.unit-rent');
-      for (var i = 0; i < count; i++) {
-        html += reviewItem('Unit ' + (i + 1) + ' Rent', fmtDollar(val(inputs[i], 0)));
+      // Sprint 2: per-unit rents come from getPerUnitRents, which reads
+      // unitRent_<i> inputs. Unit 0 is the owner-occupied unit when
+      // ownerOccupied=true; its rent doesn't count toward qualifying offset.
+      var perUnits = getPerUnitRents();
+      var isOwnerOcc = getOwnerOccupied();
+      for (var i = 0; i < perUnits.length; i++) {
+        var suffix = (isOwnerOcc && i === 0) ? ' (owner-occupied)' : '';
+        html += reviewItem('Unit ' + (i + 1) + ' Rent' + suffix, fmtDollar(perUnits[i]));
       }
     }
     html += reviewItem('Other Income', fmtDollar(val($('otherIncome'), 0)) + '/mo');
@@ -4338,20 +4508,46 @@
   }, 150));
 
   // === Try Example Deal ===
+  // Sprint 2: example deal sources its loan/expense defaults from DEFAULTS
+  // so a profile change propagates to the example with zero edits here.
+  // The property-specific fields (price, ARV, rehab, rent) stay as an
+  // illustrative Vallejo-style duplex — they're example data, not defaults.
   window.tryExampleDeal = function() {
+    var examplePrice = 475000;
     var ex = {
-      propName:'456 Oak Avenue, Arlington VA 22201',
-      purchasePrice:'250000', arv:'300000', closingCosts:'7500',
-      rehabBudget:'15000', valueGrowth:'3', sqft:'1800',
-      buildingPct:'80', taxRate:'25',
-      downPayment:'20', interestRate:'6.5', loanTerm:'30', points:'0',
-      monthlyRent:'2800', otherIncome:'100', incomeGrowth:'2',
-      propertyTaxes:'3000', insurance:'1500', maintenance:'5',
-      vacancy:'5', capex:'5', management:'8',
-      hoa:'0', utilities:'0', otherExpenses:'0', expenseGrowth:'2'
+      propName: '1234 Maple St, Vallejo CA 94590 (example)',
+      purchasePrice: String(examplePrice),
+      arv: '',
+      closingCosts: String(Math.round(examplePrice * DEFAULTS.closingCostsPct / 100)),
+      rehabBudget: '30000',
+      valueGrowth: '3',
+      sqft: '1800',
+      buildingPct: '80',
+      taxRate: '25',
+      downPayment: String(DEFAULTS.downPaymentPct),
+      interestRate: String(DEFAULTS.interestRate),
+      loanTerm: String(DEFAULTS.loanTerm),
+      points: '0',
+      monthlyRent: '2000',
+      otherIncome: '0',
+      incomeGrowth: '2',
+      propertyTaxes: String(Math.round(examplePrice * DEFAULTS.propertyTaxRatePct / 100)),
+      insurance: String(DEFAULTS.insuranceAnnual),
+      maintenance: String(DEFAULTS.maintenancePct),
+      vacancy: String(DEFAULTS.vacancyPct),
+      capex: '5',
+      management: String(DEFAULTS.propertyManagementPct),
+      hoa: String(DEFAULTS.hoaMonthly),
+      utilities: '0',
+      otherExpenses: '0',
+      expenseGrowth: '2'
     };
     Object.keys(ex).forEach(function(k){ var el=$(k); if(el) el.value=ex[k]; });
-    if($('cashPurchase')){ $('cashPurchase').checked=false; toggleCashPurchase(); }
+    if ($('loanType')) $('loanType').value = DEFAULTS.loanType;
+    if ($('buyerMonthlyIncomeW2')) $('buyerMonthlyIncomeW2').value = DEFAULTS.buyerMonthlyIncomeW2;
+    if ($('monthlyDebts')) $('monthlyDebts').value = DEFAULTS.monthlyDebts;
+    if ($('ownerOccupied')) $('ownerOccupied').value = DEFAULTS.ownerOccupied ? 'true' : 'false';
+    if ($('cashPurchase')){ $('cashPurchase').checked=false; toggleCashPurchase(); }
     updateDpHelper();
     goToStep(6);
   };

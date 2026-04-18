@@ -363,3 +363,58 @@ test('Sprint 1: computeQualifyingIncome SFR with owner-occ + no ADU rent = no of
   });
   assert.equal(qi, 4506);
 });
+
+// =====================================================================
+// Sprint 2 — DEFAULTS + per-unit rents wired to computeQualifyingIncome
+// =====================================================================
+//
+// The DEFAULTS block itself lives in index.html (not exported from calc.js)
+// because it's UI-layer state. Extracting it into calc.js would require
+// turning calc.js into an ES module loaded by index.html, which is out of
+// scope for Sprint 2 per SPRINT_PLAN.md §4 — tracked as drift risk 4/5.
+// Trade-off: DEFAULTS shape cannot be asserted from node --test today.
+// Mitigation: the Jose-at-fourplex qualifying-income assertion below
+// exercises the DEFAULTS values indirectly (W-2 4506, units=4, offset=75%),
+// so a silent DEFAULTS drift would show up as a math regression here.
+
+test('Sprint 2: shape — calc.js still exports the Sprint 1 surface', () => {
+  // Guard against a drive-by rename of any exported symbol that index.html
+  // mirrors. Every name here is referenced in the inline calc block.
+  assert.equal(typeof computeMonthlyPI, 'function');
+  assert.equal(typeof computePITI, 'function');
+  assert.equal(typeof computeFhaLoanAmount, 'function');
+  assert.equal(typeof computeFhaPITI, 'function');
+  assert.equal(typeof computeQualifyingIncome, 'function');
+  assert.equal(typeof maxPitiAtDti, 'function');
+  assert.equal(FHA_MIP_UPFRONT_RATE, 0.0175);
+  assert.equal(FHA_MIP_ANNUAL_STANDARD, 0.0055);
+  assert.equal(FHA_MIP_ANNUAL_HIGH, 0.0075);
+  assert.equal(FHA_BASELINE_LOAN_LIMIT, 726200);
+});
+
+test('Sprint 2: Jose fourplex — W-2 4506 + [0,2000,2100,2200] at 75% = $9,231', () => {
+  // Drives directly from the task list. Owner-occupies unit 0 (living there);
+  // units 1-3 count at 75%. 4506 + 0.75 * (2000+2100+2200) = 4506 + 4725 = 9231.
+  const qi = computeQualifyingIncome({
+    w2Monthly: 4506,
+    units: 4,
+    perUnitRents: [0, 2000, 2100, 2200],
+    ownerOccupied: true,
+  });
+  assert.equal(qi, 9231);
+});
+
+test('Sprint 2: per-unit rents with owner-unit market rent tracked still excludes owner from offset', () => {
+  // Jose may enter a hypothetical market rent on the owner-occupied unit
+  // (for future refi / rental scenarios). That rent must NOT count toward
+  // the qualifying offset while he's still owner-occupying. Index 0 is
+  // always the owner unit when ownerOccupied=true.
+  const qi = computeQualifyingIncome({
+    w2Monthly: 4506,
+    units: 2,
+    perUnitRents: [2200, 2100], // user tracked a market rent on unit 0
+    ownerOccupied: true,
+  });
+  // Only unit 1 counts: 4506 + 0.75 * 2100 = 4506 + 1575 = 6081
+  assert.equal(qi, 6081);
+});
