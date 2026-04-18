@@ -1200,6 +1200,15 @@
   <header>
     <h1>Rental Property Deal Analyzer</h1>
     <p>Real-time investment metrics &amp; AI-powered analysis</p>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:8px;font-size:0.85rem;">
+      <label for="presetSelect" style="color:var(--text-muted);">Preset:</label>
+      <select id="presetSelect" onchange="applyPreset(this.value)" style="padding:4px 8px;border-radius:4px;">
+        <option value="">Custom</option>
+        <option value="Vallejo Priority">Vallejo Priority</option>
+        <option value="East Bay Nearby">East Bay Nearby</option>
+        <option value="Richmond Motivated">Richmond Motivated</option>
+      </select>
+    </div>
   </header>
 
   <!-- Wizard Navigation -->
@@ -1820,6 +1829,9 @@
       Default 45% DTI — conservative until lender selected. 50%/55% shown as stretch reference.
     </div>
 
+    <!-- Sprint 3: ZIP tier banner — rendered by renderTierBanner(). -->
+    <div id="tierBanner" style="display:none;margin:12px 0;padding:10px 14px;border-radius:6px;font-size:0.9rem;font-weight:600;border:1px solid transparent;"></div>
+
     <!-- D) Deal Score — aria-live so SR users hear PASS/FAIL flips on recalc -->
     <div class="deal-score" id="dealScore" role="status" aria-live="polite" aria-atomic="true">
       <div class="verdict" id="dealVerdict">--</div>
@@ -2028,6 +2040,82 @@
     roofingCostMultiplier: 0.60,
   });
   window.__DEFAULTS__ = DEFAULTS; // expose for tests / dev-console inspection
+
+  // ======================================================================
+  // Sprint 3: Market presets — partial overrides of DEFAULTS, plus a
+  // property-filter payload for Neighborhood Search. Pull from
+  // handoff/USER_PROFILE.md §6. Each preset is a starter — tune after first
+  // real scrape.
+  // ======================================================================
+  var PRESETS = Object.freeze({
+    "Vallejo Priority": Object.freeze({
+      defaults: { propertyTaxRatePct: 1.25, insuranceAnnual: 1800, vacancyPct: 5 },
+      search: {
+        zips: ['94590', '94591'],
+        minPrice: 400000,
+        maxPrice: 550000,
+        propertyType: 'multi-family',
+        keywords: ['duplex', 'two on one', 'income property', 'fixer'],
+        minDom: undefined,
+      }
+    }),
+    "East Bay Nearby": Object.freeze({
+      defaults: { propertyTaxRatePct: 1.15, insuranceAnnual: 1900, vacancyPct: 5 },
+      search: {
+        zips: ['94547', '94572', '94525', '94564'],
+        minPrice: 400000,
+        maxPrice: 600000,
+        propertyType: 'multi-family',
+        keywords: [],
+        minDom: undefined,
+      }
+    }),
+    "Richmond Motivated": Object.freeze({
+      defaults: { propertyTaxRatePct: 1.35, insuranceAnnual: 2100, vacancyPct: 8 },
+      search: {
+        zips: ['94801', '94804', '94805'],
+        minPrice: 400000,
+        maxPrice: 575000,
+        propertyType: 'multi-family',
+        keywords: [],
+        minDom: 30,
+      }
+    }),
+  });
+
+  // ZIP tiering + excluded markets (matched by address substring).
+  var ZIP_TIERS = Object.freeze({
+    TIER_1: ['94590', '94591'],
+    TIER_2: ['94547', '94572', '94525', '94564'],
+    TIER_3: ['94801', '94804', '94805'],
+    EXCLUDED_ZIPS: ['94803', '94806'],
+    // Cities / neighborhoods Jose excludes regardless of ZIP.
+    EXCLUDED_CITIES: ['Oakland', 'Berkeley', 'Benicia', 'Sacramento', 'Mare Island', 'Glen Cove', 'Hiddenbrooke'],
+  });
+
+  // Returns 'tier1' | 'tier2' | 'tier3' | 'excluded' | 'outside'.
+  // Excluded city match wins over ZIP tier match (address is ground truth).
+  function getZipTier(zip, address) {
+    // Case-insensitive city match — Redfin sometimes returns uppercased or
+    // mixed-case strings (e.g. "MARE ISLAND" vs "Mare Island").
+    var addr = (address || '').toString().toLowerCase();
+    for (var i = 0; i < ZIP_TIERS.EXCLUDED_CITIES.length; i++) {
+      if (addr.indexOf(ZIP_TIERS.EXCLUDED_CITIES[i].toLowerCase()) !== -1) return 'excluded';
+    }
+    var z = (zip || '').toString().trim();
+    if (!z && addr) {
+      var m = addr.match(/\b\d{5}\b/);
+      if (m) z = m[0];
+    }
+    if (!z) return 'outside';
+    if (ZIP_TIERS.EXCLUDED_ZIPS.indexOf(z) !== -1) return 'excluded';
+    if (ZIP_TIERS.TIER_1.indexOf(z) !== -1) return 'tier1';
+    if (ZIP_TIERS.TIER_2.indexOf(z) !== -1) return 'tier2';
+    if (ZIP_TIERS.TIER_3.indexOf(z) !== -1) return 'tier3';
+    return 'outside';
+  }
+  window.__PRESETS__ = PRESETS;
+  window.__getZipTier__ = getZipTier;
 
   // ======================================================================
   // State
@@ -2246,6 +2334,74 @@
   }
 
   initDefaults();
+
+  // ======================================================================
+  // Sprint 3: applyPreset — overlay a named preset's DEFAULTS overrides
+  // onto the form, push search payload into Neighborhood Search fields,
+  // and recalc. Empty value === "Custom" (noop).
+  // ======================================================================
+  window.applyPreset = function(name) {
+    if (!name || !PRESETS[name]) return;
+    var preset = PRESETS[name];
+    var d = preset.defaults || {};
+    var price = val($('purchasePrice'), 0);
+
+    // Form overrides — derive from price when rate-based (taxes).
+    if (d.propertyTaxRatePct !== undefined) {
+      var taxes = $('propertyTaxes');
+      if (taxes) taxes.value = price > 0 ? Math.round(price * d.propertyTaxRatePct / 100) : taxes.value;
+    }
+    if (d.insuranceAnnual !== undefined) {
+      var ins = $('insurance'); if (ins) ins.value = d.insuranceAnnual;
+    }
+    if (d.vacancyPct !== undefined) {
+      var vac = $('vacancy'); if (vac) vac.value = d.vacancyPct;
+    }
+
+    // Neighborhood Search payload (applied even if panel hidden — harmless).
+    var s = preset.search || {};
+    if (s.zips && s.zips.length) {
+      var loc = $('searchLocation'); if (loc) loc.value = s.zips.join(', ');
+    }
+    if (s.minPrice !== undefined) { var mn = $('searchMinPrice'); if (mn) mn.value = s.minPrice; }
+    if (s.maxPrice !== undefined) { var mx = $('searchMaxPrice'); if (mx) mx.value = s.maxPrice; }
+    if (s.propertyType) { var pt = $('searchPropType'); if (pt) pt.value = s.propertyType; }
+
+    // Recalc so downstream PITI/DTI reflect new taxes/insurance/vacancy.
+    if (typeof calculate === 'function') { try { calculate(); } catch(e) {} }
+  };
+
+  // ======================================================================
+  // Sprint 3: renderTierBanner — classify analyzed property by ZIP/address
+  // and show a tier banner above the deal verdict. Hidden if no address.
+  // ======================================================================
+  function renderTierBanner() {
+    var el = $('tierBanner');
+    if (!el) return;
+    var addr = (window.scrapedData && window.scrapedData.address) || ($('propName') && $('propName').value) || '';
+    if (!addr) { el.style.display = 'none'; return; }
+    var zipMatch = addr.match(/\b\d{5}\b/);
+    var zip = zipMatch ? zipMatch[0] : '';
+    var tier = getZipTier(zip, addr);
+    var greenBg = 'rgba(34,197,94,0.15)', greenFg = '#16a34a';
+    var yellowBg = 'rgba(234,179,8,0.15)', yellowFg = '#a16207';
+    var redBg = 'rgba(239,68,68,0.15)', redFg = '#b91c1c';
+    var grayBg = 'rgba(120,120,120,0.12)', grayFg = 'var(--text-muted)';
+    var map = {
+      tier1:    { text: 'Tier 1 — Vallejo priority market',                          bg: greenBg,  fg: greenFg,  border: '#22c55e' },
+      tier2:    { text: 'Tier 2 — East Bay nearby',                                  bg: greenBg,  fg: greenFg,  border: '#22c55e' },
+      tier3:    { text: 'Tier 3 — Richmond motivated sellers (underwrite conservatively)', bg: yellowBg, fg: yellowFg, border: '#eab308' },
+      excluded: { text: 'Excluded market — consider skipping',                       bg: redBg,    fg: redFg,    border: '#ef4444' },
+      outside:  { text: 'Outside target markets',                                    bg: grayBg,   fg: grayFg,   border: '#888' },
+    };
+    var cfg = map[tier] || map.outside;
+    el.textContent = cfg.text;
+    el.style.background = cfg.bg;
+    el.style.color = cfg.fg;
+    el.style.borderColor = cfg.border;
+    el.style.display = '';
+  }
+  window.__renderTierBanner__ = renderTierBanner;
 
   // Re-render per-unit rents when ownerOccupied changes so the owner-unit
   // annotation appears/disappears correctly.
@@ -3095,8 +3251,38 @@
 
   // ======================================================================
   // Saved Search Filters (localStorage)
+  // Sprint 3: keyed-map of presets rather than a single blob. Last-active
+  // preset is written under the reserved "__last__" key.
   // ======================================================================
-  var SEARCH_FILTERS_KEY = 'rpda_search_filters';
+  var SEARCH_FILTERS_KEY = 'rpda_search_filters';    // legacy single-blob
+  var SEARCH_PRESETS_KEY = 'rpda_search_presets';    // new keyed map
+  var LAST_PRESET_KEY = '__last__';
+
+  function _readPresetMap() {
+    try {
+      var raw = localStorage.getItem(SEARCH_PRESETS_KEY);
+      var map = raw ? JSON.parse(raw) : {};
+      if (!map || typeof map !== 'object') map = {};
+      return map;
+    } catch(e) { return {}; }
+  }
+  function _writePresetMap(map) {
+    try { localStorage.setItem(SEARCH_PRESETS_KEY, JSON.stringify(map)); } catch(e) {}
+  }
+
+  // One-time migration: wrap legacy single-blob under presets.legacy and
+  // delete the old key. Safe to call every load (noop after first run).
+  function migrateLegacySearchFilters() {
+    try {
+      var legacy = localStorage.getItem(SEARCH_FILTERS_KEY);
+      if (!legacy) return;
+      var parsed = JSON.parse(legacy);
+      var map = _readPresetMap();
+      if (!map.legacy) map.legacy = parsed;
+      _writePresetMap(map);
+      localStorage.removeItem(SEARCH_FILTERS_KEY);
+    } catch(e) {}
+  }
 
   function saveSearchFilters() {
     var filters = {
@@ -3108,21 +3294,24 @@
       targetRent: $('searchTargetRent').value,
       maxResults: $('searchMaxResults').value
     };
-    try { localStorage.setItem(SEARCH_FILTERS_KEY, JSON.stringify(filters)); } catch(e) {}
+    var map = _readPresetMap();
+    map[LAST_PRESET_KEY] = filters;
+    _writePresetMap(map);
   }
 
   function loadSearchFilters() {
+    migrateLegacySearchFilters();
+    var map = _readPresetMap();
+    var f = map[LAST_PRESET_KEY] || map.legacy;
+    if (!f) return;
     try {
-      var f = JSON.parse(localStorage.getItem(SEARCH_FILTERS_KEY));
-      if (f) {
-        if (f.location) $('searchLocation').value = f.location;
-        if (f.minPrice) $('searchMinPrice').value = f.minPrice;
-        if (f.maxPrice) $('searchMaxPrice').value = f.maxPrice;
-        if (f.minBeds) $('searchMinBeds').value = f.minBeds;
-        if (f.propType) $('searchPropType').value = f.propType;
-        if (f.targetRent) $('searchTargetRent').value = f.targetRent;
-        if (f.maxResults) $('searchMaxResults').value = f.maxResults;
-      }
+      if (f.location) $('searchLocation').value = f.location;
+      if (f.minPrice) $('searchMinPrice').value = f.minPrice;
+      if (f.maxPrice) $('searchMaxPrice').value = f.maxPrice;
+      if (f.minBeds) $('searchMinBeds').value = f.minBeds;
+      if (f.propType) $('searchPropType').value = f.propType;
+      if (f.targetRent) $('searchTargetRent').value = f.targetRent;
+      if (f.maxResults) $('searchMaxResults').value = f.maxResults;
     } catch(e) {}
   }
 
@@ -3809,6 +3998,9 @@
       setMetricColor('resMaxPiti50', fmtDollar(r.maxPiti50) + (r.piti <= r.maxPiti50 ? ' PASS' : ' FAIL'), r.piti <= r.maxPiti50 ? 1 : -1);
       setMetricColor('resMaxPiti55', fmtDollar(r.maxPiti55) + (r.piti <= r.maxPiti55 ? ' PASS' : ' FAIL'), r.piti <= r.maxPiti55 ? 1 : -1);
     }
+
+    // Sprint 3: ZIP tier banner (before deal score).
+    try { renderTierBanner(); } catch(e) {}
 
     // D) Deal Score
     var ds = $('dealScore');
