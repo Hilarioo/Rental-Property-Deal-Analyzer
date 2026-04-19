@@ -972,6 +972,62 @@ async def process_url(
     }
 
 
+# --------------------------------------------------------------------------
+# Failures envelope helper (Sprint 10B-1)
+# --------------------------------------------------------------------------
+
+# Map scrape_error codes to short, Jose-friendly reasons. Keep the raw code
+# as errorCode so the UI can still key off it (cache_source badge logic, etc.)
+_ERROR_REASONS: dict[str, str] = {
+    "unsupported_url": "Unsupported site (only Redfin / Zillow)",
+    "invalid_zillow_path": "Invalid Zillow URL",
+    "invalid_redfin_path": "Invalid Redfin URL",
+    "fetch_failed": "Could not reach the listing",
+    "parse_failed": "Could not parse the page",
+    "extract_failed": "Listing payload had no usable data",
+    "rate_limited": "Rate limited — try again in a minute",
+    "worker_exception": "Unexpected error while processing",
+}
+
+
+def _human_readable_reason(raw: str | None) -> str:
+    """Map an internal scrape_error code to a short human-readable phrase."""
+    if not raw:
+        return "Unknown error"
+    # worker_exception:KeyError style — strip the type suffix for the lookup.
+    base = raw.split(":", 1)[0]
+    return _ERROR_REASONS.get(base, raw)
+
+
+def build_failures_envelope(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract per-URL failures from the pipeline result rows.
+
+    Input is the same `ranked`/`finalized` list we already hand to the ranking
+    writer. A row is a failure if scrape_ok is falsy (scrape never succeeded)
+    or if hard_fail is True with no real address/price to act on.
+
+    Output shape matches the Sprint 10B-1 contract:
+        [{url, canonicalUrl, reason, errorCode}]
+    """
+    failures: list[dict[str, Any]] = []
+    for row in rows:
+        # Only surface rows that never produced usable data. Hard-fail rows
+        # that HAVE a price (e.g. DTI blew the envelope) are still valuable —
+        # the user should see them in the rankings, not the failures list.
+        if row.get("scrape_ok"):
+            continue
+        url = row.get("url") or row.get("canonical_url") or ""
+        canonical = row.get("canonical_url") or url
+        raw_code = row.get("scrape_error") or "unknown"
+        failures.append({
+            "url": url,
+            "canonicalUrl": canonical,
+            "reason": _human_readable_reason(raw_code),
+            "errorCode": raw_code,
+        })
+    return failures
+
+
 async def run_sync_batch(
     urls: list[str],
     *,
@@ -1169,6 +1225,9 @@ async def run_sync_batch(
             "metrics": row.get("metrics") or {},
             "derived_metrics": row.get("derived_metrics") or {},
             "cache_stale_reason": row.get("cache_stale_reason"),
+            # Emitted so the frontend cache-source badge (Sprint 10B-4) can
+            # render "updated Xd ago" on cache-hit rows.
+            "analyzed_at": row.get("analyzed_at"),
             "insurance_breakdown": row.get("insurance_breakdown") or {},
             "llm_analysis": row.get("llm_analysis"),
             "enrichment": row.get("enrichment"),
@@ -1185,4 +1244,8 @@ async def run_sync_batch(
         "status": "complete",
         "preset_name": preset_name,
         "rankings": response_rankings,
+        # Sprint 10B-1: per-URL failure visibility. Rankings used to silently
+        # drop the scrape-failure rows off the table visually; now the client
+        # can render them in a separate "Failed URLs" section with Retry.
+        "failures": build_failures_envelope(ranked),
     }
