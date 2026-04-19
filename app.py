@@ -1272,7 +1272,13 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
 async def search_neighborhood(request: Request):
     """Search for listings in a neighborhood/zip/city via Redfin."""
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"search:{client_ip}", 3):
+    # Sprint 14.5 rate-limit refresh: the original 3/min cap here was sized
+    # for a hypothetical multi-user SaaS; this tool is local-only single-user
+    # per Sprint 10A's loopback-only posture. 30/min matches a human clicking
+    # Search Listings at a realistic pace (one every 2s max) while still
+    # catching runaway loops in dev. Mirrors the same reasoning behind the
+    # `batch_scrape` bucket bump in PR #11.
+    if not _check_rate_limit(f"search:{client_ip}", 30):
         return JSONResponse(
             {"error": "Too many searches. Please wait a minute before trying again."},
             status_code=429,
@@ -1326,7 +1332,7 @@ async def smart_search(request: Request):
     more likely to be viable investment deals.
     """
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"smart:{client_ip}", 3):
+    if not _check_rate_limit(f"smart:{client_ip}", 30):  # Sprint 14.5: 3 → 30.
         return JSONResponse(
             {"error": "Too many searches. Please wait a minute before trying again."},
             status_code=429,
@@ -1742,7 +1748,7 @@ async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict
 async def estimate_rent(request: Request):
     """Estimate market rent for a location using Redfin rental listings."""
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"rent:{client_ip}", 3):
+    if not _check_rate_limit(f"rent:{client_ip}", 30):  # Sprint 14.5: 3 → 30.
         return JSONResponse(
             {"error": "Too many requests. Please wait a minute."},
             status_code=429,
@@ -1768,7 +1774,9 @@ async def estimate_rent(request: Request):
 async def scrape_property(request: Request):
     # Rate limit: 5 requests per minute per IP
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"scrape:{client_ip}", 5):
+    # Sprint 14.5: 5 → 30. Human pastes a URL at most a few times per minute;
+    # batch flows use the separate `batch_scrape:{ip}` bucket (180/min per PR #11).
+    if not _check_rate_limit(f"scrape:{client_ip}", 30):
         return JSONResponse({"error": "Too many requests. Please wait a minute before trying again."}, status_code=429)
 
     body = await request.json()
@@ -1997,7 +2005,7 @@ def _resolve_provider():
 async def analyze_ai(request: Request):
     # Rate limit: 10 requests per minute per IP
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"ai:{client_ip}", 10):
+    if not _check_rate_limit(f"ai:{client_ip}", 30):  # Sprint 14.5: 10 → 30.
         return JSONResponse({"error": "Too many requests. Please wait before trying again."}, status_code=429)
 
     body = await request.json()
@@ -2443,7 +2451,7 @@ def _process_stream_token(
 async def analyze_ai_stream(request: Request):
     # Rate limit: 10 requests per minute per IP
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"ai-stream:{client_ip}", 10):
+    if not _check_rate_limit(f"ai-stream:{client_ip}", 30):  # Sprint 14.5: 10 → 30.
         return JSONResponse({"error": "Too many requests. Please wait before trying again."}, status_code=429)
 
     body = await request.json()
@@ -2562,7 +2570,7 @@ def _validate_url_hash(url_hash: str):
 async def batch_analyze(request: Request):
     """Sync batch endpoint — BATCH_DESIGN §B.1."""
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"batch:{client_ip}", 3):
+    if not _check_rate_limit(f"batch:{client_ip}", 10):  # Sprint 14.5: 3 → 10 submissions/min.
         request_id = uuid.uuid4().hex
         return JSONResponse(
             _error_envelope("RATE_LIMIT_EXCEEDED", "Too many batch requests.", request_id),
@@ -2680,7 +2688,7 @@ async def batch_submit_async(request: Request):
     step to Anthropic Message Batches so we can ship arbitrarily large batches
     at 50% of the standard per-token rate with a 24h SLA."""
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"batch:{client_ip}", 3):
+    if not _check_rate_limit(f"batch:{client_ip}", 10):  # Sprint 14.5: 3 → 10 submissions/min.
         request_id = uuid.uuid4().hex
         return JSONResponse(
             _error_envelope("RATE_LIMIT_EXCEEDED", "Too many batch requests.", request_id),
@@ -2811,7 +2819,7 @@ async def scan_zips(request: Request):
     """
     request_id = uuid.uuid4().hex
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"scan:{client_ip}", 2):
+    if not _check_rate_limit(f"scan:{client_ip}", 10):  # Sprint 14.5: 2 → 10 submissions/min.
         return JSONResponse(
             _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
             status_code=429,
