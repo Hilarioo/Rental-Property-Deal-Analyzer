@@ -180,6 +180,41 @@ def _coerce_analysis(raw: Any) -> dict[str, Any]:
         s = 1.0
     uplift["suggested"] = max(1.0, min(1.5, s))
     base["insuranceUplift"] = uplift
+
+    # Clamp rehabBand values to non-negative ints. A prompt-injected
+    # listing description could otherwise push negative rehab through
+    # the ranker and silently flip verdicts — per Security audit H-3.
+    rb = base.get("rehabBand") or {}
+    if isinstance(rb, dict):
+        for cat, band in list(rb.items()):
+            if not isinstance(band, dict):
+                continue
+            for k in ("low", "mid", "high"):
+                try:
+                    v = band.get(k)
+                    if v is None:
+                        continue
+                    band[k] = max(0, int(float(v)))
+                except (TypeError, ValueError):
+                    band[k] = 0
+            try:
+                c = float(band.get("confidence") or 0.0)
+                band["confidence"] = max(0.0, min(1.0, c))
+            except (TypeError, ValueError):
+                band["confidence"] = 0.0
+    base["rehabBand"] = rb
+
+    # Clamp roofAgeYears.value to [0, 200] — anything outside is obvious nonsense.
+    ra = base.get("roofAgeYears") or {}
+    if isinstance(ra, dict):
+        try:
+            v = ra.get("value")
+            if v is not None:
+                ra["value"] = max(0, min(200, int(float(v))))
+        except (TypeError, ValueError):
+            ra["value"] = None
+    base["roofAgeYears"] = ra
+
     return base
 
 

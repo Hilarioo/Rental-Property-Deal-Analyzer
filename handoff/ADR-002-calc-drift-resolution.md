@@ -1,6 +1,6 @@
 # ADR-002: Calc Drift Resolution — Shared Constants Spec
 
-- **Status:** Proposed
+- **Status:** Accepted (shipped in commits ff5fbdf (Phase A), 809c9cb (Phase B))
 - **Date:** 2026-04-18
 - **Owner:** Jose (solo dev)
 - **Supersedes:** none
@@ -311,3 +311,9 @@ The existence of `spec/constants.json` changes the default answer to "where does
 3. Manual browser smoke: load a known deal, confirm verdict + PITI numbers match the pre-change snapshot. Keep a screenshot in `logs/` for reference.
 
 **Rollback:** `git revert` the Phase A commit. No schema migration, no data loss. The JSON file is additive; deleting it + reverting the loader restores the prior world byte-for-byte.
+
+---
+
+## Sign-off
+
+Accepted 2026-04-18 — Phase A (ff5fbdf) and Phase B (809c9cb) both shipped. Drift engine killed; all three runtimes now read `spec/constants.json` for the top-5 change-classes.

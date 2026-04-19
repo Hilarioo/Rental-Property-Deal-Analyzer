@@ -4,7 +4,7 @@
 **Owner:** Jose H Gonzalez (personal-use customization)
 **Plan author:** Product Sprint Prioritizer agent
 **Plan date:** 2026-04-17
-**Status:** Authoritative. Supersedes any ad-hoc plans in prior chats.
+**Status:** CLOSED — all sprints shipped. Retrospective record as of 2026-04-18. Post-V1 work tracked in `BACKLOG.md`.
 
 > **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See README.md "V1 philosophy".
 
@@ -43,14 +43,13 @@ The existing codebase is functionally close but **quantitatively wrong for FHA o
 
 | Sprint | Name | Hours | Status |
 | --- | --- | ---: | --- |
-| 0 | Foundation (branch + pins + tests) | 4.0 | DONE |
-| 1 | Core FHA math | 8.0 | DONE |
-| 2 | Jose profile defaults | 3.0 | DONE |
-| 3 | Presets & market guardrails | 2.5 | remaining |
-| 4 | Contractor edge + Jose-tuned G/Y/R scorer | 6.0 | remaining |
-| 5 | Live deal run-through + RUN_ME | 1.0 | remaining |
-| | **Remaining** | **9.5** | |
-| | **Total (incl. landed)** | **24.5** | |
+| 0 | Foundation (branch + pins + tests) | 4.0 | **DONE** (609fb5d) |
+| 1 | Core FHA math | 8.0 | **DONE** (dd1737f) |
+| 2 | Jose profile defaults | 3.0 | **DONE** (b115e33) |
+| 3 | Presets & market guardrails | 2.5 | **DONE** (9e892ad) |
+| 4 | Contractor edge + Jose-tuned G/Y/R scorer | 6.0 | **DONE** (6559559) |
+| 5 | Live deal run-through + RUN_ME | 1.0 | **DONE** (8523b4a) |
+| | **Shipped total** | **24.5** | ✅ all sprints DONE |
 
 Remaining scope was deliberately cut from 12.5h to 9.5h on 2026-04-17: Sprint 3–5 test tasks, a11y work, and UI polish were pulled out. Rationale: the north star is Jose making a real offer on a real Vallejo duplex, not a publication-quality codebase. Existing Sprint 0–2 tests (61) stay as a free regression net; `make test` still works; no new tests are gated.
 
@@ -93,12 +92,12 @@ There are ~4,200 lines of calculation JS in `index.html` with zero tests. Every 
 
 ### Acceptance criteria
 
-- [ ] `git rev-parse --abbrev-ref HEAD` returns `feature/jose-profile`.
-- [ ] `pip install -r requirements.txt` in a fresh venv succeeds with pinned versions; `pip freeze` diff is empty.
-- [ ] `pytest` runs and reports ≥3 passing tests with non-zero assertions (not just imports).
-- [ ] `node --test tests/calc.test.mjs` runs and reports ≥8 passing tests.
-- [ ] A single command (`make test` or `./scripts/test.sh`) runs both suites and exits 0.
-- [ ] Every baseline test has a comment `# BASELINE — pre-Jose-fix value. Expected to change in Sprint N.` flagging which sprint will intentionally break it.
+- [x] `git rev-parse --abbrev-ref HEAD` returns `feature/jose-profile`.
+- [x] `pip install -r requirements.txt` in a fresh venv succeeds with pinned versions; `pip freeze` diff is empty.
+- [x] `pytest` runs and reports ≥3 passing tests with non-zero assertions (not just imports).
+- [x] `node --test tests/calc.test.mjs` runs and reports ≥8 passing tests.
+- [x] A single command (`make test` or `./scripts/test.sh`) runs both suites and exits 0.
+- [x] Every baseline test has a comment `# BASELINE — pre-Jose-fix value. Expected to change in Sprint N.` flagging which sprint will intentionally break it.
 
 ### Dependencies
 
@@ -141,13 +140,13 @@ None. This is the root of the tree.
 
 ### Acceptance criteria
 
-- [ ] For fixture `price=$500,000, down=3.5%, rate=6.5%, term=30, taxes=$6,250/yr, ins=$1,800/yr`: PITI equals **$4,004 ± $5** (prior value $3,779).
-- [ ] Upfront MIP of $8,663 appears as a line item and is financed into the loan (loan amount = $490,088.38, not $482,500).
-- [ ] For fixture `W-2=$4,506/mo, duplex, non-owner rent=$2,000/mo`: qualifying income reads **$6,006/mo** (4,506 + 0.75 × 2000).
-- [ ] DTI panel shows three max-PITI rows. For qualifying income $6,006: 45% = $2,703, 50% = $3,003, 55% = $3,303.
-- [ ] Quick-score with `down=3.5%` entered no longer computes as if 20% was used — verified by diffing score before/after against a fixture.
-- [ ] All baseline tests from Sprint 0 updated to new expected values with a `// Sprint 1:` comment documenting the change.
-- [ ] `pytest` and `node --test` both pass.
+- [x] For fixture `price=$500,000, down=3.5%, rate=6.5%, term=30, taxes=$6,250/yr, ins=$1,800/yr`: PITI equals **$4,004 ± $5** (prior value $3,779).
+- [x] Upfront MIP of $8,663 appears as a line item and is financed into the loan (loan amount = $490,088.38, not $482,500).
+- [x] For fixture `W-2=$4,506/mo, duplex, non-owner rent=$2,000/mo`: qualifying income reads **$6,006/mo** (4,506 + 0.75 × 2000).
+- [x] DTI panel shows three max-PITI rows. For qualifying income $6,006: 45% = $2,703, 50% = $3,003, 55% = $3,303.
+- [x] Quick-score with `down=3.5%` entered no longer computes as if 20% was used — verified by diffing score before/after against a fixture.
+- [x] All baseline tests from Sprint 0 updated to new expected values with a `// Sprint 1:` comment documenting the change.
+- [x] `pytest` and `node --test` both pass.
 
 ### Dependencies
 
@@ -186,11 +185,11 @@ None. This is the root of the tree.
 
 ### Acceptance criteria
 
-- [ ] A fresh page load (no localStorage) pre-fills all 10 fields listed in 2.3 to Jose's values.
-- [ ] Selecting "Duplex" renders exactly 2 rent inputs; "Triplex" renders 3; "Fourplex" renders 4.
-- [ ] Entering rents `[0, 2000]` for a duplex with `ownerOccupied=true` produces qualifying income = `w2Monthly + 0.75 * 2000`.
-- [ ] `grep -n "0.2" index.html` shows no remaining down-payment-as-decimal literals outside the DEFAULTS block.
-- [ ] A single diff changing `DEFAULTS.downPct: 3.5` to `25` changes every downstream calc — no orphan literals.
+- [x] A fresh page load (no localStorage) pre-fills all 10 fields listed in 2.3 to Jose's values.
+- [x] Selecting "Duplex" renders exactly 2 rent inputs; "Triplex" renders 3; "Fourplex" renders 4.
+- [x] Entering rents `[0, 2000]` for a duplex with `ownerOccupied=true` produces qualifying income = `w2Monthly + 0.75 * 2000`.
+- [x] `grep -n "0.2" index.html` shows no remaining down-payment-as-decimal literals outside the DEFAULTS block.
+- [x] A single diff changing `DEFAULTS.downPct: 3.5` to `25` changes every downstream calc — no orphan literals.
 
 ### Dependencies
 
@@ -239,11 +238,11 @@ None. This is the root of the tree.
 
 All checks are visual / manual in the browser.
 
-- [ ] Dropdown shows 3 presets; selecting each overwrites the relevant DEFAULTS overrides and re-renders.
-- [ ] Analyzing a property at 94590 shows a green "Tier 1 — Vallejo priority" banner.
-- [ ] Analyzing 94804 shows yellow "Tier 3 — Richmond motivated."
-- [ ] Analyzing 95670 shows red "Outside target markets."
-- [ ] localStorage supports saving a fourth custom preset without overwriting the three built-ins.
+- [x] Dropdown shows 3 presets; selecting each overwrites the relevant DEFAULTS overrides and re-renders.
+- [x] Analyzing a property at 94590 shows a green "Tier 1 — Vallejo priority" banner.
+- [x] Analyzing 94804 shows yellow "Tier 3 — Richmond motivated."
+- [x] Analyzing 95670 shows red "Outside target markets."
+- [x] localStorage supports saving a fourth custom preset without overwriting the three built-ins.
 
 ### Dependencies
 
@@ -298,13 +297,13 @@ All checks are visual / manual in the browser.
 
 All checks are manual in the browser against a real Vallejo listing (Jose's choice — typically a current duplex he is actively considering).
 
-- [ ] Rehab table with 6 seed categories renders; each row has retail-cost input and self-perform checkbox.
-- [ ] Setting roof = $20,000, self-perform = true, shows effective = $12,000 and feeds downstream cash-to-close.
-- [ ] Jose eyeballs a real Vallejo listing he believes should be GREEN (priority ZIP, within budget) and the badge comes back GREEN with plausible reasons.
-- [ ] Jose eyeballs a real listing he believes should be YELLOW (one criterion marginal) and the badge comes back YELLOW; the reason names the criterion he expected.
-- [ ] Jose eyeballs a real listing at an outside-tier ZIP (e.g. Oakland / 95670 / Sacramento) and the badge comes back RED with reason "ZIP outside target markets."
-- [ ] The generic investor score is still visible, labeled as reference only.
-- [ ] Verdict matches Jose's gut within his tolerance ("yes I'd offer" / "no I wouldn't"). If it disagrees, the predicate table gets re-tuned before merge.
+- [x] Rehab table with 6 seed categories renders; each row has retail-cost input and self-perform checkbox.
+- [x] Setting roof = $20,000, self-perform = true, shows effective = $12,000 and feeds downstream cash-to-close.
+- [x] Jose eyeballs a real Vallejo listing he believes should be GREEN (priority ZIP, within budget) and the badge comes back GREEN with plausible reasons.
+- [x] Jose eyeballs a real listing he believes should be YELLOW (one criterion marginal) and the badge comes back YELLOW; the reason names the criterion he expected.
+- [x] Jose eyeballs a real listing at an outside-tier ZIP (e.g. Oakland / 95670 / Sacramento) and the badge comes back RED with reason "ZIP outside target markets."
+- [x] The generic investor score is still visible, labeled as reference only.
+- [x] Verdict matches Jose's gut within his tolerance ("yes I'd offer" / "no I wouldn't"). If it disagrees, the predicate table gets re-tuned before merge.
 
 ### Dependencies
 
@@ -340,9 +339,9 @@ All checks are manual in the browser against a real Vallejo listing (Jose's choi
 
 ### Acceptance criteria
 
-- [ ] Jose has run ≥2 live listings through the tool and the numbers match his gut / spreadsheet within his own tolerance.
-- [ ] Any discrepancy Jose flagged is either fixed or explicitly deferred with a one-line note.
-- [ ] `RUN_ME.md` exists at repo root and is ≤1 page.
+- [x] Jose has run ≥2 live listings through the tool and the numbers match his gut / spreadsheet within his own tolerance.
+- [x] Any discrepancy Jose flagged is either fixed or explicitly deferred with a one-line note.
+- [x] `RUN_ME.md` exists at repo root and is ≤1 page.
 
 ### Dependencies
 
@@ -404,10 +403,51 @@ The effort is DONE when Jose can do the following, unassisted, in under 60 secon
 **Under the hood (cut scope, 2026-04-17):**
 
 - [x] Sprint 0–2 landed: `pytest` + `node --test` cover FHA MIP, DTI, per-unit rent, DEFAULTS (61 tests total).
-- [ ] Every default lives in one `DEFAULTS` block — a profile swap is a single-file edit. (landed Sprint 2; confirm still true after Sprints 3–4)
-- [ ] `RUN_ME.md` exists and is current.
-- [ ] Jose has personally run ≥2 live listings end-to-end and the numbers match his gut.
+- [x] Every default lives in one `DEFAULTS` block — a profile swap is a single-file edit. (landed Sprint 2; confirmed post-Sprints 3–4; later moved to `spec/constants.json` per ADR-002)
+- [x] `RUN_ME.md` exists and is current.
+- [x] Jose has personally run ≥2 live listings end-to-end and the numbers match his gut.
 
 No assertion on test count for Sprints 3–5. No a11y assertion beyond Sprint 2's `aria-live`. No UI-polish assertion.
 
 When all of the above are true, merge `feature/jose-profile` to `main`, tag `v1.0-jose`, and stop. Future work is Phase 5 scope and waits for a real deal to motivate it.
+
+**2026-04-18 update:** All six sprints shipped. Merged to `main`. V1 closed. See `Post-V1 Sprints` below for follow-up work that landed on top.
+
+---
+
+## 11. Post-V1 Sprints
+
+After V1 shipped, Jose's real shopping workflow surfaced the "40 tabs on a weekend" problem. That drove a batch/ranking + persistence track that was not originally in scope. It is fully shipped; the hardening backlog is tracked separately in [`BACKLOG.md`](./BACKLOG.md).
+
+### Post-V1 Batch — SHIPPED (commits 5fa53a3, 23b352f, 10ab110, a2bb5c4, 7e4c5e8)
+
+- SQLite persistence (8 tables, WAL mode, `BEGIN IMMEDIATE` critical sections)
+- `/api/batch-analyze` sync endpoint with TOPSIS + Pareto + hard-fail gates (ADR-001)
+- `/api/batch-submit-async` + `/api/batch-status/{batchId}` (Anthropic Message Batches, 50% cheaper)
+- Consolidated structured-extraction LLM call per property (Claude Sonnet 4.5 + Vision)
+- External enrichment: FEMA flood, Cal Fire WUI, OSM Overpass amenities, Census geocoder (8s hard-cap)
+- Real Redfin rent-comp medians wired into ranking
+
+### Post-V1 Calc Drift — SHIPPED (commits ff5fbdf Phase A, 809c9cb Phase B per ADR-002)
+
+- Extracted all numeric constants to `spec/constants.json`
+- Collapsed `index.html` inline math into ESM imports from `calc.js`
+- Three-runtime parity: browser, Node tests, Python batch pipeline all read one JSON file
+
+### Post-V1 Security Hotfixes — SHIPPED (inline, 2026-04-18)
+
+- H-1: scrubbed `str(exc)` leak on LM Studio + Ollama branches
+- H-2: closed SSRF via loose hostname endswith match in `_detect_source`
+- H-3: clamped LLM `rehabBand` + `roofAgeYears` to non-negative
+- M-4: defense-in-depth for sync batch URL validation
+
+### Queued post-V1 work
+
+See [`BACKLOG.md`](./BACKLOG.md) for:
+
+- **Sprint 7A** — remaining security hotfixes (hard gate)
+- **Sprint 7B** — code health cleanup (pipeline module split, dead-code prune)
+- **Sprint 7C** — doc refresh (USER_FLOW batch coverage, ACCEPTANCE_CRITERIA post-V1 additions)
+- **Sprint 8** — performance (enrichment parallelism, DB indexes)
+- **Sprint 9** — architecture (migration framework, observability)
+- **Sprint 10** — long-term (weight editor UI, multi-device sync if ever needed)

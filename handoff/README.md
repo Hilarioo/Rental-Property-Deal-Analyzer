@@ -1,27 +1,27 @@
 # Handoff — Rental Property Deal Analyzer for Jose
 
-Single source of truth for customizing this tool into Jose's FHA owner-occupied house-hack decision engine.
+Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 
-**Status (2026-04-17):** Sprints 0–2 complete. Sprints 3–5 remaining under a cut scope (see below).
+**Status (2026-04-18):** V1 SHIPPED. All 6 sprints DONE. 61 tests green. 7 batch-feature commits landed post-V1. Current posture: **GREEN local single-user**; **YELLOW if remote-exposed** (see [`BACKLOG.md`](./BACKLOG.md) Sprint 7A for the hardening plan).
 
-> **Scope cut 2026-04-17:** tests, accessibility, and UI polish are frozen at current state for the remaining sprints. See "V1 philosophy" below.
-
----
-
-## V1 philosophy: ship the decision engine, not the codebase
-
-Jose is not shipping this to anyone. He needs the tool to tell him GREEN / YELLOW / RED on a real Vallejo duplex he's considering this quarter — and that's the entire goal. The already-landed test suite (58→61 tests across Sprints 0–2) stays as a free regression net, but no new tests are required in Sprints 3–5. No new accessibility work beyond the `aria-live` verdict that already landed. No CSS or layout polish. If the UI is ugly but the number is right, it ships. Every remaining hour goes to the math and flow that determine whether Jose makes an offer.
+> The original V1 mission — "paste a Redfin URL, get a GREEN/YELLOW/RED verdict Jose trusts enough to offer on" — is complete. Post-V1 work (batch triage, SQLite persistence, Anthropic Message Batches, external enrichment, security hotfixes) is layered on top and tracked in `BACKLOG.md`.
 
 ---
 
 ## Read in this order
 
-1. **[`USER_PROFILE.md`](./USER_PROFILE.md)** — Jose's authoritative numbers, markets, thresholds. Every other doc references this. Start here.
-2. **[`HANDOFF.md`](./HANDOFF.md)** — original mission brief. The full context for why this project exists.
-3. **[`TECHNICAL_ASSESSMENT.md`](./TECHNICAL_ASSESSMENT.md)** — what the tool gets right, what's missing, FIX verdict, file:line gap map.
-4. **[`SPRINT_PLAN.md`](./SPRINT_PLAN.md)** — 6 sprints totalling ~27.5h to close the gaps.
-5. **[`USER_FLOW.md`](./USER_FLOW.md)** — end-to-end workflow tree: happy paths, branch conditions, failure modes, handoff contracts.
-6. **[`ACCEPTANCE_CRITERIA.md`](./ACCEPTANCE_CRITERIA.md)** — testable Given/When/Then criteria + Definition of Done per sprint.
+1. **[`USER_PROFILE.md`](./USER_PROFILE.md)** — Jose's numbers (authoritative). Start here.
+2. **[`HANDOFF.md`](./HANDOFF.md)** — original mission brief (immutable historical record).
+3. **[`TECHNICAL_ASSESSMENT.md`](./TECHNICAL_ASSESSMENT.md)** — shipped-state record + post-V1 epilogue. Every gap identified is now closed.
+4. **[`SPRINT_PLAN.md`](./SPRINT_PLAN.md)** — retrospective, all 6 sprints DONE with commit hashes.
+5. **[`ADR-001-batch-ranking.md`](./ADR-001-batch-ranking.md)** — architectural decision, Accepted.
+6. **[`ADR-002-calc-drift-resolution.md`](./ADR-002-calc-drift-resolution.md)** — architectural decision, Accepted.
+7. **[`ACCEPTANCE_CRITERIA.md`](./ACCEPTANCE_CRITERIA.md)** — Given/When/Then per feature.
+8. **[`USER_FLOW.md`](./USER_FLOW.md)** — workflow tree. **Note: stale — covers single-URL wizard only; batch/async/SQLite flows (~50% of current product) not yet documented. Tracked in [`BACKLOG.md`](./BACKLOG.md) Sprint 7C.**
+9. **[`LIVE_RUNTHROUGH.md`](./LIVE_RUNTHROUGH.md)** — 3 real Vallejo properties end-to-end.
+10. **[`BACKLOG.md`](./BACKLOG.md)** — prioritized follow-up work (Sprint 7A/7B/7C + Sprint 8/9/10).
+11. **[`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)** — known failure modes and fixes.
+12. **[`CHANGELOG.md`](./CHANGELOG.md)** — dated log of what shipped.
 
 ---
 
@@ -29,40 +29,39 @@ Jose is not shipping this to anyone. He needs the tool to tell him GREEN / YELLO
 
 | Decision | Status |
 |---|---|
-| Tool fit | **FIX** (customize, don't rebuild) |
-| AI provider | Anthropic Claude API (Jose added key to `.env`) |
+| Tool fit | **FIX — complete** (V1 customization shipped) |
+| V1 scope | **SHIPPED** (all 6 sprints DONE) |
+| AI provider | Anthropic Claude API (Sonnet 4.5 with Vision for structured extraction) |
 | Deployment | Local only — `http://localhost:8000` |
-| Effort landed | Sprints 0–2 complete (~15h) |
-| Effort remaining | **~9.5h** across Sprints 3–5 (was 12.5h; scope cut removed test/a11y/UI tasks) |
-| Critical gate | Sprint 0 (tests) landed — no new test gates going forward |
-| North-star | Paste Redfin URL → ≤ 60s → FHA-aware G/Y/R verdict + reasons Jose trusts enough to offer on |
+| Tests | **61 green** (pytest + node --test) |
+| Post-V1 commits | 7 batch-feature commits + critical security hotfixes |
+| Current posture | **GREEN** local single-user / **YELLOW** if remote-exposed |
+| Next hard gate | Sprint 7A security hotfixes (see `BACKLOG.md`) |
+| North-star | Paste Redfin URL → ≤60s → FHA-aware G/Y/R verdict Jose trusts enough to offer on ✅ |
 
 ---
 
-## The six gaps to close (short version)
+## What shipped in V1 (all DONE)
 
-1. **FHA MIP** not in PITI calc → add upfront 1.75% + annual 0.55%/12
-2. **75% rental offset** not supported → add qualifying-income + DTI module
-3. **Rehab** is a single scalar → add category breakdown + C-39 self-perform toggle
-4. **Scoring** hardcodes 20% down → fix + add Jose-tuned G/Y/R overlay
-5. **Defaults** scattered → central `DEFAULTS` config with Jose's 17 field values
-6. **Presets** single-slot → array storage + 3 market presets
+1. **FHA MIP** in PITI — upfront 1.75% financed + annual 0.55%/12 (Sprint 1 / dd1737f)
+2. **75% rental offset** + qualifying-income + DTI stretch panel (Sprint 1 / dd1737f)
+3. **Per-unit rent inputs** + central DEFAULTS config (Sprint 2 / b115e33)
+4. **Market presets** + ZIP-tier banner (Sprint 3 / 9e892ad)
+5. **Rehab category table** + C-39 self-perform multipliers (Sprint 4 / 6559559)
+6. **Jose-tuned Green/Yellow/Red verdict** with up to 3 plain-English reasons (Sprint 4 / 6559559)
+7. **Live run-through** on 3 real Vallejo properties + `RUN_ME.md` (Sprint 5 / 8523b4a)
 
-Full file:line map: see [`TECHNICAL_ASSESSMENT.md`](./TECHNICAL_ASSESSMENT.md#3-math-gaps--exact-fileline).
+## What shipped post-V1 (not originally in scope)
 
----
-
-## What's explicitly out of scope
-
-- CalHFA MyHome automation (optional input field only)
-- BiggerPockets / county permit API scrapers
-- SMS / Twilio / Telegram alert pipelines
-- Public cloud deploy (datacenter IPs blocked by Redfin/Zillow anyway)
-- Vue / Firebase rewrite
-- Full BRRRR refi modeling
-- Tenant management
-
-See `HANDOFF.md` §5 and `ACCEPTANCE_CRITERIA.md` §6 for full list with rationale.
+- **SQLite persistence** — 8 tables, WAL mode, `BEGIN IMMEDIATE` critical sections
+- **Batch analysis** — TOPSIS ranking on 13 criteria + Pareto filter + hard-fail gates
+- **Sync + async endpoints** — `/api/batch-analyze` + `/api/batch-submit-async` (Anthropic Message Batches, 50% cheaper)
+- **Structured LLM extraction** — consolidated one-call-per-property with Vision; per-URL SQLite cache
+- **External enrichment** — FEMA, Cal Fire, OSM Overpass, Census geocoder (8s hard-cap budget)
+- **Real rent comps** — Redfin medians replace tier default when ≥2 comps found
+- **Shared constants spec** — `spec/constants.json` read by all three runtimes (ADR-002 Phase A)
+- **calc.js ESM import** — math deduplication between browser and Node (ADR-002 Phase B)
+- **Critical security fixes** — H-1 (exception leak), H-2 (SSRF suffix match), H-3 (LLM field clamp), M-4 (sync batch URL validation)
 
 ---
 
@@ -75,15 +74,16 @@ python app.py
 # open http://localhost:8000
 ```
 
-A post-Sprint-5 `RUN_ME.md` will replace these instructions with a friendlier Jose-facing quick-start.
+For batch triage of multiple URLs, see the batch panel in the UI (20+ URL runs unlock the async toggle).
+
+If something fails at startup, check [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) first.
 
 ---
 
 ## Document ownership
 
 - **Jose** owns `USER_PROFILE.md`. No change without his approval.
-- **Sprint Prioritizer agent** owns `SPRINT_PLAN.md` (regenerated when scope shifts).
-- **Workflow Architect agent** owns `USER_FLOW.md` (regenerated when flow changes).
-- **Product Manager agent** owns `ACCEPTANCE_CRITERIA.md` (regenerated when features added).
-- **Engineering** owns `TECHNICAL_ASSESSMENT.md` — update when a sprint closes a gap.
-- **HANDOFF.md** is immutable historical record. Do not edit.
+- `SPRINT_PLAN.md`, `TECHNICAL_ASSESSMENT.md`, `ACCEPTANCE_CRITERIA.md` are shipped-state records. Update when a new sprint closes.
+- `HANDOFF.md` is immutable historical record. Do not edit.
+- `ADR-*` files flip status on acceptance; bodies stay as written.
+- `CHANGELOG.md`, `TROUBLESHOOTING.md`, `BACKLOG.md` are living docs — append as work lands.

@@ -1,6 +1,6 @@
 # ADR-001: Batch Property Analysis and Multi-Criteria Ranking
 
-**Status:** Accepted
+**Status:** Accepted (shipped in commits 5fa53a3, 23b352f, 10ab110, 809c9cb, ff5fbdf, 7e4c5e8)
 **Date:** 2026-04-18
 **Deciders:** Jose H Gonzalez (owner), Software Architect agent (facilitator)
 **Supersedes:** none
@@ -434,3 +434,5 @@ This ADR is accepted when:
 
 **Jose sign-off:** _pending_
 **Engineer accept:** _pending_
+
+Accepted 2026-04-18 — V1 live, all batch endpoints in production.

@@ -1,5 +1,35 @@
 # Technical Assessment — Rental Property Deal Analyzer
 
+## Post-V1 Epilogue (2026-04-18)
+
+**Every gap identified below has been closed. This document is preserved as the
+pre-customization record of what the tool needed.** Current post-V1 state:
+
+- FHA MIP in PITI: ✅ shipped in Sprint 1 (commit dd1737f)
+- 75% rental offset + DTI: ✅ shipped in Sprint 1
+- Contractor rehab edge (C-39 roofing): ✅ shipped in Sprint 4 (commit 6559559)
+- Jose-tuned Green/Yellow/Red scorer: ✅ shipped in Sprint 4
+- Market presets + ZIP-tier banner: ✅ shipped in Sprint 3 (commit 9e892ad)
+- Per-unit rent inputs + central DEFAULTS: ✅ shipped in Sprint 2 (commit b115e33)
+- Test harness + pinned deps: ✅ shipped in Sprint 0 (commit 609fb5d)
+
+Post-V1 additions not originally in scope:
+- SQLite persistence (8 tables) + batch processing
+- Sync + async Anthropic Message Batches integration
+- External enrichment (FEMA, Cal Fire, OSM Overpass, Census geocoder)
+- Consolidated structured-extraction LLM calls with Vision
+- Real Redfin rent-comp medians replacing tier default
+- Shared spec/constants.json (ADR-002 Phase A)
+- calc.js ESM import for math deduplication (ADR-002 Phase B)
+- Critical security fixes H-1/H-2/H-3/M-4 post-audit
+
+Current posture: **YELLOW** for code health, **GREEN** for local single-user
+security. See BACKLOG.md for the Sprint 7A/B/C hardening plan.
+
+---
+
+## Original Assessment (2026-04-17) — preserved for historical record
+
 **Date:** 2026-04-17
 **Assessed by:** Software Architect + Code Reviewer + Feature Inventory agents (three parallel reviews, synthesized)
 **Verdict:** **FIX** — customize, expect ~22–30 hours of real work

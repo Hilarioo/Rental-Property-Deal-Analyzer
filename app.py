@@ -557,10 +557,18 @@ async def serve_spec_constants():
 
 
 def _detect_source(hostname: str) -> str:
-    """Detect data source from URL hostname."""
-    if hostname and hostname.endswith("redfin.com"):
+    """Detect data source from URL hostname.
+
+    Uses exact-match or dot-prefix match to prevent SSRF via lookalike
+    hostnames like `evilredfin.com` or `redfin.com.attacker.tld`. The
+    earlier `endswith(".com")` pattern matched those; this one does not.
+    """
+    if not hostname:
+        return "unknown"
+    h = hostname.lower()
+    if h == "redfin.com" or h.endswith(".redfin.com"):
         return "redfin"
-    if hostname and hostname.endswith("zillow.com"):
+    if h == "zillow.com" or h.endswith(".zillow.com"):
         return "zillow"
     return "unknown"
 
@@ -1699,9 +1707,18 @@ async def analyze_ai(request: Request):
         try:
             text = await _analyze_with_lmstudio(metrics, model_override=model)
             return JSONResponse({"analysis": text, "provider": "lmstudio"})
-        except Exception as exc:
+        except Exception:
+            # Security: never return str(exc) to the client — upstream error
+            # bodies can include request headers. Log traceback server-side
+            # with a request_id for correlation (same pattern as M1/M3).
+            rid = uuid.uuid4().hex
+            logger.exception("analyze-ai lmstudio call failed (request_id=%s)", rid)
             return JSONResponse(
-                {"error": f"LM Studio is not running. Start LM Studio and load a model, then enable the local server.\n\nError: {exc}"},
+                _error_envelope(
+                    "AI_SERVICE_ERROR",
+                    "LM Studio is not running or not reachable. Start LM Studio, load a model, and enable the local server.",
+                    rid,
+                ),
                 status_code=502,
             )
 
@@ -1726,12 +1743,20 @@ async def analyze_ai(request: Request):
         try:
             text = await _analyze_with_ollama(metrics, model_override=model)
             return JSONResponse({"analysis": text, "provider": "ollama"})
-        except Exception as exc:
+        except Exception:
             if api_key:
                 pass  # fall through to Anthropic
             else:
+                # Security: no str(exc) to client. Log with request_id.
+                rid = uuid.uuid4().hex
+                logger.exception("analyze-ai ollama call failed (request_id=%s)", rid)
+                ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
                 return JSONResponse(
-                    {"error": f"Ollama is not running or model not available. Start Ollama with: ollama serve\nThen pull a model: ollama pull {os.getenv('OLLAMA_MODEL', 'llama3.2:3b')}\n\nError: {exc}"},
+                    _error_envelope(
+                        "AI_SERVICE_ERROR",
+                        f"Ollama is not running or model not available. Start Ollama: `ollama serve` then `ollama pull {ollama_model}`.",
+                        rid,
+                    ),
                     status_code=502,
                 )
 
@@ -2241,12 +2266,18 @@ async def batch_analyze(request: Request):
     preset_name = body.get("preset_name")
     include_narrative = bool(body.get("include_narrative", True))
 
-    if not isinstance(urls, list) or not urls:
+    # Defense-in-depth: apply the same per-URL scheme/hostname/length checks
+    # as the async endpoint. Previously only _scrape_url enforced them, which
+    # left this endpoint relying on downstream validation — a trust-boundary
+    # asymmetry flagged in the post-V1 security audit (M-4).
+    clean_urls, err = _validate_batch_urls(urls)
+    if err is not None:
         request_id = uuid.uuid4().hex
         return JSONResponse(
-            _error_envelope("VALIDATION_ERROR", "`urls` must be a non-empty array.", request_id),
-            status_code=400,
+            _error_envelope("VALIDATION_ERROR", err[0], request_id),
+            status_code=err[1],
         )
+    urls = clean_urls
     if len(urls) > _BATCH_MAX_URLS_SYNC:
         if len(urls) > _BATCH_HARD_CAP:
             request_id = uuid.uuid4().hex
@@ -2291,6 +2322,40 @@ async def batch_analyze(request: Request):
 
 _BATCH_ASYNC_MAX_URL_LEN = 2000                  # matches /api/scrape guard
 _BATCH_ASYNC_MAX_BODY_BYTES = 8 * 1024 * 1024    # 8 MB total request body
+
+
+def _validate_batch_urls(urls) -> tuple[list[str] | None, tuple[str, int] | None]:
+    """Shared validation for /api/batch-analyze and /api/batch-submit-async.
+
+    Returns (clean_urls, None) on success or (None, (error_message, status_code))
+    on failure. Used by both endpoints so sync and async enforce identical
+    scheme + hostname + length checks — defense-in-depth.
+    """
+    if not isinstance(urls, list) or not urls:
+        return None, ("`urls` must be a non-empty array.", 400)
+    clean: list[str] = []
+    for raw_u in urls:
+        if not isinstance(raw_u, str):
+            return None, ("Each URL must be a string.", 400)
+        u = raw_u.strip()
+        if not u:
+            continue
+        if len(u) > _BATCH_ASYNC_MAX_URL_LEN:
+            return None, ("URL too long.", 400)
+        try:
+            parsed_u = urlparse(u)
+        except Exception:
+            parsed_u = None
+        if (
+            parsed_u is None
+            or parsed_u.scheme not in ("http", "https")
+            or _detect_source(parsed_u.hostname) == "unknown"
+        ):
+            return None, ("Unsupported URL. Paste Zillow or Redfin listing URLs.", 400)
+        clean.append(u)
+    if not clean:
+        return None, ("`urls` must contain at least one non-empty URL.", 400)
+    return clean, None
 
 
 @app.post("/api/batch-submit-async")
@@ -2340,12 +2405,15 @@ async def batch_submit_async(request: Request):
 
     urls = body.get("urls") or []
     preset_name = body.get("preset_name")
-    if not isinstance(urls, list) or not urls:
+    # Shared validator — identical checks as sync endpoint.
+    clean_urls, err = _validate_batch_urls(urls)
+    if err is not None:
         request_id = uuid.uuid4().hex
         return JSONResponse(
-            _error_envelope("VALIDATION_ERROR", "`urls` must be a non-empty array.", request_id),
-            status_code=400,
+            _error_envelope("VALIDATION_ERROR", err[0], request_id),
+            status_code=err[1],
         )
+    urls = clean_urls
     if len(urls) > _BATCH_ASYNC_MAX_URLS:
         request_id = uuid.uuid4().hex
         return JSONResponse(
@@ -2356,43 +2424,6 @@ async def batch_submit_async(request: Request):
             ),
             status_code=400,
         )
-
-    # Per-URL length + hostname validation. Reject the whole batch if any
-    # URL is bad (defense-in-depth; sync path does the same inside _scrape_url).
-    for raw_u in urls:
-        if not isinstance(raw_u, str):
-            request_id = uuid.uuid4().hex
-            return JSONResponse(
-                _error_envelope("VALIDATION_ERROR", "Each URL must be a string.", request_id),
-                status_code=400,
-            )
-        u = raw_u.strip()
-        if not u:
-            continue
-        if len(u) > _BATCH_ASYNC_MAX_URL_LEN:
-            request_id = uuid.uuid4().hex
-            return JSONResponse(
-                _error_envelope("VALIDATION_ERROR", "URL too long.", request_id),
-                status_code=400,
-            )
-        try:
-            parsed_u = urlparse(u)
-        except Exception:
-            parsed_u = None
-        if (
-            parsed_u is None
-            or parsed_u.scheme not in ("http", "https")
-            or _detect_source(parsed_u.hostname) == "unknown"
-        ):
-            request_id = uuid.uuid4().hex
-            return JSONResponse(
-                _error_envelope(
-                    "VALIDATION_ERROR",
-                    "Unsupported URL. Paste Zillow or Redfin listing URLs.",
-                    request_id,
-                ),
-                status_code=400,
-            )
     if len(urls) > _BATCH_ASYNC_WARN_URLS:
         logger.warning(
             "Large async batch submitted (%d URLs, client=%s) — provider cap is %d",
