@@ -2,9 +2,15 @@
 
 Owner: Jose H Gonzalez
 Updated: 2026-04-19
-Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). Sprint 11 added 2026-04-19 driven by Jose's stated workflow ask: "eliminate manual form input, paste ZIPs → auto-rank."
+Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). Sprints 11 / 11.5 / 12 landed 2026-04-19 driven by Jose's stated workflow ask + Lane 3 decisions.
 
-Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6 SHIPPED. Sprint 11 (automation) is next. Do not mix lanes.
+Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12 SHIPPED. Sprint 13 (automated per-ZIP data puller) is next. Do not mix lanes.
+
+**Hotfixes landed 2026-04-19 (post-Sprint-12):**
+- **#6** — Anthropic model IDs bumped to Claude 4.X (Opus 4.7 / Sonnet 4.6 / Haiku 4.5 / batch default Sonnet 4.6). Unblocked the AI analysis final page that was 404ing.
+- **#7** — Promoted Sprint 12 onto main (stacked-PR #5 had merged into `feature/sprint-11-automation` instead of `main`).
+- **#8** — Scan ZIPs UX: clamp Top-N 1-15 on blur + reflect back, auto-expand Batch panel + scroll on submit, show chosen mode (sync / async) in scan summary.
+- **#9** — `_coerce_narrative` helper to stop `sqlite3.ProgrammingError: type 'dict' is not supported` at rankings INSERT when `llm_analysis.narrativeForRanking` holds a dict instead of a string. Was blocking `reconcile_pending_batches_on_startup` from completing on server restart.
 
 ---
 
@@ -244,7 +250,7 @@ Placeholder. Concrete items after workflow/UX/UI/accessibility/ops/compliance/da
 
 ---
 
-## Sprint 11 — Profile-driven automation + ZIP-scan overnight flow (NEXT, ~8–10h)
+## Sprint 11 — Profile-driven automation + ZIP-scan overnight flow (SHIPPED 2026-04-19, PR #4 commit 7d1f676)
 
 **Driver:** Jose's 2026-04-19 ask. Screenshot of Neighborhood Search tab required him to type "Max Price" and "Target Monthly Rent" for ZIP 94590, even though those values already exist in his profile + active preset. The form validation currently hard-fails with "Please enter a target monthly rent." — the tool has the data and is still asking for it.
 
@@ -335,7 +341,7 @@ Placeholder. Concrete items after workflow/UX/UI/accessibility/ops/compliance/da
 
 ---
 
-## Sprint 11.5 — Search-filter bugfix (SHIPPING IN SAME PR, ~30 min)
+## Sprint 11.5 — Search-filter bugfix (SHIPPED 2026-04-19, same PR #4)
 
 Driver: Vallejo 94591 search returned $95K and $64.9K properties under a $400K min + Multi-family filter. Two bugs compounding: multi-ZIP in the Location field silently dropped filters, and nothing post-filtered what Redfin returned.
 
@@ -438,27 +444,20 @@ Sprint 13 DoD: 6+ auto-generated city preset blocks committed; each traces back 
 
 ---
 
-## Ranking summary (Sprint 11/12/13 cross-cut — next-up order)
+## Ranking summary (Sprint 13 → next)
 
-1. **11-1** — Auto-populate search form from profile + active preset (HIGH, the actual user ask)
-2. **11-3** — "Analyze all N results" batch-from-search button (HIGH, eliminates per-row clicks)
-3. **11-4** — `/api/scan-zips` orchestrator: paste ZIPs → ranked list (HIGH, the overnight flow)
-4. **11-5** — Security audit on new endpoints: `_safe_error`, ZIP validation, profile-PII scrub (HIGH, hard gate)
-5. **11-2** — `targetMonthlyRent` in profile schema + rent-comp fallback (MEDIUM)
-6. **11-6** — Perf guard: scan reuses browser pool + Overpass cache; 10×10 cold ≤ 90s (MEDIUM)
-7. **11-7** — Remove "target rent required" red banner when profile supplies it (LOW, polish)
+Sprint 11 / 11.5 / 12 all shipped 2026-04-19 (PRs #4 #5 #7 plus hotfixes #6 #8 #9). Sprint 13 is queued and unblocked. Deferred from Sprint 12: **12-3** (rentalStrategy per-unit LTR/MTR toggles — UI work, ~2h) and **12-6** (203(k) contractor-stretch scenario — new loan-math branch, ~2h). Revisit when Jose wants MTR support or walks into a heavy-rehab deal.
 
-### Carry-over from prior sprints (verify shipped, not regressed)
-- 7A-1/7A-2/7A-3/7A-4 — Sprint 10A: verify all four `str(exc)`/SSRF/clamp/URL-validation fixes still hold.
-- 8-1/8-2 — Sprint 8: confirm browser pool + Overpass bucket cache are the active path in `batch/pipeline.py` (11-6 depends on this).
-- 9-1 — Sprint 9: parity harness stays green when 11-4 adds new codepath.
-- 10A §10-1/10-2 — profile.local.json gitignored, `/spec/profile.json` loopback-only. Must still be true after 11-4 ships.
+### Carry-over verification after this week's merges
+- 7A-1/7A-2/7A-3/7A-4 — Sprint 10A invariants still hold in `/api/scan-zips`: `_error_envelope` on every path, loopback-only profile, per-URL validation via shared `_validate_batch_urls`, negative-mid clamp in LLM output.
+- 8-1/8-2 — Sprint 8 browser pool + Overpass bucket cache still the active path; `/api/scan-zips` delegates to `batch/pipeline.py` so it inherits them.
+- 9-1 — parity harness 27/28 (the 1 fail is the pre-existing `DTI 49.9%` stale fixture, JS+Py agree).
+- 10A §10-1/10-2 — `profile.local.json` still gitignored, `/spec/profile.json` still loopback-only.
 
 ---
 
 ## Notes
 
-- 9 audit lanes still outstanding. Expect Sprint 10+ to grow.
-- Sprint 7A is non-negotiable this week. 7B/7C can slip to next week if needed — 7A cannot.
-- Scope-cut from commit 01e0c50 (tests + a11y frozen for speed-to-offer) still in force. Sprint 9 is the unfreeze gate; needs product sign-off before starting.
+- Scope-cut from commit 01e0c50 (tests + a11y frozen for speed-to-offer) still in force. Sprint 9 was the unfreeze gate and shipped; explicit-Yellow thresholds added in Sprint 12-1 layered on top of the 10%-rule without breaking the harness.
 - All effort estimates are pessimistic-realistic. Add 15% buffer at sprint-commit time.
+- Stacked-PR gotcha: when PR #5 had base `feature/sprint-11-automation`, merging it after #4 did NOT auto-rebase onto main — it landed on the old base branch. PR #7 was the cleanup. If another stacked PR is opened, update its base to `main` manually after the parent merges, before hitting Squash and Merge.
