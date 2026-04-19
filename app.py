@@ -1958,7 +1958,7 @@ async def _analyze_with_lmstudio(metrics: str, model_override: str | None = None
 
 async def _analyze_with_anthropic(metrics: str, api_key: str, model_override: str | None = None) -> str:
     """Call Anthropic Claude API."""
-    anthropic_model = model_override or "claude-sonnet-4-20250514"
+    anthropic_model = model_override or "claude-sonnet-4-6"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -2102,9 +2102,9 @@ async def analyze_ai(request: Request):
 # ---------------------------------------------------------------------------
 
 ANTHROPIC_MODELS = [
-    {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
-    {"id": "claude-haiku-4-20250414", "name": "Claude Haiku 4"},
-    {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
+    {"id": "claude-opus-4-7", "name": "Claude Opus 4.7"},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
+    {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
 ]
 
 
@@ -2159,7 +2159,7 @@ def _get_anthropic_models() -> dict | None:
     return {
         "provider": "anthropic",
         "models": ANTHROPIC_MODELS,
-        "current": "claude-sonnet-4-20250514",
+        "current": "claude-sonnet-4-6",
     }
 
 
@@ -2315,7 +2315,7 @@ async def _stream_ollama(metrics: str, model_override: str | None = None):
 
 async def _stream_anthropic(metrics: str, api_key: str, model_override: str | None = None):
     """Stream from Anthropic API."""
-    anthropic_model = model_override or "claude-sonnet-4-20250514"
+    anthropic_model = model_override or "claude-sonnet-4-6"
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream(
             "POST",
