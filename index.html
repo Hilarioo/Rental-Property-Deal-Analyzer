@@ -1442,6 +1442,16 @@
             </select>
           </div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;font-size:0.82rem;">
+          <div class="input-group" style="margin:0;">
+            <label for="scan-zips-min-price" style="font-size:0.78rem;">Min Price ($) <span style="color:var(--text-muted);font-weight:normal;">(optional, overrides preset)</span></label>
+            <input type="number" id="scan-zips-min-price" min="0" step="10000" placeholder="e.g. 300000">
+          </div>
+          <div class="input-group" style="margin:0;">
+            <label for="scan-zips-max-price" style="font-size:0.78rem;">Max Price ($) <span style="color:var(--text-muted);font-weight:normal;">(defaults to profile duplex ceiling)</span></label>
+            <input type="number" id="scan-zips-max-price" min="0" step="10000" placeholder="e.g. 550000">
+          </div>
+        </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
           <span id="scan-zips-count" style="font-size:0.82rem;color:var(--text-muted);">0 ZIPs</span>
           <button id="scan-zips-submit" class="btn btn-small" type="button" onclick="runScanZips()">Scan ZIPs</button>
@@ -3030,6 +3040,13 @@
     var tr = $('searchTargetRent');
     if (tr && !tr.value && DEFAULTS.targetMonthlyRent && DEFAULTS.targetMonthlyRent > 0) {
       tr.value = DEFAULTS.targetMonthlyRent;
+    }
+    // Sprint 12 hotfix 2026-04-19: pre-fill Scan ZIPs max-price from the
+    // profile's duplex ceiling so a "(none)" preset scan doesn't silently
+    // return unfiltered $49K lots + $645K over-ceiling listings.
+    var scanMax = $('scan-zips-max-price');
+    if (scanMax && !scanMax.value && JOSE_THRESHOLDS && JOSE_THRESHOLDS.priceCeilingDuplex) {
+      scanMax.value = JOSE_THRESHOLDS.priceCeilingDuplex;
     }
   }
   window.RPDA.initSearchDefaults = initSearchDefaults;
@@ -6501,6 +6518,17 @@
     if (topNEl && String(topN) !== topNEl.value) topNEl.value = topN;
     var preset = ($('scan-zips-preset') || {}).value || undefined;
     var mode = ($('scan-zips-mode') || {}).value || undefined;
+    // Sprint 12 hotfix 2026-04-19: Min/Max price inputs — explicit user values
+    // override preset. Max falls back to profile's priceCeilingDuplex when
+    // blank AND no preset is selected, so a "(none)" preset scan doesn't get
+    // unfiltered $49K lots and $645K over-ceiling listings.
+    var minPriceRaw = parseFloat(($('scan-zips-min-price') || {}).value);
+    var maxPriceRaw = parseFloat(($('scan-zips-max-price') || {}).value);
+    var minPrice = (isFinite(minPriceRaw) && minPriceRaw > 0) ? minPriceRaw : undefined;
+    var maxPrice = (isFinite(maxPriceRaw) && maxPriceRaw > 0) ? maxPriceRaw : undefined;
+    if (maxPrice === undefined && !preset && JOSE_THRESHOLDS && JOSE_THRESHOLDS.priceCeilingDuplex) {
+      maxPrice = JOSE_THRESHOLDS.priceCeilingDuplex;
+    }
 
     if (btn) btn.disabled = true;
     if (loadEl) loadEl.style.display = 'block';
@@ -6514,6 +6542,8 @@
           top_n_per_zip: topN,
           preset_name: preset,
           mode: mode,
+          min_price: minPrice,
+          max_price: maxPrice,
         }),
       });
       var data = await resp.json();
@@ -6602,6 +6632,25 @@
         if (!v || v < 1) v = 10;
         if (v > 50) v = 50;
         scanTopN.value = v;
+      });
+    }
+    // Sprint 12 hotfix: sync min/max price fields when user picks a preset —
+    // overwrites only when the field is blank so an explicit override wins.
+    var scanPresetEl = $('scan-zips-preset');
+    if (scanPresetEl) {
+      scanPresetEl.addEventListener('change', function () {
+        var name = scanPresetEl.value;
+        var preset = (typeof PRESETS !== 'undefined') ? PRESETS[name] : null;
+        var s = (preset && preset.search) || {};
+        var mn = $('scan-zips-min-price');
+        var mx = $('scan-zips-max-price');
+        if (mn && !mn.value && s.minPrice !== undefined) mn.value = s.minPrice;
+        if (mx && s.maxPrice !== undefined) {
+          // Preset max overrides the profile-ceiling default when explicitly chosen.
+          mx.value = s.maxPrice;
+        } else if (mx && !name && !mx.value && JOSE_THRESHOLDS && JOSE_THRESHOLDS.priceCeilingDuplex) {
+          mx.value = JOSE_THRESHOLDS.priceCeilingDuplex;
+        }
       });
     }
     var radios = document.querySelectorAll('input[name="batch-mode"]');
