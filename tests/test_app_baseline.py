@@ -164,3 +164,62 @@ def test_build_result_lot_size_string_parses_to_int():
     prop = {"lotSize": "6,000 sqft"}
     result = app._build_result(prop)
     assert result["lotSize"] == 6000
+
+
+# --- Sprint 10A §10-8: bot-wall sentinel coverage ---
+#
+# These lock the sentinel list. Each string below appeared verbatim in a real
+# bot-block page during the Sprint 7/8 scraping work. If a scrape returns one
+# of these, the pipeline MUST treat it as a failure and not try to parse the
+# challenge HTML as a listing.
+
+from batch.pipeline import _looks_like_bot_wall  # noqa: E402
+
+
+def test_bot_wall_cloudflare_just_a_moment():
+    assert _looks_like_bot_wall(
+        "<html><body>Just a moment... enable JavaScript and cookies to continue</body></html>"
+    )
+
+
+def test_bot_wall_perimeterx_px():
+    assert _looks_like_bot_wall(
+        "<html><body><div class='px-captcha'>Press and hold</div></body></html>"
+    )
+
+
+def test_bot_wall_hcaptcha():
+    assert _looks_like_bot_wall(
+        "<html><body>Please complete the hCaptcha challenge.</body></html>"
+    )
+
+
+def test_bot_wall_redfin_realtime_pricing_lockout():
+    assert _looks_like_bot_wall(
+        "<html><body>Sign in for real-time pricing on this listing.</body></html>"
+    )
+
+
+def test_bot_wall_access_denied_akamai():
+    # Akamai: the raw substring "access denied" is caught even though the
+    # classic wording "access to this page has been denied" is also caught
+    # by a separate sentinel. Both must trip.
+    assert _looks_like_bot_wall("<html>Access Denied — Reference #18.abc</html>")
+    assert _looks_like_bot_wall(
+        "<html>Access to this page has been denied.</html>"
+    )
+
+
+def test_bot_wall_legit_listing_does_not_trip():
+    # A real Redfin-ish page — none of our sentinels should match.
+    html = (
+        "<html><head><title>705 State St Vallejo</title></head>"
+        "<body><h1>$535,000 Multi-Family</h1>"
+        "<p>4 bed / 2 bath / 1558 sqft. Built 1961.</p></body></html>"
+    )
+    assert not _looks_like_bot_wall(html)
+
+
+def test_bot_wall_empty_and_none_safe():
+    assert not _looks_like_bot_wall("")
+    assert not _looks_like_bot_wall(None)

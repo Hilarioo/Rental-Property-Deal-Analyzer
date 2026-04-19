@@ -519,6 +519,10 @@ async def fetch_overpass(
             fut.set_result(result)
         return result
     finally:
+        # Sprint 10A §10-9: guarantee future resolution even on cancellation
+        # so waiters in the `is_owner=False` branch never hang.
+        if not fut.done():
+            fut.set_result({"ok": False, "error": "owner_cancelled"})
         async with _OVERPASS_INFLIGHT_LOCK:
             _OVERPASS_INFLIGHT.pop(key, None)
 

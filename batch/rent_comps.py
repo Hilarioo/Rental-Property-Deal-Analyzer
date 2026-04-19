@@ -299,6 +299,18 @@ async def get_rent_estimate(
             fut.set_result(result)
         return result
     finally:
+        # Sprint 10A §10-9: if the owner task was cancelled (or the try/except
+        # above missed a path) the future may still be un-resolved here. Any
+        # waiter in the `is_owner=False` branch would hang forever. Resolve
+        # with a fallback dict so waiters unblock. Mirror of the pattern in
+        # batch/enrichment.py::_OVERPASS_INFLIGHT.
+        if not fut.done():
+            fut.set_result({
+                "median_rent": None,
+                "sample_size": 0,
+                "source": "fallback",
+                "fetched_at": utc_now_iso(),
+            })
         async with _INFLIGHT_LOCK:
             _INFLIGHT.pop(key, None)
 

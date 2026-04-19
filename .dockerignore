@@ -1,0 +1,34 @@
+# Sprint 10A §10-4: exclude everything that shouldn't ship in the image.
+
+# Python runtime + caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime state — container mounts these if needed.
+data/
+logs/
+
+# Editor + OS crud
+.git/
+.idea/
+.DS_Store
+
+# Sprint 10A §10-1/§10-2: PRIVATE profile data. Never bake into an image.
+handoff/USER_PROFILE.md
+spec/profile.local.json
+.env
+
+# Docs + tests — not needed in a runtime image. Cuts ~2 MB and trims the
+# attack surface (no markdown parser / test harness shipped to prod).
+handoff/
+tests/
+*.md
+!handoff/README.md
+
+# IDE / CI
+.github/
