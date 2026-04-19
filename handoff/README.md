@@ -2,9 +2,9 @@
 
 Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 
-**Status (2026-04-18):** V1 SHIPPED. All 6 sprints DONE. 61 tests green. 7 batch-feature commits landed post-V1. Current posture: **GREEN local single-user**; **YELLOW if remote-exposed** (see [`BACKLOG.md`](./BACKLOG.md) Sprint 7A for the hardening plan).
+**Status (2026-04-19):** V1 + all post-V1 sprints through Sprint 12 SHIPPED. 111 pytest + 43 JS + 27/28 parity tests green (the 1 fail is a pre-existing stale `DTI 49.9%` fixture — JS+Py still agree). Current posture: **GREEN local single-user**; remote exposure remains out of scope per Sprint 10A invariants.
 
-> The original V1 mission — "paste a Redfin URL, get a GREEN/YELLOW/RED verdict Jose trusts enough to offer on" — is complete. Post-V1 work (batch triage, SQLite persistence, Anthropic Message Batches, external enrichment, security hotfixes) is layered on top and tracked in `BACKLOG.md`.
+> V1 mission + the "paste ZIPs and walk away, come back to ranked list" Sprint 11/11.5/12 delivery are complete. Profile now drives: auto-populated search forms, per-listing tax rates via `matchPresetByZip`, layered Yellow thresholds, 35-mi commute radius from Pittsburg home base, and auto-PM injection at 4+ units. Sprint 13 (automated per-ZIP data puller — replaces the declined per-city agent questionnaire) is next.
 
 ---
 
@@ -30,15 +30,15 @@ Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 
 | Decision | Status |
 |---|---|
-| Tool fit | **FIX — complete** (V1 customization shipped) |
-| V1 scope | **SHIPPED** (all 6 sprints DONE) |
-| AI provider | Anthropic Claude API (Sonnet 4.5 with Vision for structured extraction) |
+| Tool fit | **FIX — complete** (V1 + Sprint 11/11.5/12 shipped) |
+| V1 scope | **SHIPPED** (Sprints 0–5) |
+| Post-V1 | **SHIPPED** (7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12) + hotfixes #6/#8/#9 |
+| AI provider | Anthropic Claude 4.X — Opus 4.7 / Sonnet 4.6 / Haiku 4.5 (hotfix #6) |
 | Deployment | Local only — `http://localhost:8000` |
-| Tests | **61 green** (pytest + node --test) |
-| Post-V1 commits | 7 batch-feature commits + critical security hotfixes |
-| Current posture | **GREEN** local single-user / **YELLOW** if remote-exposed |
-| Next hard gate | Sprint 7A security hotfixes (see `BACKLOG.md`) |
-| North-star | Paste Redfin URL → ≤60s → FHA-aware G/Y/R verdict Jose trusts enough to offer on ✅ |
+| Tests | **111 pytest + 43 JS + 27/28 parity** |
+| Current posture | **GREEN** local single-user |
+| Next | Sprint 13 — automated per-ZIP data puller |
+| North-star | Paste ZIPs → walk away → ranked list of FHA duplex/triplex candidates with verdict + reasons ✅ |
 
 ---
 
@@ -63,6 +63,18 @@ Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 - **Shared constants spec** — `spec/constants.json` read by all three runtimes (ADR-002 Phase A)
 - **calc.js ESM import** — math deduplication between browser and Node (ADR-002 Phase B)
 - **Critical security fixes** — H-1 (exception leak), H-2 (SSRF suffix match), H-3 (LLM field clamp), M-4 (sync batch URL validation)
+
+## What shipped 2026-04-19 (Sprint 11 / 11.5 / 12 + hotfixes)
+
+- **Sprint 11** — profile-driven auto-populate on page load, "Analyze all" batch-from-search button, `POST /api/scan-zips` orchestrator (paste ZIPs → fan out → top-N per ZIP → exclusion filtering → batch submission). 20-ZIP / 15-top-N caps. Rate-limited, loopback PII preserved.
+- **Sprint 11.5** — Redfin search filter bugfix (Python post-filter re-enforces min/max/beds/property-type, "likely lot" heuristic kills vacant-lot results from bypassed filters, multi-ZIP in Location field redirects to Scan ZIPs, quick-score short-circuits on likely-lot rows).
+- **Sprint 12** — layered Yellow classifier (explicit thresholds OR 10% rule, whichever is more forgiving), geospatial gating (`maxMilesHard` hard cap + `conditionalCities` threshold, Haversine from Pittsburg 38.028/-121.8847), auto-PM injection at units >= 4, `matchPresetByZip` per-listing tax/insurance/vacancy overrides.
+- **Hotfix #6** — Anthropic model IDs bumped to Claude 4.X family (retired `claude-sonnet-4-20250514` → `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5-20251001`). Unblocked the AI analysis final page that was 404ing.
+- **Hotfix #7** — promoted Sprint 12 onto main (stacked-PR base mishandling).
+- **Hotfix #8** — Scan ZIPs UX: clamp Top-N 1-15 on blur, auto-expand Batch panel on submit, show chosen mode in summary.
+- **Hotfix #9** — `_coerce_narrative` helper stops `sqlite3.ProgrammingError` when `narrativeForRanking` holds a dict.
+
+**Deferred from Sprint 12:** 12-3 rentalStrategy per-unit LTR/MTR UI, 12-6 203(k) contractor-stretch scenario. Both tracked in `BACKLOG.md`.
 
 ---
 

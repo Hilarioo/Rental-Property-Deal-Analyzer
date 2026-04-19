@@ -4,6 +4,75 @@ All notable changes. Dates in UTC. Newest first.
 
 ---
 
+## 2026-04-19 — Sprint 11 + 11.5 + 12 + three hotfixes (PRs #4 / #5 / #6 / #7 / #8)
+
+### Sprint 11 — profile-driven automation + ZIP-scan overnight flow (PR #4, 7d1f676)
+
+Driver: eliminate the manual-form-entry bottleneck and add an "overnight ZIP scan" flow so Jose can paste a list of ZIPs and walk away.
+
+- **Search form auto-populates on load** from `profile.defaults.defaultPreset` + `preset.search` (zips / price / property type) and `profile.defaults.targetMonthlyRent`. `initSearchDefaults()` fills blanks only — user's last-used values (via `loadSearchFilters`) still take priority. Fixes "why am I typing Max Price and Target Rent every time" complaint.
+- **"Analyze all" button** on the Neighborhood Search results table pipes every URL from the current result set through the full batch pipeline. Auto-selects sync (≤30 URLs) or async. `analyzeAllSearchResults()` at `index.html:3451`.
+- **New `POST /api/scan-zips` orchestrator** (`app.py:2715`). Fans out Redfin searches across N ZIPs (bounded concurrency of 3), picks top-K cheapest per ZIP, dedups, applies `zipTiers.excludedZips` + `excludedCities` filters, revalidates URLs via `_validate_batch_urls`, submits survivors to the existing batch pipeline. Inherits every Sprint 10A invariant: `_error_envelope`, rate-limited 2/min, process-lifetime semaphore (1 concurrent scan), strict 5-digit ZIP regex, caps at 20 ZIPs / 15 top-N.
+- **Scan ZIPs UI panel** (`index.html:1418`) with preset + top-N + mode selectors, inline summary of per-ZIP keep/found counts + a rejected-pills section.
+- **New profile schema fields:** `defaults.targetMonthlyRent`, `defaults.defaultPreset`, `defaults.scanTopNPerZip`.
+
+### Sprint 11.5 — filter bugfix (PR #4, same commit)
+
+Driver: Vallejo 94591 search returned $95K / $64.9K vacant lots with ★★★★★ quick-scores under a $400K + Multi-family filter. Two bugs compounding.
+
+- **Python post-filter in `_search_redfin_page`**. Min/max price, beds, and property-type re-enforced after Redfin returns (Redfin's URL filter silently no-ops in multi-ZIP + search-bar-fallback paths).
+- **"Likely lot" heuristic**: drops rows with `beds == 0 AND sqft == 0 AND (price < 200K OR no address)`.
+- **Reject comma-separated multi-ZIP in `/api/search`** with a 400 redirecting to the Scan ZIPs panel. Root cause: `_build_redfin_search_url`'s `^\d{5}$` regex silently fell through to the search-bar path on multi-ZIP input, losing all filters.
+- **`computeQuickScore` short-circuits** to zero stars + "Likely land only" warning when beds+sqft both missing and price < $200K.
+
+Sprint 11.5 also landed schema groundwork for Sprint 12: `jose.netPitiYellow`, `jose.rehabYellow`, school-rating gates + new top-level `location`, `rentalStrategy`, `selfManagement`, `contractorStretch` blocks in `spec/profile.example.json`. Removed Sacramento from `excludedCities`, added `zipTiers.conditionalCities.Sacramento` with `maxMilesFromHomeBase` rule.
+
+### Sprint 12 — layered Yellow + geospatial + auto-PM + per-ZIP preset matching (PR #5, 5e1e38f; promoted to main via PR #7 afc14bc)
+
+Driver: Jose's Lane 3 decisions — 35-mi commute radius from Pittsburg, 30-mi Sacramento conditional, three-tier scoring (Yellow threshold added), auto-PM at 4+ units, per-ZIP tax rates.
+
+- **12-1 layered Yellow classifier** (`batch/verdict.py:_classify_overage`, `index.html:_classifyOverage`, `scripts/verdict_parity_check.mjs` mirror). Yellow fires if EITHER an explicit Yellow threshold (`netPitiYellow`, `rehabYellow`, `cashCloseYellow` when set) allows it OR the legacy 10%-overage rule allows it. Red only when both fail. Backward-compatible when the explicit key is missing.
+- **12-2 geospatial gating** (`batch/verdict.py:_haversine_miles` + `_geospatial_fail`, mirrored in `index.html:_geospatialFail`, plumbed lat/lng/address into `verdict_ctx` in `batch/pipeline.py`). `profile.location.maxMilesHard` is a hard cap; `zipTiers.conditionalCities` threshold gates individual cities (Sacramento today). Fires as RED ahead of numeric predicates. No-ops when lat/lng or homeBase are missing (preserves parity for pre-12-2 fixtures).
+- **12-4 auto-PM injection** (`batch/pipeline.py:_auto_pm_pct`). When `units >= profile.selfManagement.propertyManagementTriggerUnits`, inject `propertyManagementFallbackPct` into opex. Surfaced as `metrics.auto_pm_pct`.
+- **12-5 matchPresetByZip** (`batch/pipeline.py:_preset_defaults_for_zip`). Each listing's ZIP scans `spec.presets[*].search.zips`; matched preset's `propertyTaxRatePct` / `insuranceAnnual` / `vacancyPct` are used for that row's PITI. Vallejo + Richmond in the same batch now use their own rates. Surfaced as `metrics.matched_preset` + `metrics.applied_tax_pct`.
+- **12-3** (rentalStrategy per-unit LTR/MTR toggles) and **12-6** (203(k) contractor-stretch scenario) — deferred.
+- **Tests:** 111/112 pytest pass, 43/43 JS calc, parity 27/28 (pre-existing `DTI 49.9%` stale fixture unchanged). 2 new parity fixtures for 12-2 Sacramento + Vallejo coordinates. 2 existing fixtures updated to layered-Yellow semantics.
+
+### Hotfix #6 — Anthropic model IDs (d9a2807, merged via aa3251c)
+
+Anthropic returned `404 "model: claude-sonnet-4-20250514"` — that ID was retired. Bumped hardcoded refs to current Claude 4.X family:
+- `claude-sonnet-4-20250514` → `claude-sonnet-4-6`
+- `claude-haiku-4-20250414` → `claude-haiku-4-5-20251001`
+- `claude-opus-4-20250514` → `claude-opus-4-7`
+- `BATCH_LLM_MODEL` default was `claude-sonnet-4-5`, now `claude-sonnet-4-6`
+
+Model-selector dropdown reordered Opus > Sonnet > Haiku.
+
+### Hotfix #7 — promote Sprint 12 to main (afc14bc)
+
+Follow-up. PR #5 merged into `feature/sprint-11-automation` instead of `main` because GitHub didn't auto-rebase its base after PR #4 merged. #7 fast-forwarded the Sprint 12 commit onto main — no code changes beyond what was already in #5.
+
+### Hotfix #8 — Scan ZIPs UX (aebc6f9)
+
+First real run surfaced three UX gaps:
+- Top-N field accepted `550000` (paste of max-price into wrong input). Now clamps to 1-15 on blur + reflects clamped value back.
+- Pending card + ranked results render in the Batch Analyze `<details>` panel above Scan ZIPs. Now auto-expands the Batch panel and scrolls to `batch-pending` (async) or `batch-results` (sync) on submission.
+- Summary now shows the chosen mode — green "sync" vs amber "async (overnight)" — with an inline status line pointing at the Batch panel.
+
+### Hotfix #9 — coerce `narrativeForRanking` to str before sqlite bind
+
+Server startup crashed `reconcile_pending_batches_on_startup` with:
+
+```
+sqlite3.ProgrammingError: Error binding parameter 11: type 'dict' is not supported
+```
+
+Root cause: rankings INSERT param 11 is `claude_narrative`, sourced from `llm_analysis.narrativeForRanking`. The LLM schema declares that a string but an in-flight async batch (e.g. `msgbatch_01JrGCszpYRNkesDBwm5T2j2`) held a dict — sqlite3 rejects those at bind and `poll_async_batch` never recovers, leaving the batch stuck pending forever.
+
+Fix: new `_coerce_narrative(value)` helper in `batch/pipeline.py` — str/None pass through, dict/list become a compact JSON dump, anything else becomes `str(value)`. `async_pipeline.py` imports it so both paths serialize identically. Applied at every bind/response site (two rankings INSERTs + two response-builders).
+
+---
+
 ## 2026-04-18 — Post-V1 audit pass (15 agents)
 
 ### Security hotfixes (inline, pre-Sprint 7A)
