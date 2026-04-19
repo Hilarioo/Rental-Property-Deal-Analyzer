@@ -88,7 +88,14 @@
     "tier2": ["94547", "94572", "94525", "94564"],
     "tier3": ["94801", "94804", "94805"],
     "excludedZips": ["94803", "94806"],
-    "excludedCities": ["Oakland", "Berkeley", "Benicia", "Sacramento", "Mare Island", "Glen Cove", "Hiddenbrooke", "Point Richmond"]
+    "excludedCities": ["Oakland", "Berkeley", "Benicia", "Mare Island", "Glen Cove", "Hiddenbrooke", "Point Richmond"],
+    "conditionalCities": {
+      "Sacramento": {
+        "rule": "maxMilesFromHomeBase",
+        "threshold": 30,
+        "_doc": "Sacramento conditionally allowed if within 30 mi of profile.location.homeBase (Pittsburg). Sac city center is ≈52 mi — this threshold effectively blocks Sac today. Bump to 55+ to unlock West Sac/Elk Grove if needed."
+      }
+    }
   },
 
   "rehabCategories": [

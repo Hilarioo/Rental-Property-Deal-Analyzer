@@ -1,10 +1,10 @@
 # BACKLOG — Post-V1 Hardening
 
 Owner: Jose H Gonzalez
-Updated: 2026-04-18
-Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). 9 audits still outstanding — backlog expected to grow in Sprint 10+.
+Updated: 2026-04-19
+Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). Sprint 11 added 2026-04-19 driven by Jose's stated workflow ask: "eliminate manual form input, paste ZIPs → auto-rank."
 
-Scope rule: Sprints 7A/7B/7C land THIS week. Sprint 8+ queued. Do not mix lanes.
+Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6 SHIPPED. Sprint 11 (automation) is next. Do not mix lanes.
 
 ---
 
@@ -244,20 +244,207 @@ Placeholder. Concrete items after workflow/UX/UI/accessibility/ops/compliance/da
 
 ---
 
-## Ranking summary (top 12, cross-sprint)
+## Sprint 11 — Profile-driven automation + ZIP-scan overnight flow (NEXT, ~8–10h)
 
-1. 7A-1 — Scrub `str(exc)` in analyze-ai (HIGH, regression)
-2. 7A-2 — Fix suffix-match SSRF (HIGH)
-3. 7A-3 — Clamp LLM rehab mid (HIGH, verdict correctness)
-4. 7B-1 — JS `hardFailUnitsUnknown` parity (HIGH, false GO)
-5. 7A-4 — Sync batch URL validation (MEDIUM, trust-boundary bypass)
-6. 7B-2 — Rehab multipliers to spec (MEDIUM, drift)
-7. 7B-3 — `batch/pipeline.py DEFAULTS` from spec (MEDIUM, drift)
-8. 7C-2 — Rewrite TECHNICAL_ASSESSMENT (MEDIUM, lies about shipped work)
-9. 7C-6 — BATCH_USER_GUIDE (MEDIUM, user-facing gap)
-10. 8-1 — Playwright pool (HIGH perf)
-11. 8-2 — Overpass bucket cache (HIGH perf)
-12. 9-1 — JS↔Py parity harness (MEDIUM, drift prevention)
+**Driver:** Jose's 2026-04-19 ask. Screenshot of Neighborhood Search tab required him to type "Max Price" and "Target Monthly Rent" for ZIP 94590, even though those values already exist in his profile + active preset. The form validation currently hard-fails with "Please enter a target monthly rent." — the tool has the data and is still asking for it.
+
+**North star:** Jose opens `http://localhost:8000`, clicks a preset (or none — profile picks one), pastes a list of ZIPs into a textarea, walks away. He returns to a ranked list of exceptional FHA 2–4 unit candidates, all scored through the full TOPSIS + Jose-verdict pipeline, with failed/excluded URLs in a separate pill.
+
+**Hard gate:** no new feature wiring until audit of `str(exc)` scrub + profile PII endpoint is confirmed complete for new endpoints (11-5 below).
+
+### 11-1. Auto-populate Neighborhood Search form from profile + active preset on load
+- **Rationale:** Today `__applySpec__()` + `initDefaults()` only populate the single-property analyzer form. Search form fields (`searchTargetRent`, `searchMinPrice`, `searchMaxPrice`, `searchLocation`, `searchPropType`, `searchMinBeds`) fall through — user re-types on every page load.
+- **Files:** `index.html` — extend `initDefaults()` (~line 2665) with `initSearchDefaults()`; pull from `DEFAULTS.defaultPreset` + `PRESETS[name].search` + `DEFAULTS.targetMonthlyRent`.
+- **Fix:**
+  1. Add `defaults.defaultPreset: "Vallejo Priority"` and `defaults.targetMonthlyRent: <n>` to `spec/profile.example.json` and `profile.local.json`.
+  2. On profile-load completion (index.html:2835), if `DEFAULTS.defaultPreset` exists, auto-apply the preset (hit `applyPreset(name)`).
+  3. Populate `searchTargetRent` from `DEFAULTS.targetMonthlyRent` (or from `computeRentEstimate(zip, beds)` if present).
+  4. Persist last-used search filters to localStorage on every change; restore on init (existing `saveSearchFilters`/`loadSearchFilters` already half-wired — finish the loop).
+- **Effort:** 90 min
+- **Severity:** HIGH (the actual user complaint)
+
+### 11-2. Add `targetMonthlyRent` + derivation fallback to profile schema
+- **Rationale:** Target rent is Jose's deal-quality yardstick — every scored listing compares price→rent to it. Currently user-entered per search; should be a profile default with a sensible fallback when blank.
+- **Fix:**
+  1. Extend `spec/profile.example.json` → `defaults.targetMonthlyRent` (default `0` = "derive").
+  2. Server fallback: if blank, compute from `rent_comps_cache` median for the ZIP + bed count.
+  3. UI: show the value as a pre-filled but editable input with a tiny hint: "from profile — click to override".
+- **Effort:** 60 min
+- **Deps:** 11-1
+- **Severity:** MEDIUM
+
+### 11-3. "Analyze all N results" button on Neighborhood Search
+- **Rationale:** Today the 20–25 quick-scored listings require per-row "Analyze" clicks to run the full pipeline (FEMA/fire/Overpass/LLM/TOPSIS). User complaint: "I want the automation to find exceptional investment property potential" — that means running the real pipeline without manual per-row clicks.
+- **Fix:**
+  1. Add button "Run full analysis on all results" below search table (index.html:3383 area).
+  2. Collect `searchResults[*].listingUrl`, POST to `/api/batch-analyze` (sync ≤25) or `/api/batch-submit-async` (>25).
+  3. Render the batch envelope in the existing batch-results area (reuse `renderResults(envelope)`).
+  4. Gate: respect the existing sync-batch URL cap (25). Above 25, force async.
+- **Effort:** 2h
+- **Deps:** 11-1 (so URLs come from pre-populated search)
+- **Severity:** HIGH
+
+### 11-4. ZIP-scan orchestrator: paste list of ZIPs → auto-fan-out → ranked list
+- **Rationale:** The user's actual workflow: "paste 5 ZIPs, come back to ranked list." Today you'd have to run 5 separate searches, click "Analyze all" 5 times, and manually merge the rankings. Need a single orchestrator endpoint.
+- **Fix:**
+  1. New endpoint `POST /api/scan-zips` accepting `{ zips: [...], preset: "Vallejo Priority", topNPerZip: 10 }`.
+  2. Fan out: for each ZIP, call existing Redfin search; take top N by quick-score.
+  3. Dedup URLs, check ZIP-tier exclusions (`spec.zipTiers.excludedZips`/`excludedCities`), auto-reject.
+  4. Submit survivors to `_run_async_batch()` (batch already handles concurrency, browser pool, Overpass cache from Sprint 8).
+  5. Return `batchId`; frontend polls `/api/batch-status/{batchId}` (existing auto-poll from Sprint 10B).
+  6. New UI tab or section: "Scan ZIPs" with textarea for ZIP list, preset selector, topN slider, "Scan" button.
+- **Effort:** 3h
+- **Deps:** 11-3 (reuses batch pipeline); Sprint 8 browser pool + Overpass cache (already shipped)
+- **Severity:** HIGH
+
+### 11-5. Security audit: new endpoints on the Sprint 10A allowlist
+- **Rationale:** Sprint 10A scrubbed `str(exc)`, locked `_detect_source` to exact hostname, gated `/spec/profile.json` to loopback. Sprint 11 adds `/api/scan-zips` — must inherit the same invariants, not be a new attack surface.
+- **Fix:**
+  1. `/api/scan-zips` MUST route errors through `_safe_error()` (no raw exc leaks).
+  2. Validate every ZIP is 5-digit numeric; cap `zips.length ≤ 20`, `topNPerZip ≤ 10`.
+  3. Re-use the `_validate_url()` helper from Sprint 7A-4 on every survivor URL before batch submission.
+  4. Do NOT echo profile fields (income, cash) in any response — even indirectly via computed fields. Audit the response shape.
+  5. Rate-limit: internal semaphore cap of 1 concurrent `/api/scan-zips` call per process (it already fans out N searches).
+- **Effort:** 60 min
+- **Deps:** 11-4
+- **Severity:** HIGH (hard gate — ship after 11-4 code lands, before merge)
+
+### 11-6. Perf guard: scan-orchestrator reuses browser pool + Overpass bucket cache
+- **Rationale:** 10 ZIPs × 10 listings = 100 properties through the pipeline. At cold-cache 2s/listing for Overpass that's 200s serialized; with Sprint 8 bucket cache + Playwright pool it should stay under 60s wall-clock.
+- **Fix:**
+  1. Confirm `/api/scan-zips` path calls into the same `batch/pipeline.py` codepath that Sprint 8 optimized (no new scrape codepath).
+  2. Add a wall-clock budget log line per scan: `scan_zips zip_count=N survivors=M elapsed=X.Xs` → DB or stdout.
+  3. Acceptance: 5 ZIPs × 10 listings cold-cache finishes ≤ 90s; warm-cache ≤ 30s.
+- **Effort:** 45 min
+- **Deps:** 11-4
+- **Severity:** MEDIUM
+
+### 11-7. UI: remove "Please enter a target monthly rent" blocker when profile supplies it
+- **Rationale:** Tiny fix but it's the thing in the screenshot. If target rent auto-populates (11-1/11-2), the red validation message should never appear on a happy path.
+- **Fix:** index.html:3112 — change the "required" check to soft-warn if `DEFAULTS.targetMonthlyRent > 0` supplies it.
+- **Effort:** 10 min
+- **Deps:** 11-1, 11-2
+- **Severity:** LOW (but user-visible polish)
+
+**Sprint 11 DoD:**
+- Fresh page load with `profile.local.json` present → search form pre-filled, no red error banner, no typing required.
+- "Run full analysis on all results" button posts all URLs from a search to batch-analyze and renders ranked output.
+- `POST /api/scan-zips` with 5 ZIPs returns a batchId; polling yields a single ranked list with excluded-ZIP rejects in a separate pill.
+- 10-ZIP × 10-listing cold scan under 90s wall-clock; no `str(exc)` in any response body; profile PII not echoed.
+- Existing V1 flow (paste 1 URL) unchanged.
+
+---
+
+## Sprint 11.5 — Search-filter bugfix (SHIPPING IN SAME PR, ~30 min)
+
+Driver: Vallejo 94591 search returned $95K and $64.9K properties under a $400K min + Multi-family filter. Two bugs compounding: multi-ZIP in the Location field silently dropped filters, and nothing post-filtered what Redfin returned.
+
+### 11.5-1. Python-side post-filter in `_search_redfin_page`
+- Min/max price, min beds, property-type re-enforced after Redfin returns.
+- "Likely lot" heuristic: `beds==0 AND sqft==0 AND (price<200K OR no address)` → drop.
+- Files: `app.py:_search_redfin_page` (around line 1218).
+- Severity: HIGH (data-quality + false-positive ★★★★★ scores).
+
+### 11.5-2. Reject comma-separated multi-ZIP in `/api/search`
+- If Location field contains 2+ ZIPs, 400 with message redirecting to the Scan ZIPs panel.
+- Files: `app.py:search_neighborhood` (around line 1238).
+- Severity: MEDIUM (user-visible silent-failure path).
+
+### 11.5-3. Quick-score lot detection
+- `computeQuickScore` short-circuits to zero stars when beds+sqft both missing and price < $200K. Returns "Likely land only" warning.
+- Files: `index.html:computeQuickScore` (around line 3268).
+- Severity: HIGH (was showing ★★★★★ on vacant lots).
+
+---
+
+## Sprint 12 — Profile schema extensions + per-ZIP preset matching (NEXT, ~6–8h)
+
+Driver: Jose's 2026-04-19 Lane 3 decisions. Three-tier scoring, geospatial gating, per-strategy vacancy, self-manage auto-PM. Gated on 3 open questions (see README section "Blocking questions" — answered before sprint opens).
+
+### 12-1. Explicit Yellow thresholds in verdict code
+- Add `netPitiYellow`, `rehabYellow` to `computeJoseVerdict` (JS + Python). Replaces the "miss Green by ≤10%" logic. Requires answer on Q3 above.
+- Files: `calc.js`, `batch/verdict.py`, parity fixtures.
+- Effort: 90 min + update parity harness.
+- Severity: HIGH.
+
+### 12-2. Geospatial gating: `location.maxMilesHard` + `zipTiers.conditionalCities`
+- Haversine from `profile.location.homeBase` to listing lat/lng (Census geocoder already provides it). Reject beyond `maxMilesHard`. Conditionally allow cities in `zipTiers.conditionalCities` when within threshold.
+- Files: `batch/verdict.py`, scoring context assembly, JS mirror.
+- Effort: 2h.
+- Severity: HIGH (Sacramento rule, Tracy/Stockton natural exclusion).
+
+### 12-3. `rentalStrategy` per-unit: LTR vacancy 5% / MTR vacancy 12% / MTR rent × 1.35
+- Unit 2+ rent inputs get a per-unit strategy toggle. Vacancy + rent multiplier pulled from `profile.rentalStrategy`. Block MTR if landlord months < `mtrMinLandlordMonths`.
+- Files: `index.html` form + calc, `batch/pipeline.py` context.
+- Effort: 2h.
+- Severity: MEDIUM.
+
+### 12-4. Self-manage cap → auto-PM injection
+- When `units >= propertyManagementTriggerUnits` and user didn't manually override PM %, inject `propertyManagementFallbackPct` into PITI math. Flag in UI ("PM 9% auto-added — uncheck self-manage to hide").
+- Files: `index.html`, `batch/pipeline.py`.
+- Effort: 60 min.
+- Severity: MEDIUM.
+
+### 12-5. `matchPresetByZip()` — per-listing defaults
+- After scrape/geocode, resolve each listing's ZIP against `presets[*].search.zips`. Use matched preset's defaults (taxes, insurance, vacancy) for that row's PITI. Unmatched → global default preset.
+- Files: `batch/pipeline.py`.
+- Effort: 90 min.
+- Severity: HIGH (core of "bundle cities" ask).
+
+### 12-6. 203(k) contractor-stretch scenario
+- When `rehab > rehabRed` AND self-perform share ≥ `contractorStretch.selfPerformMinPct`, run a parallel 203(k) scenario (`loanType: FHA-203k`, rehab financed). Show side-by-side verdict on cash-funded vs 203(k).
+- Files: FHA math module, UI badge.
+- Effort: 2h.
+- Severity: LOW (appetite-driven; kill if over budget).
+
+Sprint 12 DoD: all 6 shipped; parity harness green; Jose runs 3 real listings across Vallejo + Pittsburg + conditional-Sac and verdicts reflect the new tier/strategy/geospatial logic.
+
+---
+
+## Sprint 13 — Automated per-ZIP data puller (queued, ~8–10h)
+
+Driver: Jose declined to ask his agent to fill a per-city table ("prefer pulling programmatically over agent memory"). Sprint 13 builds the puller so preset blocks self-populate from public data, not tribal knowledge.
+
+### 13-1. County assessor tax-rate scraper
+- Target: Solano, Contra Costa, Alameda, Sacramento county assessors. Parse base rate + Mello-Roos/CFD overlays per ZIP. Cache 90 days.
+- Writes: `presets[city].defaults.propertyTaxRatePct`.
+
+### 13-2. Days-on-market + inventory velocity from Redfin market-data pages
+- Scrape `/city/<id>/CA/<city>/housing-market` for median DOM, inventory count, price/sqft. Cache 14 days.
+- Writes: `presets[city].search.minDom` guidance + a new `marketTemp` enum (hot/warm/cool).
+
+### 13-3. GreatSchools API integration
+- Paid but cheap. Pull per-address school scores. Feed into `jose.schoolRating*` gate.
+- Writes: stored on the listing, not the preset.
+
+### 13-4. Rent-comp refinement via Rentometer or Redfin rentals
+- Median rent by (ZIP, beds) with confidence interval. Already half-wired; extend to cover all tier-2/3 ZIPs + new preset cities.
+- Writes: `rent_comps_cache` populated for every preset ZIP.
+
+### 13-5. Preset auto-generator CLI
+- `python scripts/generate_presets.py --city "Pittsburg, CA" --zip 94565`
+- Pulls 13-1..13-4, writes a new `presets[*]` block to `spec/constants.json` with a `"_source": "auto"` flag + timestamp. Human reviews + commits.
+- Severity: HIGH (the whole sprint's UX payoff).
+
+Sprint 13 DoD: 6+ auto-generated city preset blocks committed; each traces back to source URLs in frontmatter; parity harness unchanged.
+
+---
+
+## Ranking summary (Sprint 11/12/13 cross-cut — next-up order)
+
+1. **11-1** — Auto-populate search form from profile + active preset (HIGH, the actual user ask)
+2. **11-3** — "Analyze all N results" batch-from-search button (HIGH, eliminates per-row clicks)
+3. **11-4** — `/api/scan-zips` orchestrator: paste ZIPs → ranked list (HIGH, the overnight flow)
+4. **11-5** — Security audit on new endpoints: `_safe_error`, ZIP validation, profile-PII scrub (HIGH, hard gate)
+5. **11-2** — `targetMonthlyRent` in profile schema + rent-comp fallback (MEDIUM)
+6. **11-6** — Perf guard: scan reuses browser pool + Overpass cache; 10×10 cold ≤ 90s (MEDIUM)
+7. **11-7** — Remove "target rent required" red banner when profile supplies it (LOW, polish)
+
+### Carry-over from prior sprints (verify shipped, not regressed)
+- 7A-1/7A-2/7A-3/7A-4 — Sprint 10A: verify all four `str(exc)`/SSRF/clamp/URL-validation fixes still hold.
+- 8-1/8-2 — Sprint 8: confirm browser pool + Overpass bucket cache are the active path in `batch/pipeline.py` (11-6 depends on this).
+- 9-1 — Sprint 9: parity harness stays green when 11-4 adds new codepath.
+- 10A §10-1/10-2 — profile.local.json gitignored, `/spec/profile.json` loopback-only. Must still be true after 11-4 ships.
 
 ---
 
