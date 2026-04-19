@@ -178,10 +178,15 @@ async def _prepare_url(
     finally:
         conn.close()
 
+    # Sprint 12 hotfix 2026-04-19: async batch uses its own `batch_scrape`
+    # bucket at 180/min (~3/sec sustained, matches Sprint 8-1 browser pool).
+    # The /api/scrape 5/min bucket stayed sized for humans; sharing it killed
+    # the "paste ZIPs, walk away" flow at URL #6. See batch/pipeline.py for
+    # the full rationale.
     if client_ip:
         try:
             import app as main_app
-            if not main_app._check_rate_limit(f"scrape:{client_ip}", 5):
+            if not main_app._check_rate_limit(f"batch_scrape:{client_ip}", 180):
                 return _skip_row(
                     url=url, uh=uh, canonical=canonical, cached=cached,
                     reason="rate_limited",
