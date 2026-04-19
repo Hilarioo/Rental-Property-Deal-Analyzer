@@ -850,13 +850,18 @@ async def process_url(
     finally:
         conn.close()
 
-    # Per-scrape rate-limit charge (Security M-4). Batch must not amplify past
-    # the /api/scrape 5/min-per-IP bucket. Skip check if no IP supplied (e.g.
-    # internal callers / tests).
+    # Per-scrape rate-limit charge. SEPARATE bucket from /api/scrape
+    # (Sprint 12 hotfix 2026-04-19): the /api/scrape 5/min bucket is sized
+    # for humans pasting one URL at a time; a 126-URL scan tripped it on
+    # request #6 and skipped everything after. Batch already throttles real
+    # concurrency via the `_search_semaphore(3)` browser pool (Sprint 8-1)
+    # and the outer batch endpoints' own 3/min rate limits. 180/min here
+    # = ~3/sec sustained, matches browser-pool saturation rate, still catches
+    # any runaway loop. Skipped entirely when no IP supplied.
     if client_ip:
         try:
             import app as main_app
-            if not main_app._check_rate_limit(f"scrape:{client_ip}", 5):
+            if not main_app._check_rate_limit(f"batch_scrape:{client_ip}", 180):
                 return {
                     "url": url,
                     "url_hash": uh,
