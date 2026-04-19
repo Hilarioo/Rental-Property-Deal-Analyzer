@@ -2778,7 +2778,7 @@ async def batch_submit_async(request: Request):
 # =====================================================================
 _SCAN_ZIPS_MAX_ZIPS = 20
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
-_SCAN_ZIPS_MAX_TOP_N = 15
+_SCAN_ZIPS_MAX_TOP_N = 50
 _SCAN_ZIPS_MAX_STRING_LEN = 64
 _ZIP_RE = re.compile(r"^\d{5}$")
 # Process-lifetime semaphore: Redfin searches are Playwright-heavy and a
@@ -3049,7 +3049,28 @@ async def scan_zips(request: Request):
             )
         survivors = clean_urls
 
-        want_async = mode == "async" or len(survivors) > _BATCH_MAX_URLS_SYNC
+        # Sprint 12 hotfix 2026-04-19: respect explicit user mode choice.
+        # Previously `mode == 'async' or len > cap` meant Force sync silently
+        # flipped to async whenever survivors exceeded _BATCH_MAX_URLS_SYNC —
+        # that was a bug, not a feature. Now:
+        #   mode="async" → always async (user asked for it)
+        #   mode="sync"  → always sync, up to _BATCH_HARD_CAP (reject above)
+        #   mode=""      → auto: sync if ≤ _BATCH_MAX_URLS_SYNC, else async
+        if mode == "async":
+            want_async = True
+        elif mode == "sync":
+            if len(survivors) > _BATCH_HARD_CAP:
+                return JSONResponse(
+                    _error_envelope(
+                        "VALIDATION_ERROR",
+                        f"Force sync rejected: {len(survivors)} URLs exceeds hard cap {_BATCH_HARD_CAP}. Reduce ZIPs/top-N or choose Async.",
+                        request_id,
+                    ),
+                    status_code=400,
+                )
+            want_async = False
+        else:
+            want_async = len(survivors) > _BATCH_MAX_URLS_SYNC
         api_key = os.getenv("ANTHROPIC_API_KEY")
 
         if want_async:
