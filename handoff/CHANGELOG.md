@@ -4,6 +4,56 @@ All notable changes. Dates in UTC. Newest first.
 
 ---
 
+## 2026-04-19 — Scan ZIPs usability round (PRs #9 → #15)
+
+Seven PRs merged in one session fixing the issues Jose hit during his first real Scan ZIPs runs. Main branch is now at commit `401e253`.
+
+### Hotfix #11 — separate `batch_scrape` rate-limit bucket (534589f)
+
+First Scan ZIPs run (9 ZIPs × 15 survivors = 126 URLs) hit **"RATE LIMITED — TRY AGAIN IN A MINUTE"** on URL #6 and skipped the other 121. Both `batch/pipeline.py::process_url` and `batch/async_pipeline.py::_prepare_url` were sharing the `scrape:{ip}` 5/min bucket with the manual `/api/scrape` endpoint — sized for a human pasting one URL at a time. Introduced a separate `batch_scrape:{ip}` bucket at 180/min (~3/sec, matches Sprint 8-1 browser-pool saturation). `/api/scrape` bucket unchanged. Outer batch endpoints still enforce their own 3/min at entry.
+
+### Feat #12 — source pill + per-row delete + sync cap 100 (82505fb)
+
+Three asks surfaced from the first scan:
+- **Scan-vs-Paste differentiation:** envelope tagged `source: 'scan_zips'` / `'batch_paste'` client-side; colored pill renders next to the batch ID + scan-origin summary line ("From Scan ZIPs — 9/9 ZIPs, top 15 per ZIP, 126 survivors"). Source survives the async-poll round-trip via the pending record.
+- **Row delete:** per-row **×** button + bulk "Clear N failed rows" + "Clear all" (with confirm). Only the batch-results card resets — SQLite-cached analyses stay.
+- **Sync cap 30 → 100:** `_BATCH_MAX_URLS_SYNC` and `_BATCH_HARD_CAP` bumped (30→100, 50→150); JS `SYNC_MAX` 30→100; UI copy updated. ~170s wall-clock for 100 URLs at browser-pool saturation.
+
+### Fix #13 — unit inference from APT/UNIT/# suffix + condo/townhouse type (38e3745)
+
+User flagged: Zillow URL for a condo (`401-Stinson-St-APT-3-Vallejo-CA-94591`) returned RED with "Unit count not detected — re-scrape or enter manually" — but the property exists. Root cause: the scraper only checked JSON `numberOfUnits` + multifamily keywords. Extended the inference chain to infer `units=1` when:
+- address matches `\b(apt|apartment|unit|suite|ste)\s*[#]?\s*\w+\b`
+- address has a `#N` suffix
+- URL slug contains `/APT-N/` etc.
+- raw propertyType is "Condo" / "Townhouse" / "SingleFamily"
+
+Plumbed `units_source` + `property_type_raw` through `verdict_ctx`. New RED reasons (JS + Python + parity-harness in lockstep):
+- "Single condo unit — no other units to rent, 75% FHA offset unavailable"
+- "Single townhouse unit — ..."
+- "Address suffix (APT/UNIT/#) indicates one unit of a larger building — no 75% FHA rental offset possible"
+- "SFR without legal ADU — no 75% rental offset possible" (retained for true SFR)
+
+Also softened the genuinely-ambiguous copy: "Unit count not detected — re-scrape or enter manually" → "Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard".
+
+### Fix #14 — Force sync actually forces + Top-N cap 15→50 (9c1c112)
+
+Force sync was a suggestion, not a rule — `mode == "sync" OR len > cap` silently flipped to async when survivors exceeded the sync cap. Now:
+- `async` → always async
+- `sync` → always sync, up to `_BATCH_HARD_CAP` (150). Above that: 400 "reduce or pick async".
+- `""` (auto) → sync if ≤ cap, else async (unchanged).
+
+Also raised `_SCAN_ZIPS_MAX_TOP_N` 15 → 50 with matching HTML `max` attr + JS clamp updates.
+
+### Feat #15 — Min/Max Price inputs + profile-ceiling default on Scan ZIPs (4875409)
+
+94565 scan with preset=(none) returned $49K lots through $645K over-ceiling listings. Scan ZIPs panel had Preset / Top-N / Mode inputs but no Min/Max Price — so "(none)" preset meant no price filter. Added two inputs ("Min Price (optional, overrides preset)" + "Max Price (defaults to profile duplex ceiling)"); `runScanZips` sends both as `min_price` / `max_price` to `/api/scan-zips` (endpoint already accepted them, they just weren't surfaced). Max Price pre-populates from `jose.priceCeilingDuplex` on load. Preset change pushes `preset.search.minPrice/maxPrice` into the inputs.
+
+### Docs #10 — handoff/ truth-up for Sprint 11 / 11.5 / 12 + hotfixes #6/#7/#8/#9 (merge commit 0543ce5)
+
+README / SPRINT_PLAN / BACKLOG / CHANGELOG all caught up. Status flipped "all post-V1 through Sprint 12 shipped"; test count updated to 111 pytest + 43 JS + 27/28 parity; new "What shipped 2026-04-19" section in README.
+
+---
+
 ## 2026-04-19 — Sprint 11 + 11.5 + 12 + three hotfixes (PRs #4 / #5 / #6 / #7 / #8)
 
 ### Sprint 11 — profile-driven automation + ZIP-scan overnight flow (PR #4, 7d1f676)

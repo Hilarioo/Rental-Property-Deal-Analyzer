@@ -4,13 +4,19 @@ Owner: Jose H Gonzalez
 Updated: 2026-04-19
 Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). Sprints 11 / 11.5 / 12 landed 2026-04-19 driven by Jose's stated workflow ask + Lane 3 decisions.
 
-Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12 SHIPPED. Sprint 13 (automated per-ZIP data puller) is next. Do not mix lanes.
+Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12 SHIPPED plus hotfixes/feats #6–#15 (2026-04-19 bundle). Sprint 13 (automated per-ZIP data puller) and Sprint 14 (Neighborhood Search UX polish) both queued. Do not mix lanes.
 
-**Hotfixes landed 2026-04-19 (post-Sprint-12):**
+**Hotfixes + follow-up feats landed 2026-04-19 (post-Sprint-12, all merged):**
 - **#6** — Anthropic model IDs bumped to Claude 4.X (Opus 4.7 / Sonnet 4.6 / Haiku 4.5 / batch default Sonnet 4.6). Unblocked the AI analysis final page that was 404ing.
 - **#7** — Promoted Sprint 12 onto main (stacked-PR #5 had merged into `feature/sprint-11-automation` instead of `main`).
-- **#8** — Scan ZIPs UX: clamp Top-N 1-15 on blur + reflect back, auto-expand Batch panel + scroll on submit, show chosen mode (sync / async) in scan summary.
+- **#8** — Scan ZIPs UX: clamp Top-N on blur + reflect back, auto-expand Batch panel + scroll on submit, show chosen mode (sync / async) in scan summary.
 - **#9** — `_coerce_narrative` helper to stop `sqlite3.ProgrammingError: type 'dict' is not supported` at rankings INSERT when `llm_analysis.narrativeForRanking` holds a dict instead of a string. Was blocking `reconcile_pending_batches_on_startup` from completing on server restart.
+- **#10** — handoff/ docs truth-up (README + SPRINT_PLAN + BACKLOG + CHANGELOG) for Sprint 11 / 11.5 / 12 + hotfixes.
+- **#11** — Separate `batch_scrape:{ip}` bucket (180/min) so Scan ZIPs doesn't self-DoS against the `/api/scrape` 5/min human-facing cap. First run with 126 URLs had skipped 121 as "Rate limited — skipped".
+- **#12** — Scan/paste source pill + per-row `×` delete + "Clear N failed rows" bulk + sync cap 30 → 100.
+- **#13** — Unit inference from APT/UNIT/# address suffix + condo/townhouse property type. Fixes "Unit count not detected" RED on valid condo listings (401 Stinson St APT 3 case).
+- **#14** — Force sync actually forces sync (previously flipped to async when >cap). Top-N per ZIP cap raised 15 → 50.
+- **#15** — Min/Max Price inputs on Scan ZIPs panel. Max defaults to `profile.jose.priceCeilingDuplex` so "(none)" preset scans don't surface $49K lots and $645K over-ceiling listings.
 
 ---
 
@@ -441,6 +447,48 @@ Driver: Jose declined to ask his agent to fill a per-city table ("prefer pulling
 - Severity: HIGH (the whole sprint's UX payoff).
 
 Sprint 13 DoD: 6+ auto-generated city preset blocks committed; each traces back to source URLs in frontmatter; parity harness unchanged.
+
+---
+
+## Sprint 14 — Neighborhood Search panel polish (queued, ~2–3h)
+
+Driver: Jose's 2026-04-19 ask after running Scan ZIPs on 94565. The Neighborhood Search form, Batch panel, and Scan ZIPs panel all stack above whatever result block renders — so after clicking Search Listings you have to scroll past all three forms to find the table. He also wants the base search form itself to be collapsible like the other two, and the Max Results dropdown to scale well past 25.
+
+### 14-1. Collapse the Neighborhood Search form into its own `<details>` accordion
+- **Rationale:** today the form (Location / Min Price / Max Price / Min Beds / Property Type / Target Rent / Max Results + Search Listings button) is permanently expanded at the top of `#searchMode`. Jose wants it collapsible so scan/batch UIs can breathe. Match the style already used on Batch and Scan ZIPs panels.
+- **Files:** `index.html` — wrap `<div class="search-filters">` + the Search Listings button in a new `<details>` around ~line 1454 with a `<summary>Search a single ZIP or city</summary>`. Remember to re-test focus + aria-expanded on the existing accessibility baseline.
+- **Effort:** 30 min
+- **Severity:** MEDIUM
+
+### 14-2. Move search-results block to the bottom of the mode panel
+- **Rationale:** results currently render between the form and Scan ZIPs depending on which flow produced them. Jose wants one consistent "results live below all controls" layout so the scroll path is: panels → results.
+- **Fix:**
+  1. Move `#searchResultsContainer` (neighborhood-search table) + `#batch-results` (rankings) to the bottom of the Neighborhood Search mode, after all three accordions.
+  2. Same for Smart Deal Finder mode.
+  3. Consider a unified results container — e.g. `#resultsRegion` — that all three flows target, with a small heading indicating which flow populated it (single-search vs. batch-paste vs. scan-zips). Leverage the `source` pill from PR #12.
+- **Files:** `index.html` mode-panel layout.
+- **Effort:** 45 min
+- **Severity:** MEDIUM
+
+### 14-3. Bump Max Results dropdown 25 → 500
+- **Rationale:** current options are 10 / 15 / 20 / 25. 94565 alone has more multifamily inventory than 25 when the duplex ceiling is in range. Expand options so Jose can grab the full visible page.
+- **Fix:** add options 50 / 100 / 250 / 500 (default stays 20). Verify server-side cap in `_search_redfin_page` accepts up to 500. Currently capped at `min(max_results, 75)` — will need to lift to `min(..., 500)` + sanity-check Redfin's scroll-to-load loop (already bounded to 8 scroll-down cycles).
+- **Files:** `index.html:1457-1462` + `app.py:_search_redfin_page` + `/api/search` handler.
+- **Effort:** 30 min
+- **Severity:** MEDIUM
+
+### 14-4. Completion notification when long scan/batch finishes
+- **Rationale:** async scan (e.g. 450-URL ZIP fan-out) can take hours. Jose walks away; when the auto-poll flips the pending card to a ranked table, there's no signal unless the tab is already in view. Needs a visible completion indicator.
+- **Fix:**
+  - Browser `Notification` API opt-in on first async submission ("Allow desktop alerts for batch completion?").
+  - On `pending → complete` transition, show a native notification + update the tab title with a ✔ prefix + briefly flash the Scan ZIPs panel summary.
+  - Audio beep on completion (opt-in toggle).
+  - Graceful fallback when Notifications API is denied: page-title flash + inline toast.
+- **Files:** `index.html` batch-pending → complete transition handler (around `__checkBatchStatus`).
+- **Effort:** 60 min
+- **Severity:** MEDIUM
+
+Sprint 14 DoD: Neighborhood Search form collapses like the other two panels; results render below all three accordions; Max Results up to 500; async-batch completion fires a notification + tab-title cue.
 
 ---
 

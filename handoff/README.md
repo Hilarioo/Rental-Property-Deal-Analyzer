@@ -71,10 +71,16 @@ Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 - **Sprint 12** — layered Yellow classifier (explicit thresholds OR 10% rule, whichever is more forgiving), geospatial gating (`maxMilesHard` hard cap + `conditionalCities` threshold, Haversine from Pittsburg 38.028/-121.8847), auto-PM injection at units >= 4, `matchPresetByZip` per-listing tax/insurance/vacancy overrides.
 - **Hotfix #6** — Anthropic model IDs bumped to Claude 4.X family (retired `claude-sonnet-4-20250514` → `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5-20251001`). Unblocked the AI analysis final page that was 404ing.
 - **Hotfix #7** — promoted Sprint 12 onto main (stacked-PR base mishandling).
-- **Hotfix #8** — Scan ZIPs UX: clamp Top-N 1-15 on blur, auto-expand Batch panel on submit, show chosen mode in summary.
+- **Hotfix #8** — Scan ZIPs UX: clamp Top-N on blur, auto-expand Batch panel on submit, show chosen mode in summary.
 - **Hotfix #9** — `_coerce_narrative` helper stops `sqlite3.ProgrammingError` when `narrativeForRanking` holds a dict.
+- **Docs #10** — handoff/ truth-up for Sprint 11 / 11.5 / 12 + hotfixes.
+- **Hotfix #11** — Separate `batch_scrape:{ip}` rate-limit bucket (180/min, vs. `/api/scrape` 5/min) so Scan ZIPs doesn't self-DoS.
+- **Feat #12** — Scan-vs-Paste source pill, per-row `×` delete + "Clear failed" bulk, sync cap 30 → 100.
+- **Fix #13** — Unit inference from APT/UNIT/# address suffix + condo/townhouse type. "401 Stinson St APT 3" now returns "Single condo unit — no 75% FHA offset" instead of the generic "Unit count not detected".
+- **Fix #14** — Force sync actually forces sync (previously silently flipped to async above cap). Top-N per ZIP cap 15 → 50.
+- **Feat #15** — Min/Max Price inputs on Scan ZIPs panel. Max defaults to `profile.jose.priceCeilingDuplex` so "(none)" preset scans don't surface $49K lots or $645K over-ceiling listings.
 
-**Deferred from Sprint 12:** 12-3 rentalStrategy per-unit LTR/MTR UI, 12-6 203(k) contractor-stretch scenario. Both tracked in `BACKLOG.md`.
+**Deferred from Sprint 12:** 12-3 rentalStrategy per-unit LTR/MTR UI, 12-6 203(k) contractor-stretch scenario. **Sprint 14 (queued):** Neighborhood Search form accordion, unified results region below all controls, Max Results 25 → 500, async-completion notification. All tracked in `BACKLOG.md`.
 
 ---
 
