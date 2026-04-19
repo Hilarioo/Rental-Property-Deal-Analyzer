@@ -6335,7 +6335,7 @@
     el.textContent = zips.length + (zips.length === 1 ? ' ZIP' : ' ZIPs');
   }
 
-  function renderScanSummary(summary, perZip, rejected) {
+  function renderScanSummary(summary, perZip, rejected, chosenMode) {
     var root = $('scan-zips-summary');
     if (!root) return;
     if (!summary) { root.style.display = 'none'; return; }
@@ -6346,6 +6346,12 @@
     html += ' · <b>' + summary.survivors + '</b> survivors';
     html += ' · top ' + summary.top_n_per_zip + ' per ZIP';
     html += ' · ' + Math.round((summary.elapsed_ms || 0) / 100) / 10 + 's';
+    if (chosenMode) {
+      var modeLabel = chosenMode === 'async'
+        ? '<span style="color:#f7b500">async (overnight)</span>'
+        : '<span style="color:#22c55e">sync</span>';
+      html += ' · mode: ' + modeLabel;
+    }
     html += '</div>';
     if (perZip && perZip.length) {
       html += '<div style="margin-top:8px;font-size:0.80rem;">';
@@ -6389,9 +6395,14 @@
       if (errEl) { errEl.textContent = 'Paste at least one 5-digit ZIP.'; errEl.style.display = 'block'; }
       return;
     }
-    var topN = parseInt(($('scan-zips-top-n') || {}).value, 10);
+    var topNEl = $('scan-zips-top-n');
+    var topN = parseInt((topNEl || {}).value, 10);
     if (!topN || topN < 1) topN = 10;
     if (topN > 15) topN = 15;
+    // Reflect the clamped value back into the field so the UI matches what
+    // the server will actually use — fixes the "I typed 550000 but got 15"
+    // silent-clamp that looked like a bug in the Scan ZIPs screenshot.
+    if (topNEl && String(topN) !== topNEl.value) topNEl.value = topN;
     var preset = ($('scan-zips-preset') || {}).value || undefined;
     var mode = ($('scan-zips-mode') || {}).value || undefined;
 
@@ -6416,14 +6427,31 @@
         if (errEl) { errEl.textContent = msg + rid; errEl.style.display = 'block'; }
         return;
       }
-      renderScanSummary(data.summary, data.per_zip, data.rejected);
+      renderScanSummary(data.summary, data.per_zip, data.rejected, data.mode);
       if (data.status === 'empty') {
         if (errEl) { errEl.textContent = 'No survivors after filters — nothing submitted to batch.'; errEl.style.display = 'block'; }
         return;
       }
+
+      // Sprint 11 UX hotfix: the existing pending-card + results-table
+      // renderers (renderPending / renderResults) write into the Batch
+      // Analyze panel above. Auto-expand that panel and scroll it into
+      // view so the user isn't left staring at the scan summary wondering
+      // where the ranked output went.
+      var batchPanel = $('batch-panel');
+      if (batchPanel && !batchPanel.open) batchPanel.open = true;
+
       if (data.mode === 'sync' && data.envelope) {
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(data.envelope)); } catch (_) {}
         renderResults(data.envelope);
+        var resultsEl = $('batch-results');
+        if (resultsEl && resultsEl.scrollIntoView) {
+          resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        if (sumEl) {
+          sumEl.insertAdjacentHTML('beforeend',
+            '<div style="margin-top:8px;color:#22c55e;">✓ Ranked results rendered in the Batch panel above.</div>');
+        }
       } else if (data.mode === 'async' && data.batch) {
         var pending = {
           batchId: data.batch.batchId || data.batch.batch_id,
@@ -6434,6 +6462,17 @@
           savePending(pending);
           renderPending(pending);
           if (typeof startAutoPoll === 'function') startAutoPoll();
+          var pendingEl = $('batch-pending');
+          if (pendingEl && pendingEl.scrollIntoView) {
+            pendingEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          if (sumEl) {
+            sumEl.insertAdjacentHTML('beforeend',
+              '<div style="margin-top:8px;color:#f7b500;">' +
+              '⏳ Submitted as async batch — auto-polling in progress. ' +
+              'Pending card is in the Batch panel above; results replace it on completion (up to 24h via Anthropic Message Batches, usually minutes).' +
+              '</div>');
+          }
         }
       }
     } catch (e) {
@@ -6450,6 +6489,17 @@
     if (ta) ta.addEventListener('input', updateCount);
     var scanTa = $('scan-zips-list');
     if (scanTa) scanTa.addEventListener('input', updateScanZipCount);
+    // Clamp Top-N on blur so a stray paste (e.g. "550000") snaps to 1-15
+    // before the user hits Scan. Matches the server-side cap.
+    var scanTopN = $('scan-zips-top-n');
+    if (scanTopN) {
+      scanTopN.addEventListener('blur', function () {
+        var v = parseInt(scanTopN.value, 10);
+        if (!v || v < 1) v = 10;
+        if (v > 15) v = 15;
+        scanTopN.value = v;
+      });
+    }
     var radios = document.querySelectorAll('input[name="batch-mode"]');
     for (var i = 0; i < radios.length; i++) {
       radios[i].addEventListener('change', function () {
