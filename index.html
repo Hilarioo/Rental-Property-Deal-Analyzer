@@ -1410,8 +1410,6 @@
         </div>
         <div id="batch-loading" style="display:none;margin-top:10px;color:var(--text-muted);font-size:0.85rem;">Analyzing... this can take 30-90s for 3 URLs (scrape + FEMA + Cal Fire + OSM Overpass + LLM per property).</div>
         <div id="batch-error" style="display:none;margin-top:10px;color:#f87171;font-size:0.85rem;"></div>
-        <div id="batch-pending" style="display:none;margin-top:14px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(99,102,241,0.06);font-size:0.85rem;"></div>
-        <div id="batch-results" style="display:none;margin-top:14px;"></div>
       </details>
 
       <!-- ===== Sprint 11-4: ZIP-Scan Orchestrator ===== -->
@@ -1574,6 +1572,13 @@
           </table>
         </div>
       </div>
+
+      <!-- Sprint 14.5: unified results region — pending card + ranked table
+           for both Scan ZIPs and paste-batch flows. Moved out of the Batch
+           Analyze <details> so the output lives at the bottom of the mode,
+           below the single-ZIP search-results table. -->
+      <div id="batch-pending" style="display:none;margin-top:18px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(99,102,241,0.06);font-size:0.85rem;"></div>
+      <div id="batch-results" style="display:none;margin-top:18px;"></div>
     </div>
 
     <!-- ===== Smart Deal Finder Mode ===== -->
@@ -6265,10 +6270,18 @@
       html += '</div>';
     }
     if (rows.length) {
+      // Sprint 14.5: unified column set merges Neighborhood Search table
+      // columns (Beds/Baths, Sqft, Stars) with the Batch rankings columns
+      // (Verdict, TOPSIS, Why). Each row also gets the stretch + cache
+      // sub-rows from Sprint 12-6 / Sprint 10B-4 directly below it.
+      var targetRentForStars = (typeof DEFAULTS !== 'undefined' && DEFAULTS.targetMonthlyRent) || 0;
+      var mortgageRateForStars = (typeof DEFAULTS !== 'undefined' && DEFAULTS.interestRate) ? DEFAULTS.interestRate / 100 : null;
+      var MERGED_COLS = ['#', 'Address', 'Price', 'Beds/Baths', 'Sqft', 'Stars', 'Verdict', 'TOPSIS', 'Why', '', ''];
+      var MERGED_SPAN = MERGED_COLS.length;  // keep colspan on sub-rows in lockstep.
       html += '<div style="overflow-x:auto;">';
       html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
       html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
-      ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', '', ''].forEach(function (h) {
+      MERGED_COLS.forEach(function (h) {
         html += '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">' + h + '</th>';
       });
       html += '</tr></thead><tbody>';
@@ -6276,14 +6289,36 @@
         var verdictBg = r.verdict === 'green' ? 'rgba(22,163,74,0.18);color:#16a34a;border:1px solid rgba(22,163,74,0.4)'
           : r.verdict === 'yellow' ? 'rgba(202,138,4,0.18);color:#ca8a04;border:1px solid rgba(202,138,4,0.4)'
           : 'rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4)';
-        var star = r.pareto_efficient ? ' ★' : '';
+        var paretoStar = r.pareto_efficient ? ' ★' : '';
         var addr = r.address ? (r.address.length > 48 ? r.address.slice(0, 46) + '…' : r.address) : '(no address)';
         var reasons = (r.reasons || []).slice(0, 2).join(' · ');
         if (reasons.length > 110) reasons = reasons.slice(0, 108) + '…';
+        // Sprint 14.5: Beds/Baths + Sqft columns from the scraped shape the
+        // server now emits in the ranking row.
+        var beds = (r.beds != null) ? r.beds : '—';
+        var baths = (r.baths != null) ? r.baths : '—';
+        var sqft = (r.sqft != null && r.sqft > 0) ? fmtInt(r.sqft) : '—';
+        // Sprint 14.5: compute quick-score stars via the same helper the
+        // Neighborhood Search table uses — signals whether the deal pencils
+        // at the user's target rent regardless of verdict gates.
+        var quick = null;
+        try {
+          quick = computeQuickScore(
+            { price: r.price, beds: r.beds, sqft: r.sqft, baths: r.baths, address: r.address },
+            targetRentForStars,
+            mortgageRateForStars
+          );
+        } catch (e) { quick = null; }
+        var starsText = (quick && quick.stars != null)
+          ? (['☆☆☆☆☆', '★☆☆☆☆', '★★☆☆☆', '★★★☆☆', '★★★★☆', '★★★★★'][Math.max(0, Math.min(5, quick.stars))])
+          : '—';
         html += '<tr style="border-bottom:1px solid var(--border);">';
-        html += '<td style="padding:6px 8px;white-space:nowrap;">' + r.rank + star + '</td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;">' + r.rank + paretoStar + '</td>';
         html += '<td style="padding:6px 8px;">' + escapeHtml(addr) + '</td>';
         html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtUsd(r.price) + '</td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;">' + escapeHtml(String(beds)) + ' / ' + escapeHtml(String(baths)) + '</td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + escapeHtml(String(sqft)) + '</td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;letter-spacing:0.04em;">' + starsText + '</td>';
         html += '<td style="padding:6px 8px;"><span style="background:' + verdictBg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">' + escapeHtml(r.verdict) + '</span></td>';
         html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
         html += '<td style="padding:6px 8px;color:var(--text-muted);">' + escapeHtml(reasons) + '</td>';
@@ -6293,20 +6328,20 @@
         // Sprint 10B-4: Jose-facing cache-source badge (title attr keeps
         // raw debug info on hover).
         var badge = cacheBadgeCopy(r.cache_stale_reason, (r.llm_analysis && r.llm_analysis._analyzed_at) || r.analyzed_at);
-        html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
+        html += '<tr><td colspan="' + MERGED_SPAN + '" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
         // Sprint 12-6: 203(k) stretch scenario row — renders when the cash-
         // funded rehab red-failed AND contractorStretch conditions pass.
         var stretch = r.metrics && r.metrics.stretch_scenario;
         if (stretch && stretch.viable) {
           var sharePct = Math.round((stretch.self_perform_share || 0) * 100);
-          html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.75rem;">'
+          html += '<tr><td colspan="' + MERGED_SPAN + '" style="padding:0 8px 8px;font-size:0.75rem;">'
             + '<span style="background:rgba(234,179,8,0.15);color:#ca8a04;padding:2px 8px;border-radius:10px;font-weight:600;margin-right:8px;">203(k) stretch</span>'
             + 'PITI ' + fmtUsd(stretch.piti) + ' · cash-to-close ' + fmtUsd(stretch.cash_to_close)
             + ' · rehab ' + fmtUsd(stretch.effective_rehab) + ' financed'
             + ' · self-perform ' + sharePct + '%'
             + '</td></tr>';
         } else if (stretch && !stretch.viable && stretch.block_reason) {
-          html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">'
+          html += '<tr><td colspan="' + MERGED_SPAN + '" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">'
             + '203(k) stretch not viable — ' + escapeHtml(stretch.block_reason)
             + '</td></tr>';
         }
