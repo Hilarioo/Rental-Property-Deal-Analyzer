@@ -357,7 +357,15 @@ Driver: Vallejo 94591 search returned $95K and $64.9K properties under a $400K m
 
 ---
 
-## Sprint 12 — Profile schema extensions + per-ZIP preset matching (NEXT, ~6–8h)
+## Sprint 12 — Profile schema extensions + per-ZIP preset matching (SHIPPED 2026-04-19)
+
+Status: 12-1, 12-2, 12-4, 12-5 shipped on branch `feature/sprint-12-per-zip-matching`. 12-3 (rentalStrategy per-unit UI) and 12-6 (203(k) stretch) deferred — revisit when Jose wants MTR support or walks into a heavy-rehab deal.
+
+Parity harness 27/28 (pre-existing DTI 49.9% stale fixture unchanged). All 111 pytest pass apart from that same fixture. JS 43/43.
+
+---
+
+## Sprint 12 — Profile schema extensions + per-ZIP preset matching (ORIGINAL BRIEF, ~6–8h)
 
 Driver: Jose's 2026-04-19 Lane 3 decisions. Three-tier scoring, geospatial gating, per-strategy vacancy, self-manage auto-PM. Gated on 3 open questions (see README section "Blocking questions" — answered before sprint opens).
 
