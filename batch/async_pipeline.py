@@ -130,7 +130,7 @@ def _build_params(scrape: dict[str, Any]) -> dict[str, Any]:
         })
     return {
         "model": llm_mod.LLM_MODEL,
-        "max_tokens": 1500,
+        "max_tokens": 4096,
         "system": [
             {
                 "type": "text",

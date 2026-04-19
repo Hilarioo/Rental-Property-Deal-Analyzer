@@ -340,7 +340,7 @@ async def extract_property(
 
     payload = {
         "model": model or LLM_MODEL,
-        "max_tokens": 1500,
+        "max_tokens": 4096,
         "system": [
             {
                 "type": "text",

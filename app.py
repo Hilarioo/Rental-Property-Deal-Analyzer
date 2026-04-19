@@ -11,7 +11,10 @@ import httpx
 from bs4 import BeautifulSoup
 import uvicorn
 
-load_dotenv()
+# override=True: .env is the source of truth for this personal local
+# tool. Inherited shell env vars (e.g. an empty ANTHROPIC_API_KEY from
+# a prior session) would otherwise silently shadow the real .env value.
+load_dotenv(override=True)
 
 # ---------------------------------------------------------------------------
 # Logging — file rotation under ./logs/ (gitignored). Used by the M1/M3
