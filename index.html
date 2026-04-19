@@ -2032,6 +2032,32 @@
   </div>
 </div>
 
+<script type="module">
+  // ADR-002 Phase B: import the shared calc module into a window namespace
+  // so the classic-script inline logic (which backs 72 inline onclick/
+  // oninput handlers) can call it without breaking those handlers.
+  // DO NOT convert the big <script> below to type="module" — module-scoped
+  // functions are unreachable from inline HTML attributes.
+  import * as calc from '/calc.js';
+  window.__calc__ = calc;
+  window.__calcReady__ = true;
+  if (typeof window.__onCalcReady__ === 'function') {
+    try { window.__onCalcReady__(); } catch (e) { console.error('__onCalcReady__ threw', e); }
+  }
+</script>
+<script>
+  // ADR-002 Phase B safety net: if the module import above failed (network,
+  // 500, syntax error), __calcReady__ never flips and calculate() silently
+  // no-ops. Fire a user-visible banner so Jose isn't staring at a dead UI.
+  window.setTimeout(function() {
+    if (window.__calcReady__) return;
+    var banner = document.createElement('div');
+    banner.textContent = '⚠ /calc.js failed to load — math engine is unavailable. Reload the page; if it persists, check the server and browser console.';
+    banner.style.cssText = 'background:#dc2626;color:#fff;padding:10px;text-align:center;font-weight:600;position:sticky;top:0;z-index:9999;';
+    if (document.body) document.body.prepend(banner);
+  }, 2500);
+</script>
+
 <script>
 (function() {
   // ======================================================================
@@ -3938,6 +3964,12 @@
   };
 
   function calculate() {
+    // ADR-002 Phase B: ES module imports are async. If the user interacts
+    // with a field before /calc.js resolves, defer until the module lands.
+    if (!window.__calcReady__) {
+      window.__onCalcReady__ = calculate;
+      return;
+    }
     var price = val($('purchasePrice'), 0);
     var arvVal = val($('arv'), 0);
     var closingCostsVal = val($('closingCosts'), 0);
@@ -3976,70 +4008,110 @@
     var expGrowthPct = val($('expenseGrowth'), 0, 50);
 
     // Loan
+    // ADR-002 Phase B: route loan/PITI math through window.__calc__ so the
+    // inline copy here no longer drifts from calc.js.
     var dpAmount = isCash ? price : price * dpPct / 100;
     var baseLoanAmount = isCash ? 0 : price - dpAmount;
-    // Sprint 1: FHA upfront MIP (1.75%) is financed into the loan amount.
-    // P&I is calculated on financedLoan (base + upfront MIP); monthly MIP
-    // is a HUD fixed schedule on the BASE loan, not the financed amount.
-    // Mirror of calc.js computeFhaLoanAmount + computeFhaPITI.
     var isFha = !isCash && loanType === 'FHA';
-    var upfrontMip = isFha ? baseLoanAmount * FHA_MIP_UPFRONT_RATE : 0;
-    var loanAmount = isCash ? 0 : baseLoanAmount + upfrontMip; // what P&I amortizes
-    var annualMipRate = isFha
-      ? (baseLoanAmount > FHA_BASELINE_LOAN_LIMIT ? FHA_MIP_ANNUAL_HIGH : FHA_MIP_ANNUAL_STANDARD)
-      : 0;
-    var monthlyMip = isFha ? baseLoanAmount * annualMipRate / 12 : 0;
     var n = termYears * 12;
     var monthlyRate = rate / 100 / 12;
 
-    var monthlyPI = 0;
-    if (!isCash && loanAmount > 0) {
-      if (monthlyRate > 0) {
-        monthlyPI = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, n)) / (Math.pow(1 + monthlyRate, n) - 1);
-      } else {
-        monthlyPI = loanAmount / n;
-      }
+    var upfrontMip = 0, loanAmount = 0, annualMipRate = 0, monthlyMip = 0;
+    var monthlyPI = 0, monthlyTaxes = 0, monthlyInsurance = 0, piti = 0;
+
+    if (isCash) {
+      // No financing — taxes+insurance only.
+      monthlyTaxes = taxesYr / 12;
+      monthlyInsurance = insuranceYr / 12;
+      piti = monthlyTaxes + monthlyInsurance;
+    } else if (isFha) {
+      var fhaResult = window.__calc__.computeFhaPITI({
+        price: price,
+        downPct: dpPct,
+        annualRatePct: rate,
+        termYears: termYears,
+        annualTaxes: taxesYr,
+        annualInsurance: insuranceYr,
+        financeUpfrontMip: true,
+      });
+      upfrontMip = fhaResult.upfrontMip;
+      loanAmount = fhaResult.financedLoan;
+      annualMipRate = window.__calc__.fhaAnnualMipRate(fhaResult.baseLoan);
+      monthlyMip = fhaResult.mipMonthly;
+      monthlyPI = fhaResult.pi;
+      monthlyTaxes = fhaResult.taxes;
+      monthlyInsurance = fhaResult.insurance;
+      piti = fhaResult.piti;
+    } else {
+      // Conventional (or anything else non-FHA, non-cash).
+      loanAmount = baseLoanAmount; // no upfront MIP financed
+      monthlyPI = window.__calc__.computeMonthlyPI(loanAmount, rate, termYears);
+      var convPiti = window.__calc__.computePITI({
+        loanAmount: loanAmount,
+        annualRatePct: rate,
+        termYears: termYears,
+        annualTaxes: taxesYr,
+        annualInsurance: insuranceYr,
+      });
+      monthlyTaxes = convPiti.taxes;
+      monthlyInsurance = convPiti.insurance;
+      piti = convPiti.piti;
     }
 
-    var monthlyTaxes = taxesYr / 12;
-    var monthlyInsurance = insuranceYr / 12;
-    // Sprint 1: PITI now includes monthly MIP for FHA loans (0 otherwise).
-    var piti = monthlyPI + monthlyTaxes + monthlyInsurance + monthlyMip;
+    // Monthly operating expenses (route through calc.js computeOpex).
+    var opexResult = window.__calc__.computeOpex({
+      totalMonthlyIncome: totalMonthlyIncome,
+      annualTaxes: taxesYr,
+      annualInsurance: insuranceYr,
+      maintenancePct: maintPct,
+      vacancyPct: vacPct,
+      capexPct: capexPct,
+      managementPct: mgmtPct,
+      hoaMonthly: hoaMonth,
+      utilitiesMonthly: utilMonth,
+      otherMonthly: otherExpMonth,
+    });
+    var maintExp = opexResult.maint;
+    var vacExp = opexResult.vacancy;
+    var capexExp = opexResult.capex;
+    var mgmtExp = opexResult.management;
+    var totalOpex = opexResult.total;
 
-    // Monthly operating expenses
-    var maintExp = totalMonthlyIncome * maintPct / 100;
-    var vacExp = totalMonthlyIncome * vacPct / 100;
-    var capexExp = totalMonthlyIncome * capexPct / 100;
-    var mgmtExp = totalMonthlyIncome * mgmtPct / 100;
-    var totalOpex = monthlyTaxes + monthlyInsurance + maintExp + vacExp + capexExp + mgmtExp + hoaMonth + utilMonth + otherExpMonth;
+    // Cash flow (via calc.js).
+    var cfResult = window.__calc__.computeCashFlow({
+      totalMonthlyIncome: totalMonthlyIncome,
+      totalOpex: totalOpex,
+      monthlyPI: monthlyPI,
+    });
+    var monthlyCF = cfResult.monthlyCF;
+    var annualCF = cfResult.annualCF;
 
-    // Cash flow
-    var monthlyCF = totalMonthlyIncome - totalOpex - monthlyPI;
-    var annualCF = monthlyCF * 12;
-
-    // NOI
-    var noi = (totalMonthlyIncome * 12) - (totalOpex * 12);
+    // NOI (via calc.js).
+    var noi = window.__calc__.computeNOI({
+      totalMonthlyIncome: totalMonthlyIncome,
+      totalOpex: totalOpex,
+    });
 
     // Total cash invested
     var pointsCost = loanAmount * pointsVal / 100;
     var totalCashInvested = dpAmount + closingCostsVal + rehabVal + pointsCost;
 
-    // Cash on Cash
-    var coc = totalCashInvested > 0 ? (annualCF / totalCashInvested) * 100 : 0;
+    // Cash on Cash (via calc.js).
+    var coc = window.__calc__.computeCoC(annualCF, totalCashInvested);
 
-    // Cap rate
-    var capRate = price > 0 ? (noi / price) * 100 : 0;
+    // Cap rate (via calc.js).
+    var capRate = window.__calc__.computeCapRate(noi, price);
 
-    // GRM
+    // GRM (via calc.js).
     var annualRent = totalMonthlyIncome * 12;
-    var grm = annualRent > 0 ? price / annualRent : 0;
+    var grm = window.__calc__.computeGRM(price, annualRent);
 
     // Break-even occupancy (expenses excl vacancy + mortgage / rent)
     var expExVacancy = totalOpex - vacExp;
     var breakeven = totalMonthlyIncome > 0 ? ((expExVacancy + monthlyPI) / totalMonthlyIncome) * 100 : 0;
 
-    // DSCR
-    var dscr = (monthlyPI * 12 > 0) ? noi / (monthlyPI * 12) : null;
+    // DSCR (via calc.js).
+    var dscr = window.__calc__.computeDSCR(noi, monthlyPI * 12);
 
     var totalCashClose = totalCashInvested;
 
@@ -4185,7 +4257,8 @@
     }
 
     // Sprint 1: Qualifying income + DTI (FHA 75% rental offset).
-    // Mirror of calc.js computeQualifyingIncome / maxPitiAtDti.
+    // ADR-002 Phase B: routed through calc.js computeQualifyingIncome /
+    // maxPitiAtDti — the local branching lives there now.
     var w2Monthly = val($('buyerMonthlyIncomeW2'), 0);
     var monthlyDebts = val($('monthlyDebts'), 0);
     var ownerOccupied = ($('ownerOccupied') && $('ownerOccupied').value === 'true');
@@ -4193,20 +4266,18 @@
     // floor-split of totalRent). getPerUnitRents handles both SFH and
     // multifamily and returns an index-0-is-owner array when ownerOcc=true.
     var perUnitRents = getPerUnitRents();
-    var rentableRents;
-    if (ownerOccupied && perUnitRents.length > 1) {
-      rentableRents = perUnitRents.slice(1).reduce(function(s, r) { return s + (r || 0); }, 0);
-    } else {
-      rentableRents = perUnitRents.reduce(function(s, r) { return s + (r || 0); }, 0);
-      if (ownerOccupied && perUnitRents.length === 1) rentableRents = 0; // SFH owner-occ has no offset
-    }
-    var rentalOffsetContribution = FHA_RENTAL_OFFSET * rentableRents;
-    var qualifyingIncome = w2Monthly + rentalOffsetContribution;
-    // Clamp at 0 — mirrors calc.js maxPitiAtDti. Prevents "-$500" UI nonsense
-    // when a heavily-indebted borrower trips negative.
-    var maxPiti45 = Math.max(0, qualifyingIncome * 0.45 - monthlyDebts);
-    var maxPiti50 = Math.max(0, qualifyingIncome * 0.50 - monthlyDebts);
-    var maxPiti55 = Math.max(0, qualifyingIncome * 0.55 - monthlyDebts);
+    var unitsForQI = perUnitRents.length;
+    var qualifyingIncome = window.__calc__.computeQualifyingIncome({
+      w2Monthly: w2Monthly,
+      units: unitsForQI,
+      perUnitRents: perUnitRents,
+      ownerOccupied: ownerOccupied,
+    });
+    // rentalOffsetContribution still needed for the Jose verdict (netPiti).
+    var rentalOffsetContribution = qualifyingIncome - w2Monthly;
+    var maxPiti45 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 45, monthlyDebts: monthlyDebts });
+    var maxPiti50 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 50, monthlyDebts: monthlyDebts });
+    var maxPiti55 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 55, monthlyDebts: monthlyDebts });
 
     // Sprint 4: Jose verdict context.
     // Net PITI = PITI minus 75% rental offset dollars (rentalOffsetContribution).

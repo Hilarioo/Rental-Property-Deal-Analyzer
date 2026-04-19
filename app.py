@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from collections import defaultdict
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.responses import StreamingResponse
 import httpx
 from bs4 import BeautifulSoup
@@ -524,6 +524,18 @@ async def serve_frontend():
         # Inject flag so frontend can disable scraping-dependent features
         html = html.replace("</head>", '<script>window.__CLOUD_DEMO__=true;</script></head>')
     return html
+
+
+@app.get("/calc.js")
+async def serve_calc_js():
+    """ADR-002 Phase B: serve the pure-calc ESM for browser imports."""
+    path = Path(__file__).parent / "calc.js"
+    if not path.exists():
+        return JSONResponse({"error": "calc.js not found"}, status_code=500)
+    return Response(
+        content=path.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+    )
 
 
 @app.get("/spec/constants.json")
