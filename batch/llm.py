@@ -53,7 +53,7 @@ def _image_url_allowed(url: str) -> bool:
             return True
     return False
 
-LLM_MODEL = os.getenv("BATCH_LLM_MODEL", "claude-sonnet-4-5")
+LLM_MODEL = os.getenv("BATCH_LLM_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 LLM_TIMEOUT_S = 60.0
 
