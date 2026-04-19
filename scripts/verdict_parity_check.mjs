@@ -22,11 +22,17 @@ const REPO_ROOT = resolve(__dirname, '..');
 
 // -------------------------------------------------------------------------
 // Load spec thresholds (single source of truth per ADR-002).
+// Sprint 10A §10-2: jose/defaults moved to spec/profile.local.json (private,
+// gitignored). Tests run locally where that file is always present, so we
+// hard-fail if it's missing — parity coverage requires the real thresholds.
 // -------------------------------------------------------------------------
 const SPEC = JSON.parse(
   readFileSync(resolve(REPO_ROOT, 'spec/constants.json'), 'utf-8'),
 );
-const JOSE_THRESHOLDS = SPEC.jose;
+const PROFILE = JSON.parse(
+  readFileSync(resolve(REPO_ROOT, 'spec/profile.local.json'), 'utf-8'),
+);
+const JOSE_THRESHOLDS = PROFILE.jose;
 
 // -------------------------------------------------------------------------
 // JS verdict — PORTED VERBATIM from index.html ~line 2336.

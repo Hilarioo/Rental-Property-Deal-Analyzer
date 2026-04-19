@@ -13,3 +13,9 @@ data/
 logs/
 .DS_Store
 .idea/
+
+# Sprint 10A §10-1/§10-2: private profile data — NEVER commit.
+# USER_PROFILE.md contains Jose's W-2 income, credit score, cash balance.
+# profile.local.json mirrors the same for the runtime spec loader.
+handoff/USER_PROFILE.md
+spec/profile.local.json

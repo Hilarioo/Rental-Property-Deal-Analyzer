@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "version": "1.0.0",
+    "version": "1.1.0",
     "lastUpdated": "2026-04-18",
-    "description": "Single source of truth for FHA analyzer constants. Read by calc.js (browser + Node tests), index.html, and batch/*.py. Formulas live in code; numbers live here."
+    "description": "PUBLIC constants: FHA rates, TOPSIS weights, insurance heuristic, ZIP tiers, rehab categories, presets. Read by calc.js (browser + Node tests), index.html, and batch/*.py. Private fields (W-2 income, credit score, cash budget, Jose thresholds) live in spec/profile.local.json (gitignored — Sprint 10A §10-2)."
   },
 
   "fha": {
@@ -12,19 +12,6 @@
     "baselineLoanLimit": 726200,
     "rentalOffset": 0.75,
     "minDownPaymentPct": 3.5
-  },
-
-  "jose": {
-    "netPitiGreen": 2500,
-    "netPitiRed": 3200,
-    "cashCloseGreen": 45000,
-    "cashCloseRed": 60000,
-    "rehabGreen": 60000,
-    "rehabRed": 80000,
-    "priceCeilingDuplex": 525000,
-    "priceCeilingTriplex": 650000,
-    "maxDtiPct": 55,
-    "roofAgeYellow": 15
   },
 
   "topsisWeights": {
@@ -58,36 +45,6 @@
     "veryHighFireZone": "LRA-very-high",
     "llmMultiplierMin": 1.0,
     "llmMultiplierMax": 1.5
-  },
-
-  "defaults": {
-    "buyerAnnualIncomeW2": 54080,
-    "buyerMonthlyIncomeW2": 4506,
-    "seIncomeForQualifying": 0,
-    "creditScore": 780,
-    "monthlyDebts": 0,
-    "downPaymentPct": 3.5,
-    "loanType": "FHA",
-    "loanTerm": 30,
-    "interestRate": 6.5,
-    "fhaUpfrontMipPct": 1.75,
-    "fhaAnnualMipPct": 0.55,
-    "propertyTaxRatePct": 1.1,
-    "insuranceAnnual": 1800,
-    "hoaMonthly": 0,
-    "vacancyPct": 5,
-    "maintenancePct": 5,
-    "propertyManagementPct": 0,
-    "ownerOccupied": true,
-    "unitsOccupiedByOwner": 1,
-    "closingCostsPct": 3,
-    "rentalOffsetPct": 75,
-    "maxDtiPct": 45,
-    "maxNetPitiTarget": 3000,
-    "maxCashToClose": 45000,
-    "reserveMonths": 2,
-    "selfPerformRoofing": true,
-    "roofingCostMultiplier": 0.60
   },
 
   "presets": {

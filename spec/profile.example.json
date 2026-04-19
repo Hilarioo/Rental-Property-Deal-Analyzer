@@ -1,0 +1,50 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "lastUpdated": "<YYYY-MM-DD>",
+    "description": "Redacted template. Copy to profile.local.json (gitignored) and fill with your real values. Sprint 10A §10-2."
+  },
+
+  "jose": {
+    "netPitiGreen": 0,
+    "netPitiRed": 0,
+    "cashCloseGreen": 0,
+    "cashCloseRed": 0,
+    "rehabGreen": 0,
+    "rehabRed": 0,
+    "priceCeilingDuplex": 0,
+    "priceCeilingTriplex": 0,
+    "maxDtiPct": 45,
+    "roofAgeYellow": 15
+  },
+
+  "defaults": {
+    "buyerAnnualIncomeW2": 0,
+    "buyerMonthlyIncomeW2": 0,
+    "seIncomeForQualifying": 0,
+    "creditScore": 0,
+    "monthlyDebts": 0,
+    "downPaymentPct": 3.5,
+    "loanType": "FHA",
+    "loanTerm": 30,
+    "interestRate": 6.5,
+    "fhaUpfrontMipPct": 1.75,
+    "fhaAnnualMipPct": 0.55,
+    "propertyTaxRatePct": 1.1,
+    "insuranceAnnual": 1800,
+    "hoaMonthly": 0,
+    "vacancyPct": 5,
+    "maintenancePct": 5,
+    "propertyManagementPct": 0,
+    "ownerOccupied": true,
+    "unitsOccupiedByOwner": 1,
+    "closingCostsPct": 3,
+    "rentalOffsetPct": 75,
+    "maxDtiPct": 45,
+    "maxNetPitiTarget": 0,
+    "maxCashToClose": 0,
+    "reserveMonths": 2,
+    "selfPerformRoofing": false,
+    "roofingCostMultiplier": 1.0
+  }
+}

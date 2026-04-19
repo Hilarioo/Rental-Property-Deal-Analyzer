@@ -25,7 +25,7 @@ Shape:
           overnight submission if the server was restarted
 
 Security posture matches the sync path: per-URL scrape still charges the
-/api/scrape rate-limit bucket via `_process_url`, image fetches honor the
+/api/scrape rate-limit bucket via `process_url`, image fetches honor the
 real-estate-CDN allowlist in batch/llm.py, and no provider exception
 string crosses the API surface (logs get logger.exception, clients get
 a generic envelope via the caller in app.py).
@@ -156,7 +156,7 @@ async def _prepare_url(
 ) -> dict[str, Any]:
     """Scrape, enrich, decide cache status. Does NOT call the LLM.
 
-    Returns a dict with the same keys the sync `_process_url` produces for
+    Returns a dict with the same keys the sync `process_url` produces for
     non-LLM fields, plus:
       - `cache_hit`: True when we can reuse cached llm_analysis
       - `llm_analysis`: cached dict when cache_hit, else None
@@ -306,7 +306,7 @@ def _skip_row(
 
 async def _finalize_row(prepared: dict[str, Any], *, db_path: str) -> dict[str, Any]:
     """Turn a prepared row + (cached|fresh) llm_analysis into the rank-ready
-    shape produced by pipeline._process_url."""
+    shape produced by pipeline.process_url."""
     if not prepared.get("scrape_ok"):
         return {
             "url": prepared["url"],

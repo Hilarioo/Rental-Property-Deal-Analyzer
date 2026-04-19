@@ -41,6 +41,60 @@ def _error_envelope(code: str, message: str, request_id: str) -> dict:
 
 app = FastAPI()
 
+# ---------------------------------------------------------------------------
+# Sprint 10A §10-3: security headers + CORS.
+# The app runs local-only on 127.0.0.1, but defense-in-depth:
+#   - CSP stops any injected script from phoning home (connect-src 'self').
+#   - Nosniff + frame DENY + no-referrer close the usual trivial leaks.
+#   - CORS whitelist defeats DNS-rebinding attacks: a malicious site can
+#     still resolve a name to 127.0.0.1, but the browser will block the
+#     fetch because the Origin header won't be in allow_origins.
+# 'unsafe-inline' on script-src / style-src is REQUIRED — index.html ships
+# all app logic inline (ADR-002 Phase B ESM import is the only external
+# script, covered by 'self'). If we ever extract to a CDN or add a nonce
+# pipeline, tighten the CSP in the same commit.
+# ---------------------------------------------------------------------------
+from starlette.middleware.cors import CORSMiddleware  # noqa: E402
+from starlette.middleware.trustedhost import TrustedHostMiddleware  # noqa: E402
+
+_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' https://*.rdcpix.com https://*.ssl.cdn-redfin.com "
+    "https://*.zillowstatic.com data:; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "connect-src 'self'"
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
+
+# Security audit M2: DNS-rebinding defense. Without this, evil.com that
+# A-records to 127.0.0.1 can navigate Jose's browser to the app as a
+# same-origin page. CORS won't help because the browser sees same origin.
+# TrustedHost rejects any Host header not in the allowlist before routing.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1"],
+)
+
+
 # Ensure ./data/ directory exists and the schema is applied before any route
 # can hit it. Idempotent — no-op on subsequent starts.
 try:
@@ -640,9 +694,15 @@ async def serve_calc_js():
 
 @app.get("/spec/constants.json")
 async def serve_spec_constants():
-    """ADR-002: expose the shared constants file to the browser runtime.
+    """ADR-002: expose the shared PUBLIC constants file to the browser runtime.
     Hard-fail (500) on missing file — silent fallback is the drift mode
-    this route was created to kill."""
+    this route was created to kill.
+
+    Sprint 10A §10-2: this route ONLY serves public data (FHA rates,
+    TOPSIS weights, ZIP tiers, etc.). Private fields (W-2 income, credit
+    score, Jose thresholds) live in spec/profile.local.json and are served
+    by /spec/profile.json with a 127.0.0.1-only gate.
+    """
     # Anchor to this file's dir so a non-root cwd (systemd unit, container)
     # doesn't diverge from spec/__init__.py's Path(__file__).parent resolution.
     path = Path(__file__).parent / "spec" / "constants.json"
@@ -650,9 +710,58 @@ async def serve_spec_constants():
         return JSONResponse({"error": "spec not found"}, status_code=500)
     try:
         return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
+        # Sprint 10A §10-5: don't leak parse-error detail to client.
+        rid = uuid.uuid4().hex
+        logger.exception("spec/constants.json malformed (request_id=%s)", rid)
         return JSONResponse(
-            {"error": f"spec malformed: {exc}"}, status_code=500
+            _error_envelope("SPEC_MALFORMED", "Spec malformed.", rid),
+            status_code=500,
+        )
+
+
+@app.get("/spec/profile.json")
+async def serve_spec_profile(request: Request):
+    """Sprint 10A §10-2: serve PRIVATE profile data (W-2 income, credit
+    score, Jose thresholds) ONLY to requests originating from 127.0.0.1.
+
+    Tailscale IPs, LAN IPs, and anything else get a 403. Rationale: even if
+    Jose later exposes the port through a reverse proxy or forwards it over
+    a private mesh, this route must never leak financial profile data. The
+    browser-side boot code tolerates a 403 here by showing a yellow banner
+    and continuing with public-only defaults.
+    """
+    client_host = (request.client.host if request.client else "") or ""
+    # Accept only the loopback literal. Reject ::1 out of an abundance of
+    # caution — Jose's local dev uses 127.0.0.1:8000.
+    if client_host != "127.0.0.1":
+        rid = uuid.uuid4().hex
+        logger.info(
+            "blocked /spec/profile.json from non-loopback host=%s (request_id=%s)",
+            client_host, rid,
+        )
+        return JSONResponse(
+            _error_envelope(
+                "PROFILE_FORBIDDEN",
+                "Profile data is loopback-only.",
+                rid,
+            ),
+            status_code=403,
+        )
+
+    path = Path(__file__).parent / "spec" / "profile.local.json"
+    if not path.exists():
+        # Missing local profile → return 204 so the browser banner can
+        # distinguish "denied" from "unconfigured" cleanly.
+        return Response(status_code=204)
+    try:
+        return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError:
+        rid = uuid.uuid4().hex
+        logger.exception("spec/profile.local.json malformed (request_id=%s)", rid)
+        return JSONResponse(
+            _error_envelope("PROFILE_MALFORMED", "Profile malformed.", rid),
+            status_code=500,
         )
 
 
@@ -1636,14 +1745,17 @@ async def scrape_property(request: Request):
     html_text = None
     site_label = "Redfin" if source == "redfin" else "Zillow"
 
+    # Sprint 10A §10-8: share the bot-wall sentinel table with the batch path.
+    # Lazy import because batch.pipeline imports app.py at module level —
+    # top-level import would circular.
+    from batch.pipeline import _looks_like_bot_wall as _scrape_is_bot_wall
+
     # Attempt 1: httpx (fast, but Zillow often blocks this)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
             resp = await client.get(url, headers=HEADERS)
-        if resp.status_code < 400 and "captcha" not in resp.text[:2000].lower():
-            # Check for bot-block pages (Zillow returns 200 with "Access denied")
-            if "access to this page has been denied" not in resp.text[:3000].lower():
-                html_text = resp.text
+        if resp.status_code < 400 and not _scrape_is_bot_wall(resp.text):
+            html_text = resp.text
     except httpx.RequestError:
         pass
 
@@ -1652,7 +1764,7 @@ async def scrape_property(request: Request):
         try:
             html_text = await _fetch_with_playwright(url)
             # Check for bot block even in Playwright response
-            if html_text and "access to this page has been denied" in html_text[:3000].lower():
+            if html_text and _scrape_is_bot_wall(html_text):
                 html_text = None
         except Exception:
             pass
@@ -1672,10 +1784,8 @@ async def scrape_property(request: Request):
             status_code=422,
         )
 
-    # Check for CAPTCHA / bot block pages
-    if (soup.find("div", class_="captcha-container")
-            or "captcha" in html_text[:2000].lower()
-            or "access to this page has been denied" in html_text[:3000].lower()):
+    # Check for CAPTCHA / bot block pages (Sprint 10A §10-8: broader sentinels).
+    if soup.find("div", class_="captcha-container") or _scrape_is_bot_wall(html_text):
         return JSONResponse(
             {"error": f"{site_label} blocked the request. Please try again later or enter data manually."},
             status_code=503,
@@ -1752,7 +1862,11 @@ async def _analyze_with_ollama(metrics: str, model_override: str | None = None) 
             },
         )
     if resp.status_code != 200:
-        raise Exception(f"Ollama error: {resp.status_code} - {resp.text[:200]}")
+        # Sprint 10A §10-5: don't embed resp.text in the exception message —
+        # it bubbles through logger.exception server-side and we want the
+        # upstream body gated to .debug, not .error logs.
+        logger.debug("Ollama non-200 body: %s", resp.text[:200])
+        raise Exception(f"Ollama error: HTTP {resp.status_code}")
     data = resp.json()
     return _strip_thinking(data["message"]["content"])
 
@@ -1778,7 +1892,9 @@ async def _analyze_with_lmstudio(metrics: str, model_override: str | None = None
             json=payload,
         )
     if resp.status_code != 200:
-        raise Exception(f"LM Studio error: {resp.status_code} - {resp.text[:200]}")
+        # Sprint 10A §10-5: scrub upstream body from the exception message.
+        logger.debug("LM Studio non-200 body: %s", resp.text[:200])
+        raise Exception(f"LM Studio error: HTTP {resp.status_code}")
     data = resp.json()
     return _strip_thinking(data["choices"][0]["message"]["content"])
 
@@ -1802,7 +1918,9 @@ async def _analyze_with_anthropic(metrics: str, api_key: str, model_override: st
             },
         )
     if resp.status_code != 200:
-        raise Exception(f"Anthropic API error (HTTP {resp.status_code}): {resp.text[:200]}")
+        # Sprint 10A §10-5: scrub upstream body from the exception message.
+        logger.debug("Anthropic non-200 body: %s", resp.text[:200])
+        raise Exception(f"Anthropic API error: HTTP {resp.status_code}")
     data = resp.json()
     return data["content"][0]["text"]
 
@@ -2344,7 +2462,7 @@ async def analyze_ai_stream(request: Request):
 from batch.db import get_connection as _batch_conn  # noqa: E402
 from batch.db import url_hash as _batch_url_hash  # noqa: E402
 from batch.pipeline import run_sync_batch as _run_sync_batch  # noqa: E402
-from batch.pipeline import _process_url as _batch_process_url  # noqa: E402
+from batch.pipeline import process_url as _batch_process_url  # noqa: E402
 from batch.llm import extract_property as _llm_extract_property  # noqa: E402
 from batch.llm import is_cache_stale as _llm_is_cache_stale  # noqa: E402
 from batch.async_pipeline import (  # noqa: E402

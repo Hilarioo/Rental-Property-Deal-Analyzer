@@ -2742,20 +2742,62 @@
     } catch(e) { /* no-op */ }
   }
 
+  function __showProfileUnavailableBanner__(reason) {
+    // Sprint 10A §10-2: profile.json 403 (non-loopback) or 204 (no local
+    // file). Yellow, not red — the tool still works with public defaults.
+    console.warn('Profile data unavailable — using public defaults. Reason:', reason);
+    try {
+      var banner = document.createElement('div');
+      banner.textContent = 'Profile data unavailable — using public defaults. (Open on http://127.0.0.1:8000 and create spec/profile.local.json to personalize.)';
+      banner.style.cssText = 'background:#f7b500;color:#000;padding:8px;text-align:center;font-weight:600;position:sticky;top:0;z-index:99998;';
+      if (document.body) document.body.prepend(banner);
+      else document.addEventListener('DOMContentLoaded', function() { document.body.prepend(banner); });
+    } catch(e) { /* no-op */ }
+  }
+
   async function __loadSpec__() {
+    // Sprint 10A §10-2: TWO fetches now.
+    // 1) /spec/constants.json — PUBLIC (hard-fail red banner if broken).
+    // 2) /spec/profile.json   — PRIVATE (loopback-only; yellow banner if 403/204).
+    // Merge both into one `spec` object so __applySpec__ downstream is unchanged.
+    var publicSpec = null;
     try {
       var resp = await fetch('/spec/constants.json');
       if (!resp.ok) throw new Error('spec HTTP ' + resp.status);
-      var spec = await resp.json();
-      if (!spec || !spec._meta || !spec._meta.version) {
+      publicSpec = await resp.json();
+      if (!publicSpec || !publicSpec._meta || !publicSpec._meta.version) {
         throw new Error('spec missing _meta.version');
       }
-      __SPEC__ = spec;
-      window.__SPEC__ = spec;
-      __applySpec__(spec);
     } catch (err) {
       __showSpecFailureBanner__(err);
+      return;
     }
+
+    var profile = null;
+    try {
+      var presp = await fetch('/spec/profile.json');
+      if (presp.status === 403) {
+        __showProfileUnavailableBanner__('403 (non-loopback origin)');
+      } else if (presp.status === 204) {
+        __showProfileUnavailableBanner__('204 (no profile.local.json on server)');
+      } else if (!presp.ok) {
+        __showProfileUnavailableBanner__('HTTP ' + presp.status);
+      } else {
+        profile = await presp.json();
+      }
+    } catch (err) {
+      __showProfileUnavailableBanner__(err && err.message ? err.message : 'fetch failed');
+    }
+
+    // Merge: public wins for its domain, private contributes defaults+jose.
+    var merged = Object.assign({}, publicSpec);
+    if (profile) {
+      if (profile.defaults) merged.defaults = profile.defaults;
+      if (profile.jose)     merged.jose     = profile.jose;
+    }
+    __SPEC__ = merged;
+    window.__SPEC__ = merged;
+    __applySpec__(merged);
   }
 
   // Run spec load BEFORE initDefaults so form defaults reflect spec values.

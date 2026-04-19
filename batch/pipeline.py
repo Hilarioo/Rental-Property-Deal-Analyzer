@@ -143,6 +143,38 @@ _EXCLUDED_CITY_NEEDLES: tuple[str, ...] = tuple(
 )
 
 
+# Sprint 10A §10-8: broader bot-wall / CAPTCHA detection.
+# Previous two-substring check ("captcha", "access denied") false-negatived on
+# Cloudflare's "Just a moment...", PerimeterX "px-captcha", hCaptcha, Akamai
+# "Reference #..." blocks, and Redfin's own "for real-time pricing" lockout.
+# When any sentinel matches we treat the scrape as a hard failure rather than
+# parsing the challenge page as if it were the listing.
+_BOT_WALL_SENTINELS: tuple[str, ...] = (
+    "captcha",
+    "access denied",
+    "access to this page has been denied",
+    "just a moment",
+    "enable javascript",
+    "verify you are human",
+    "px-captcha",
+    "hcaptcha",
+    "challenge",
+    "are you a robot",
+    "for real-time pricing",
+)
+
+
+def _looks_like_bot_wall(html_text: str | None) -> bool:
+    """Return True if the first ~3KB of ``html_text`` trips any bot-wall
+    sentinel. Case-insensitive substring match, cheap enough to run on every
+    scrape. Returning True means: treat this fetch as failed, not parse it.
+    """
+    if not html_text:
+        return False
+    window = html_text[:3000].lower()
+    return any(s in window for s in _BOT_WALL_SENTINELS)
+
+
 def _looks_excluded(address: str | None) -> bool:
     """Cheap substring check against spec.zipTiers.excludedCities (§7).
 
@@ -247,8 +279,8 @@ async def _scrape_url(url: str) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
             resp = await client.get(url, headers=HEADERS)
-        lowered = resp.text[:3000].lower()
-        if resp.status_code < 400 and "captcha" not in resp.text[:2000].lower() and "access to this page has been denied" not in lowered:
+        # Sprint 10A §10-8: broader sentinel check than the old 2-string test.
+        if resp.status_code < 400 and not _looks_like_bot_wall(resp.text):
             html_text = resp.text
     except httpx.HTTPError:
         pass
@@ -256,13 +288,13 @@ async def _scrape_url(url: str) -> dict[str, Any]:
     if html_text is None:
         try:
             html_text = await main_app._fetch_with_playwright(url)
-            if html_text and "access to this page has been denied" in html_text[:3000].lower():
+            if html_text and _looks_like_bot_wall(html_text):
                 html_text = None
         except Exception:
             pass
 
     if not html_text:
-        return {"ok": False, "error": "fetch_failed"}
+        return {"ok": False, "error": "bot_wall_or_fetch_failed"}
 
     try:
         soup = BeautifulSoup(html_text, "lxml")
@@ -690,7 +722,7 @@ def _insert_claude_run(
 # --------------------------------------------------------------------------
 
 
-async def _process_url(
+async def process_url(
     *,
     url: str,
     http_client: httpx.AsyncClient,
@@ -970,7 +1002,7 @@ async def run_sync_batch(
         async def _worker(u: str) -> dict[str, Any]:
             async with sem:
                 try:
-                    return await _process_url(
+                    return await process_url(
                         url=u, http_client=client, api_key=api_key, db_path=db_path,
                         client_ip=client_ip,
                     )

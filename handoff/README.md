@@ -11,6 +11,7 @@ Single source of truth for Jose's FHA owner-occupied house-hack decision engine.
 ## Read in this order
 
 1. **[`USER_PROFILE.md`](./USER_PROFILE.md)** — Jose's numbers (authoritative). Start here.
+   - **Sprint 10A:** `USER_PROFILE.md` is **local-only / gitignored** (contains W-2 income, credit score, cash balance). New contributors: copy [`USER_PROFILE.example.md`](./USER_PROFILE.example.md) to `USER_PROFILE.md` and fill in your values.
 2. **[`HANDOFF.md`](./HANDOFF.md)** — original mission brief (immutable historical record).
 3. **[`TECHNICAL_ASSESSMENT.md`](./TECHNICAL_ASSESSMENT.md)** — shipped-state record + post-V1 epilogue. Every gap identified is now closed.
 4. **[`SPRINT_PLAN.md`](./SPRINT_PLAN.md)** — retrospective, all 6 sprints DONE with commit hashes.
