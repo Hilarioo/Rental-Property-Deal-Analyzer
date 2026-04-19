@@ -2399,6 +2399,65 @@
   // Up to 3 reasons. Ordering: hard-fail gates first, then numeric predicates, then soft flags.
   // NOTE intentional: predicate 1 (net PITI absolute cap) and the DTI gate both
   // can fire — they measure different things (budget vs lender formula).
+  // Sprint 12-1: layered Yellow classifier. Mirrors batch/verdict.py
+  // `_classify_overage`. Returns 'green'|'yellow'|'red'. Yellow fires if
+  // EITHER an explicit Yellow threshold allows it OR the legacy 10%-overage
+  // rule allows it. Backward-compatible when `yellow` is null/undefined.
+  function _classifyOverage(value, green, yellow, red) {
+    if (value <= green) return 'green';
+    if (value > red) return 'red';
+    var tenPctOk = (value - green) / green <= 0.10;
+    var explicitYellowOk = (yellow !== null && yellow !== undefined) && value <= yellow;
+    return (explicitYellowOk || tenPctOk) ? 'yellow' : 'red';
+  }
+
+  // Sprint 12-2: haversine great-circle distance in statute miles. Mirrors
+  // batch/verdict.py `_haversine_miles`. Pure fn, no spec reads.
+  function _haversineMiles(lat1, lng1, lat2, lng2) {
+    var R = 3958.8;
+    var toRad = function(d) { return d * Math.PI / 180; };
+    var phi1 = toRad(lat1), phi2 = toRad(lat2);
+    var dPhi = toRad(lat2 - lat1), dLam = toRad(lng2 - lng1);
+    var a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2)
+          + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam / 2) * Math.sin(dLam / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+
+  // Sprint 12-2: geospatial gate. Returns a RED-reason string or null.
+  // No-ops when lat/lng or homeBase coordinates are missing — preserves
+  // parity with Python when coordinates aren't plumbed through.
+  function _geospatialFail(ctx) {
+    var lat = ctx.lat, lng = ctx.lng;
+    if (typeof lat !== 'number' || typeof lng !== 'number') return null;
+    var spec = (window.RPDA && window.RPDA.spec) || {};
+    var loc = (spec.profileLocation) || ((spec.raw && spec.raw.profileLocation)) || {};
+    // Profile location may come from spec.raw.location (private-profile merged in)
+    // OR directly from the merged spec object under .location (set by __applySpec__).
+    if (!loc.homeBase && spec.location) loc = spec.location;
+    var home = loc.homeBase || {};
+    var hLat = home.lat, hLng = home.lng;
+    if (typeof hLat !== 'number' || typeof hLng !== 'number') return null;
+    if (hLat === 0 && hLng === 0) return null;
+    var miles = _haversineMiles(lat, lng, hLat, hLng);
+    var maxHard = loc.maxMilesHard;
+    if (typeof maxHard === 'number' && miles > maxHard) {
+      return 'Outside commute radius — ' + Math.round(miles) + ' mi from home base exceeds ' + maxHard + ' mi hard cap';
+    }
+    var cond = (spec.zipTiers && spec.zipTiers.conditionalCities) || {};
+    var addrLower = (ctx.address || '').toLowerCase();
+    for (var city in cond) {
+      if (!Object.prototype.hasOwnProperty.call(cond, city)) continue;
+      var rule = cond[city];
+      if (!rule || rule.rule !== 'maxMilesFromHomeBase') continue;
+      if (addrLower.indexOf(city.toLowerCase()) === -1) continue;
+      if (typeof rule.threshold !== 'number') continue;
+      if (miles > rule.threshold) {
+        return city + ' conditional-market rule: ' + Math.round(miles) + ' mi from home base exceeds ' + rule.threshold + ' mi threshold';
+      }
+    }
+    return null;
+  }
+
   function computeJoseVerdict(ctx) {
     var c = ctx || {};
     var T = JOSE_THRESHOLDS;
@@ -2423,6 +2482,13 @@
     if (c.propertyType === 'sfh' && (c.units || 1) <= 1) {
       redReasons.push('SFR without legal ADU — no 75% rental offset possible');
     }
+    // Sprint 12-2: geospatial hard-fail (commute radius + conditional cities).
+    // No-ops when coords or homeBase missing — preserves parity for fixtures
+    // predating Sprint 12.
+    var geoFail = _geospatialFail(c);
+    if (geoFail) {
+      redReasons.push(geoFail);
+    }
     // Units-unknown hard-fail is appended LAST (below) so dominant fails show first.
     // Flag captured here for parity with batch/verdict.py ordering.
     var unitsUnknownFail = !!c.hardFailUnitsUnknown;
@@ -2445,30 +2511,26 @@
       if (overPct > 0.10) redReasons.push(msg); else yellowReasons.push(msg);
     }
 
+    // Sprint 12-1: layered Yellow. Each band reads an optional explicit
+    // Yellow threshold from spec; falls back to the Sprint 4 10% rule.
     // Net PITI
     if (c.netPiti > T.netPitiGreen) {
-      var netOver = c.netPiti - T.netPitiGreen;
-      var netOverPct = netOver / T.netPitiGreen;
-      var netMsg = 'Net PITI ' + fmt$(c.netPiti) + ' exceeds ' + fmt$(T.netPitiGreen) + ' by ' + fmt$(netOver);
-      if (c.netPiti > T.netPitiRed || netOverPct > 0.10) redReasons.push(netMsg);
+      var netMsg = 'Net PITI ' + fmt$(c.netPiti) + ' exceeds ' + fmt$(T.netPitiGreen) + ' by ' + fmt$(c.netPiti - T.netPitiGreen);
+      if (_classifyOverage(c.netPiti, T.netPitiGreen, T.netPitiYellow, T.netPitiRed) === 'red') redReasons.push(netMsg);
       else yellowReasons.push(netMsg);
     }
 
     // Cash to close
     if (c.cashToClose > T.cashCloseGreen) {
-      var cashOver = c.cashToClose - T.cashCloseGreen;
-      var cashOverPct = cashOver / T.cashCloseGreen;
-      var cashMsg = 'Cash to close ' + fmt$(c.cashToClose) + ' exceeds ' + fmt$(T.cashCloseGreen) + ' by ' + fmt$(cashOver);
-      if (c.cashToClose > T.cashCloseRed || cashOverPct > 0.10) redReasons.push(cashMsg);
+      var cashMsg = 'Cash to close ' + fmt$(c.cashToClose) + ' exceeds ' + fmt$(T.cashCloseGreen) + ' by ' + fmt$(c.cashToClose - T.cashCloseGreen);
+      if (_classifyOverage(c.cashToClose, T.cashCloseGreen, T.cashCloseYellow, T.cashCloseRed) === 'red') redReasons.push(cashMsg);
       else yellowReasons.push(cashMsg);
     }
 
     // Effective rehab (post contractor edge)
     if (c.effectiveRehab > T.rehabGreen) {
-      var rehabOver = c.effectiveRehab - T.rehabGreen;
-      var rehabOverPct = rehabOver / T.rehabGreen;
-      var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(rehabOver);
-      if (c.effectiveRehab > T.rehabRed || rehabOverPct > 0.10) redReasons.push(rehabMsg);
+      var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(c.effectiveRehab - T.rehabGreen);
+      if (_classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed) === 'red') redReasons.push(rehabMsg);
       else yellowReasons.push(rehabMsg);
     }
 

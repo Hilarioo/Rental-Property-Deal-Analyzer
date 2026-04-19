@@ -73,6 +73,63 @@ _REHAB_SELF_PERFORM_MULT: dict[str, float] = {
     for cat in _spec.rehab_categories
 }
 
+# Sprint 12-4: self-management config. When `units >= trigger` AND the batch
+# path can't know the user's intent (no UI), assume he pays a PM and inject
+# `fallbackPct` into opex. UI path (index.html) respects an explicit 0 as
+# "I'm self-managing."
+_SELF_MANAGEMENT: dict[str, Any] = (_spec.profile_raw or {}).get("selfManagement") or {}
+
+
+def _auto_pm_pct(units: int) -> float:
+    """Return auto-injected PM % given unit count, or 0.0 if not triggered."""
+    trigger = _SELF_MANAGEMENT.get("propertyManagementTriggerUnits")
+    fallback = _SELF_MANAGEMENT.get("propertyManagementFallbackPct")
+    if not isinstance(trigger, (int, float)) or not isinstance(fallback, (int, float)):
+        return 0.0
+    if units >= int(trigger):
+        return float(fallback)
+    return 0.0
+
+
+# Sprint 12-5: per-ZIP preset overrides. Each preset carries its own
+# tax/insurance/vacancy numbers (e.g. Vallejo 1.25% vs Richmond 1.35%).
+# When a listing's ZIP matches a preset's search.zips, use that preset's
+# defaults for PITI math so bundling multiple cities in one batch doesn't
+# silently use a single city's rates for all of them.
+_PRESETS: dict[str, Any] = _spec.presets or {}
+
+
+def _preset_defaults_for_zip(zip_code: str | None) -> dict[str, Any]:
+    """Return {propertyTaxRatePct, insuranceAnnual, vacancyPct, preset_name}.
+    Falls back to module-level DEFAULTS when no preset matches the ZIP.
+    """
+    out = {
+        "propertyTaxRatePct": DEFAULTS["propertyTaxRatePct"],
+        "insuranceAnnual": DEFAULTS["baselineInsuranceAnnual"],
+        "vacancyPct": DEFAULTS["vacancyPct"],
+        "preset_name": None,
+    }
+    if not zip_code:
+        return out
+    z = str(zip_code).strip()[:5]
+    if not z:
+        return out
+    for name, preset in _PRESETS.items():
+        search = (preset or {}).get("search") or {}
+        zips = search.get("zips") or []
+        if z not in zips:
+            continue
+        pdef = (preset or {}).get("defaults") or {}
+        if isinstance(pdef.get("propertyTaxRatePct"), (int, float)):
+            out["propertyTaxRatePct"] = float(pdef["propertyTaxRatePct"])
+        if isinstance(pdef.get("insuranceAnnual"), (int, float)):
+            out["insuranceAnnual"] = float(pdef["insuranceAnnual"])
+        if isinstance(pdef.get("vacancyPct"), (int, float)):
+            out["vacancyPct"] = float(pdef["vacancyPct"])
+        out["preset_name"] = name
+        return out
+    return out
+
 # Rough per-unit market rent by Tier (USER_PROFILE §9). Used only when rent
 # comps are unavailable.
 TIER_DEFAULT_RENT_2BR = {
@@ -421,10 +478,14 @@ def compute_property_metrics(
     u = int(units) if units else 2
     zip_tier = classify_zip_tier(zip_code)
 
+    # Sprint 12-5: resolve per-ZIP preset overrides. Global DEFAULTS still
+    # used for rates/term/MIP (buyer-level, not market-level).
+    preset_override = _preset_defaults_for_zip(zip_code)
+
     fha = _fha_loan(p, DEFAULTS["downPaymentPct"])
     pi = _monthly_pi(fha["financed"], DEFAULTS["interestRatePct"], DEFAULTS["termYears"])
-    annual_taxes = p * (DEFAULTS["propertyTaxRatePct"] / 100)
-    annual_ins = float(insurance_breakdown.get("annual_usd") or DEFAULTS["baselineInsuranceAnnual"])
+    annual_taxes = p * (preset_override["propertyTaxRatePct"] / 100)
+    annual_ins = float(insurance_breakdown.get("annual_usd") or preset_override["insuranceAnnual"])
     mip_monthly = fha["base"] * (DEFAULTS["fhaAnnualMipPct"] / 100) / 12
     piti = pi + annual_taxes / 12 + annual_ins / 12 + mip_monthly
 
@@ -446,10 +507,14 @@ def compute_property_metrics(
     cash_to_close = down_payment + closing_costs
     all_in_cost = p + closing_costs + effective_rehab
 
-    # Opex monthly (ex-PITI).
+    # Opex monthly (ex-PITI). Sprint 12-4: auto-inject property management %
+    # when units >= profile.selfManagement.propertyManagementTriggerUnits.
+    # Batch path has no UI so we assume-pay; single-URL UI can override.
     maint = gross_rent_monthly_all * (DEFAULTS["maintenancePct"] / 100)
-    vac = gross_rent_monthly_all * (DEFAULTS["vacancyPct"] / 100)
-    opex_monthly = maint + vac  # taxes/insurance already in PITI
+    vac = gross_rent_monthly_all * (preset_override["vacancyPct"] / 100)
+    pm_pct = _auto_pm_pct(u)
+    pm = gross_rent_monthly_all * (pm_pct / 100)
+    opex_monthly = maint + vac + pm  # taxes/insurance already in PITI
 
     annual_cf = 12 * (gross_rent_monthly_all - opex_monthly) - 12 * piti
     coc_pct = (annual_cf / cash_to_close * 100) if cash_to_close > 0 else 0.0
@@ -484,6 +549,14 @@ def compute_property_metrics(
     is_pre1978_gal = bool(gal and knob and (year_built or 9999) < 1978)
     is_excluded = zip_tier == "excluded" or _looks_excluded(address)
 
+    # Sprint 12-2: plumb lat/lng/address into the verdict context so the
+    # geospatial predicate in compute_jose_verdict can apply maxMilesHard
+    # and conditionalCities rules. When enrichment is missing (single-URL
+    # path, geocoder blackhole), both stay None and the geospatial check
+    # no-ops.
+    enrichment_lat = enrichment_row.get("lat") if enrichment_row else None
+    enrichment_lng = enrichment_row.get("lng") if enrichment_row else None
+
     verdict_ctx = {
         "zip": zip_code,
         "zipTier": zip_tier if zip_tier != "excluded" else "outside",
@@ -501,15 +574,25 @@ def compute_property_metrics(
         "effectiveRehab": effective_rehab,
         "roofAgeYears": roof_age,
         "hardFailUnitsUnknown": bool(hard_fail_units_unknown),
+        "lat": enrichment_lat,
+        "lng": enrichment_lng,
+        "address": address,
     }
     verdict_result = compute_jose_verdict(verdict_ctx)
 
-    # Hard fail = verdict is red due to hard-fail gates (excluded/flat/adu/pre78/dti).
+    # Sprint 12-2: geospatial fail feeds the hard_fail list so batch
+    # short-circuits commute-radius + conditional-city violations the same
+    # way it short-circuits excluded ZIPs.
+    from .verdict import _geospatial_fail as _geo_fail_fn  # noqa: PLC0415
+    geospatial_hard_fail = _geo_fail_fn(verdict_ctx) is not None
+
+    # Hard fail = verdict is red due to hard-fail gates (excluded/flat/adu/pre78/dti/geo).
     hard_fail_reasons = [
         is_excluded, has_flat_roof, has_unpermitted_adu, is_pre1978_gal,
         u <= 1,  # SFR without legal ADU
         (qualifying_income > 0 and (piti / qualifying_income) > 0.55),
         bool(hard_fail_units_unknown),
+        geospatial_hard_fail,
     ]
     hard_fail = any(hard_fail_reasons)
 
@@ -527,6 +610,9 @@ def compute_property_metrics(
         "zip_tier": zip_tier,
         "dom": int(dom or 0),
         "roof_age": roof_age,
+        "auto_pm_pct": round(pm_pct, 2),  # Sprint 12-4: 0 when self-managing.
+        "matched_preset": preset_override["preset_name"],  # Sprint 12-5.
+        "applied_tax_pct": round(preset_override["propertyTaxRatePct"], 4),
         "price_vs_zip_median": 0.0,  # §C.3 derived metric; 0 until we have history
         "qualifying_income": round(qualifying_income, 2),
         "gross_rent_monthly_all": round(gross_rent_monthly_all, 2),

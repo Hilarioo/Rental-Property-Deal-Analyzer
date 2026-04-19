@@ -80,27 +80,69 @@ function computeJoseVerdict(ctx) {
     if (overPct > 0.10) redReasons.push(msg); else yellowReasons.push(msg);
   }
 
+  // Sprint 12-1: layered Yellow. Mirrors `_classifyOverage` in index.html +
+  // batch/verdict.py. Keep these three call sites in lockstep.
+  function classifyOverage(value, green, yellow, red) {
+    if (value <= green) return 'green';
+    if (value > red) return 'red';
+    var tenPctOk = (value - green) / green <= 0.10;
+    var explicitYellowOk = (yellow !== null && yellow !== undefined) && value <= yellow;
+    return (explicitYellowOk || tenPctOk) ? 'yellow' : 'red';
+  }
+
+  // Sprint 12-2: geospatial parity — ported from index.html _geospatialFail.
+  // Reads PROFILE.location + SPEC.zipTiers.conditionalCities directly (no DOM).
+  function haversineMiles(lat1, lng1, lat2, lng2) {
+    var R = 3958.8;
+    var toRad = function(d) { return d * Math.PI / 180; };
+    var phi1 = toRad(lat1), phi2 = toRad(lat2);
+    var dPhi = toRad(lat2 - lat1), dLam = toRad(lng2 - lng1);
+    var a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2)
+          + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam / 2) * Math.sin(dLam / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+  function geospatialFail(c) {
+    if (typeof c.lat !== 'number' || typeof c.lng !== 'number') return null;
+    var loc = (PROFILE && PROFILE.location) || {};
+    var home = loc.homeBase || {};
+    if (typeof home.lat !== 'number' || typeof home.lng !== 'number') return null;
+    if (home.lat === 0 && home.lng === 0) return null;
+    var miles = haversineMiles(c.lat, c.lng, home.lat, home.lng);
+    if (typeof loc.maxMilesHard === 'number' && miles > loc.maxMilesHard) {
+      return 'Outside commute radius — ' + Math.round(miles) + ' mi from home base exceeds ' + loc.maxMilesHard + ' mi hard cap';
+    }
+    var cond = (SPEC.zipTiers && SPEC.zipTiers.conditionalCities) || {};
+    var addrLower = (c.address || '').toLowerCase();
+    for (var city in cond) {
+      if (!Object.prototype.hasOwnProperty.call(cond, city)) continue;
+      var rule = cond[city];
+      if (!rule || rule.rule !== 'maxMilesFromHomeBase') continue;
+      if (addrLower.indexOf(city.toLowerCase()) === -1) continue;
+      if (typeof rule.threshold !== 'number') continue;
+      if (miles > rule.threshold) {
+        return city + ' conditional-market rule: ' + Math.round(miles) + ' mi from home base exceeds ' + rule.threshold + ' mi threshold';
+      }
+    }
+    return null;
+  }
+  var geoMsg = geospatialFail(c);
+  if (geoMsg) redReasons.push(geoMsg);
+
   if (c.netPiti > T.netPitiGreen) {
-    var netOver = c.netPiti - T.netPitiGreen;
-    var netOverPct = netOver / T.netPitiGreen;
-    var netMsg = 'Net PITI ' + fmt$(c.netPiti) + ' exceeds ' + fmt$(T.netPitiGreen) + ' by ' + fmt$(netOver);
-    if (c.netPiti > T.netPitiRed || netOverPct > 0.10) redReasons.push(netMsg);
+    var netMsg = 'Net PITI ' + fmt$(c.netPiti) + ' exceeds ' + fmt$(T.netPitiGreen) + ' by ' + fmt$(c.netPiti - T.netPitiGreen);
+    if (classifyOverage(c.netPiti, T.netPitiGreen, T.netPitiYellow, T.netPitiRed) === 'red') redReasons.push(netMsg);
     else yellowReasons.push(netMsg);
   }
 
   if (c.cashToClose > T.cashCloseGreen) {
-    var cashOver = c.cashToClose - T.cashCloseGreen;
-    var cashOverPct = cashOver / T.cashCloseGreen;
-    var cashMsg = 'Cash to close ' + fmt$(c.cashToClose) + ' exceeds ' + fmt$(T.cashCloseGreen) + ' by ' + fmt$(cashOver);
-    if (c.cashToClose > T.cashCloseRed || cashOverPct > 0.10) redReasons.push(cashMsg);
+    var cashMsg = 'Cash to close ' + fmt$(c.cashToClose) + ' exceeds ' + fmt$(T.cashCloseGreen) + ' by ' + fmt$(c.cashToClose - T.cashCloseGreen);
+    if (classifyOverage(c.cashToClose, T.cashCloseGreen, T.cashCloseYellow, T.cashCloseRed) === 'red') redReasons.push(cashMsg);
     else yellowReasons.push(cashMsg);
   }
 
   if (c.effectiveRehab > T.rehabGreen) {
-    var rehabOver = c.effectiveRehab - T.rehabGreen;
-    var rehabOverPct = rehabOver / T.rehabGreen;
-    var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(rehabOver);
-    if (c.effectiveRehab > T.rehabRed || rehabOverPct > 0.10) redReasons.push(rehabMsg);
+    var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(c.effectiveRehab - T.rehabGreen);
+    if (classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed) === 'red') redReasons.push(rehabMsg);
     else yellowReasons.push(rehabMsg);
   }
 
