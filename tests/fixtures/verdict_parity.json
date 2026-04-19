@@ -1,0 +1,314 @@
+[
+  {
+    "name": "GREEN happy-path clean",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "GREEN with tier1 confirmation reason",
+    "ctx": {
+      "price": 480000, "effectiveRehab": 25000, "cashToClose": 38000,
+      "netPiti": 2200, "piti": 2200, "qualifyingIncome": 5500,
+      "zip": "94591", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 5,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "RED hardFailUnitsUnknown + SFH path",
+    "ctx": {
+      "price": 450000, "effectiveRehab": 25000, "cashToClose": 38000,
+      "netPiti": 2300, "piti": 2300, "qualifyingIncome": 5400,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 1, "propertyType": "sfh", "roofAgeYears": 6,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": true
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED hardFailUnitsUnknown + multi path",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": true
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED isExcludedByZipTier",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94803", "zipTier": "outside", "isExcludedByZipTier": true,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED hasFlatRoof disqualifier",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": true, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED hasUnpermittedAdu disqualifier",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": true,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED isPre1978WithGalvanized disqualifier",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": true, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "RED SFR units=1 no ADU (no 75% offset)",
+    "ctx": {
+      "price": 450000, "effectiveRehab": 25000, "cashToClose": 38000,
+      "netPiti": 2300, "piti": 2300, "qualifyingIncome": 5400,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 1, "propertyType": "sfh", "roofAgeYears": 6,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "DTI boundary 49.9% no fire",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 4990, "qualifyingIncome": 10000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "DTI boundary 55.0% exactly (fp rounding pushes just over → RED, JS+PY agree)",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 5500, "qualifyingIncome": 10000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "DTI 55.1% fires RED",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 5510, "qualifyingIncome": 10000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "netPiti $2500 exact — strict > so green",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2500, "piti": 2500, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "netPiti $2501 first yellow",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2501, "piti": 2501, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  },
+  {
+    "name": "netPiti $3200 — red via >10% overage",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 3200, "piti": 3200, "qualifyingIncome": 10000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "cashToClose $45000 exact — green (strict >)",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 45000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "cashToClose $45001 first yellow",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 45001,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  },
+  {
+    "name": "effectiveRehab $60000 exact — green (strict >)",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 60000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "effectiveRehab $60001 first yellow",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 60001, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  },
+  {
+    "name": "zipTier tier1 all-green",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "zipTier tier3 flips to yellow",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94801", "zipTier": "tier3", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  },
+  {
+    "name": "zipTier outside — RED from outside path",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "95828", "zipTier": "outside", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "YELLOW by >10% miss on netPiti flips to RED",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2800, "piti": 2800, "qualifyingIncome": 10000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "Multiple yellow misses across criteria",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 62000, "cashToClose": 46000,
+      "netPiti": 2550, "piti": 2550, "qualifyingIncome": 8000,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  },
+  {
+    "name": "Roof age <= yellow threshold — no flag",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 15,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "green"
+  },
+  {
+    "name": "Roof age > yellow threshold — yellow flag",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 20,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "yellow"
+  }
+]

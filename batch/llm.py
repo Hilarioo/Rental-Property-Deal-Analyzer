@@ -260,12 +260,20 @@ def is_cache_stale(
     fresh_dom: int | None,
     now_utc: datetime | None = None,
 ) -> tuple[bool, str | None]:
+    """Return (is_stale, reason_code) for the cached LLM analysis.
+
+    Sprint 9-2: all three thresholds use `>=` (at-threshold triggers stale).
+    Rationale: at-threshold is the conservative "re-run the LLM" call —
+    cost of a false positive is a few pennies of tokens, cost of a false
+    negative is a wrong verdict shipped. Previously price+age used `>`
+    and DOM used `>=`; audit flagged the inconsistency.
+    """
     if not cached_row or not cached_row.get("llm_analysis"):
         return True, "new_url"
     last_price = cached_row.get("last_price")
     if last_price and fresh_price:
         try:
-            if abs(fresh_price - last_price) / last_price > 0.03:
+            if abs(fresh_price - last_price) / last_price >= 0.03:
                 return True, "price_changed"
         except ZeroDivisionError:
             pass
@@ -278,7 +286,10 @@ def is_cache_stale(
         try:
             ts = datetime.fromisoformat(analyzed_at.replace("Z", "+00:00"))
             now = now_utc or datetime.now(timezone.utc)
-            if (now - ts).days > 30:
+            # Use total_seconds so sub-day fractions aren't silently truncated
+            # by `.days` (which floors to an int). 30.0 days exactly triggers.
+            age_days = (now - ts).total_seconds() / 86400.0
+            if age_days >= 30.0:
                 return True, "cache_age_exceeded"
         except (ValueError, AttributeError):
             pass

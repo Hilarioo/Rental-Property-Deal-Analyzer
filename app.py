@@ -1334,6 +1334,11 @@ async def _ensure_mortgage_rate() -> float | None:
     now = time.time()
     if _mortgage_rate_cache["rate"] is not None and now - _mortgage_rate_cache["fetched_at"] < 21600:
         return _mortgage_rate_cache["rate"]
+    # Sprint 9-3: breaker short-circuits Freddie Mac when PMMS is flaking.
+    from batch.circuit_breaker import get_breaker as _get_breaker
+    breaker = _get_breaker("freddie_mac")
+    if not breaker.before_call():
+        return _mortgage_rate_cache.get("rate")
     try:
         hdrs = {k: v for k, v in HEADERS.items() if k != "Accept-Encoding"}
         async with httpx.AsyncClient(timeout=10) as client:
@@ -1345,9 +1350,12 @@ async def _ensure_mortgage_rate() -> float | None:
                     if 2.0 <= rate <= 15.0:
                         _mortgage_rate_cache["rate"] = rate
                         _mortgage_rate_cache["fetched_at"] = now
+                        breaker.record_success()
                         return rate
+            # 200 without a parseable rate, OR non-200 status — treat as failure.
+            breaker.record_failure()
     except Exception:
-        pass
+        breaker.record_failure()
     return _mortgage_rate_cache.get("rate")
 
 
@@ -1358,6 +1366,38 @@ async def get_mortgage_rate():
     if rate is not None:
         return JSONResponse({"rate": rate})
     return JSONResponse({"rate": None, "error": "Could not fetch current rate."})
+
+
+@app.get("/api/source-health")
+async def get_source_health():
+    """Sprint 9-3 — return the current state of every circuit breaker.
+
+    Not wired into any UI yet; Jose can `curl` this when a batch looks
+    degraded to see which upstream is tripped (FEMA, Cal Fire, Overpass,
+    Census, Freddie Mac). The breakers are in-memory so each process
+    restart resets them.
+    """
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    from batch.circuit_breaker import all_breakers as _all_breakers
+    sources: dict[str, dict] = {}
+    now_mono = _time.monotonic()
+    now_wall = datetime.now(timezone.utc)
+    for br in _all_breakers():
+        snap = br.snapshot()
+        cooldown_iso: str | None = None
+        if snap.cooldown_until is not None:
+            # Convert monotonic cooldown-until to wall-clock ISO for readability.
+            delta = snap.cooldown_until - now_mono
+            cooldown_iso = (now_wall + timedelta(seconds=delta)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        sources[snap.name] = {
+            "state": snap.state,
+            "failures": snap.failures,
+            "cooldown_until": cooldown_iso,
+        }
+    return JSONResponse({"sources": sources})
 
 
 # ---------------------------------------------------------------------------

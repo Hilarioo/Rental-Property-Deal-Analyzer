@@ -1,7 +1,7 @@
 PYTHON := venv/bin/python
 PYTEST := venv/bin/pytest
 
-.PHONY: install install-dev test test-py test-js run clean
+.PHONY: install install-dev test test-py test-js test-parity run clean
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -10,7 +10,7 @@ install:
 install-dev:
 	$(PYTHON) -m pip install -r requirements-dev.txt
 
-test: test-py test-js
+test: test-py test-js test-parity
 
 test-py:
 	@echo "--- pytest ---"
@@ -19,6 +19,10 @@ test-py:
 test-js:
 	@echo "--- node --test ---"
 	node --test tests/calc.test.mjs
+
+test-parity:
+	@echo "--- verdict JS<->Python parity ---"
+	node scripts/verdict_parity_check.mjs
 
 run:
 	$(PYTHON) app.py

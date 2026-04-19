@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from batch.circuit_breaker import get_breaker
+
 # Cap external JSON payloads to avoid memory-exhaustion / JSON-bomb attacks
 # from upstream services we don't control (FEMA, Cal Fire, Overpass).
 MAX_EXTERNAL_JSON_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -175,6 +177,9 @@ async def geocode_census(
     """US Census One-Line Geocoder (§K.4). Returns {ok, lat, lng, source, error}."""
     if not address:
         return {"ok": False, "error": "empty_address"}
+    breaker = get_breaker("census")
+    if not breaker.before_call():
+        return {"ok": False, "error": "circuit_open"}
     params = {
         "address": address,
         "benchmark": "Public_AR_Current",
@@ -187,10 +192,12 @@ async def geocode_census(
         resp.raise_for_status()
         payload = await _safe_json(resp, "census")
         if payload is None:
+            breaker.record_failure()
             return {"ok": False, "error": "parse:oversized_or_invalid"}
         matches = (
             payload.get("result", {}).get("addressMatches") or []
         )
+        breaker.record_success()
         if not matches:
             return {"ok": False, "error": "no_match"}
         coords = matches[0].get("coordinates", {})
@@ -205,8 +212,11 @@ async def geocode_census(
             "source": "census",
         }
     except httpx.HTTPError as exc:
+        breaker.record_failure()
         return {"ok": False, "error": f"http:{type(exc).__name__}"}
     except (ValueError, KeyError) as exc:
+        # Parse errors after a 200 response aren't upstream health issues.
+        # Don't charge the breaker.
         return {"ok": False, "error": f"parse:{type(exc).__name__}"}
 
 
@@ -232,6 +242,9 @@ def _map_flood_risk(fld_zone: str, zone_subty: str | None) -> str:
 async def fetch_fema(
     client: httpx.AsyncClient, lat: float, lng: float
 ) -> dict[str, Any]:
+    breaker = get_breaker("fema")
+    if not breaker.before_call():
+        return {"ok": False, "error": "circuit_open"}
     params = {
         "geometry": f"{lng},{lat}",
         "geometryType": "esriGeometryPoint",
@@ -246,7 +259,9 @@ async def fetch_fema(
         resp.raise_for_status()
         payload = await _safe_json(resp, "fema")
         if payload is None:
+            breaker.record_failure()
             return {"ok": False, "error": "parse:oversized_or_invalid"}
+        breaker.record_success()
         features = payload.get("features") or []
         if not features:
             return {
@@ -263,6 +278,7 @@ async def fetch_fema(
             "flood_zone_risk": _map_flood_risk(code, subty),
         }
     except httpx.HTTPError as exc:
+        breaker.record_failure()
         return {"ok": False, "error": f"http:{type(exc).__name__}"}
     except (ValueError, KeyError) as exc:
         return {"ok": False, "error": f"parse:{type(exc).__name__}"}
@@ -287,6 +303,9 @@ def _map_fire_risk(haz_class: str) -> str:
 async def fetch_calfire(
     client: httpx.AsyncClient, lat: float, lng: float
 ) -> dict[str, Any]:
+    breaker = get_breaker("cal_fire")
+    if not breaker.before_call():
+        return {"ok": False, "error": "circuit_open"}
     params = {
         "geometry": f"{lng},{lat}",
         "geometryType": "esriGeometryPoint",
@@ -301,7 +320,9 @@ async def fetch_calfire(
         resp.raise_for_status()
         payload = await _safe_json(resp, "calfire")
         if payload is None:
+            breaker.record_failure()
             return {"ok": False, "error": "parse:oversized_or_invalid"}
+        breaker.record_success()
         features = payload.get("features") or []
         if not features:
             return {
@@ -319,6 +340,7 @@ async def fetch_calfire(
             "fire_zone_risk": _map_fire_risk(haz),
         }
     except httpx.HTTPError as exc:
+        breaker.record_failure()
         return {"ok": False, "error": f"http:{type(exc).__name__}"}
     except (ValueError, KeyError) as exc:
         return {"ok": False, "error": f"parse:{type(exc).__name__}"}
@@ -390,6 +412,9 @@ async def _fetch_overpass_remote(
     client: httpx.AsyncClient, lat: float, lng: float
 ) -> dict[str, Any]:
     """Actually hit Overpass. Respects the 2s fair-use cooldown (§K.3)."""
+    breaker = get_breaker("overpass")
+    if not breaker.before_call():
+        return {"ok": False, "error": "circuit_open"}
     global _LAST_OVERPASS_CALL_AT
     async with _OVERPASS_LOCK:
         now = time.monotonic()
@@ -409,12 +434,15 @@ async def _fetch_overpass_remote(
         resp.raise_for_status()
         payload = await _safe_json(resp, "overpass")
         if payload is None:
+            breaker.record_failure()
             return {"ok": False, "error": "parse:oversized_or_invalid"}
     except httpx.HTTPError as exc:
+        breaker.record_failure()
         return {"ok": False, "error": f"http:{type(exc).__name__}"}
     except ValueError as exc:
         return {"ok": False, "error": f"parse:{type(exc).__name__}"}
 
+    breaker.record_success()
     return {"ok": True, "raw": payload}
 
 

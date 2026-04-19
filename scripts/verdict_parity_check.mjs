@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Sprint 7B-5 verdict parity canary.
+// Sprint 9-1 verdict parity harness (expanded from Sprint 7B-5 canary).
 //
-// Runs 5 fixture scenarios through BOTH the JS verdict (ported verbatim from
-// index.html ~line 2336 `computeJoseVerdict`) and the Python verdict
-// (batch.verdict.compute_jose_verdict) and compares verdict + reason count.
-// Exit 0 on parity, 1 on divergence.
+// Loads fixtures from tests/fixtures/verdict_parity.json and runs every
+// one through both the JS verdict (ported verbatim from index.html
+// ~line 2336 `computeJoseVerdict`) and the Python verdict
+// (batch.verdict.compute_jose_verdict). Compares verdict + reason TEXT
+// in order. Exit 0 on parity, 1 on any divergence.
 //
-// This is NOT a unit test. It's a one-shot dev script run before a commit to
-// confirm we didn't drift between the two implementations.
+// Wired into `make test` so verdict drift fails CI, not prod.
 //
 // Usage: node scripts/verdict_parity_check.mjs
 // Requires: venv/bin/python resolvable from repo root.
@@ -133,144 +133,13 @@ function computeJoseVerdict(ctx) {
 }
 
 // -------------------------------------------------------------------------
-// Fixtures — 5 canonical scenarios.
+// Load fixtures (shared with tests/test_verdict_parity.py)
 // -------------------------------------------------------------------------
-const FIXTURES = [
-  {
-    name: 'GREEN happy-path',
-    ctx: {
-      price: 500000,
-      effectiveRehab: 30000,
-      cashToClose: 40000,
-      netPiti: 2400,
-      piti: 2400,
-      qualifyingIncome: 5714,  // 2400 / 0.42 => ~5714; DTI = 42%
-      zip: '94590',
-      zipTier: 'tier1',
-      isExcludedByZipTier: false,
-      units: 2,
-      propertyType: 'multi',
-      roofAgeYears: 8,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: false,
-    },
-  },
-  {
-    name: 'YELLOW ≤10% net PITI miss',
-    ctx: {
-      price: 500000,
-      effectiveRehab: 30000,
-      cashToClose: 40000,
-      netPiti: 2600,  // +4% over 2500 green cap
-      piti: 2600,
-      qualifyingIncome: 8000,
-      zip: '94590',
-      zipTier: 'tier1',
-      isExcludedByZipTier: false,
-      units: 2,
-      propertyType: 'multi',
-      roofAgeYears: 8,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: false,
-    },
-  },
-  {
-    name: 'RED by DTI (60%)',
-    ctx: {
-      price: 500000,
-      effectiveRehab: 30000,
-      cashToClose: 40000,
-      netPiti: 2400,
-      piti: 3000,
-      qualifyingIncome: 5000,  // DTI 60% > 55% ceiling
-      zip: '94590',
-      zipTier: 'tier1',
-      isExcludedByZipTier: false,
-      units: 2,
-      propertyType: 'multi',
-      roofAgeYears: 8,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: false,
-    },
-  },
-  {
-    name: 'RED by excluded zip',
-    ctx: {
-      price: 500000,
-      effectiveRehab: 30000,
-      cashToClose: 40000,
-      netPiti: 2400,
-      piti: 2400,
-      qualifyingIncome: 5714,
-      zip: '94803',
-      zipTier: 'outside',  // Python maps 'excluded' zip tier to 'outside' before calling verdict
-      isExcludedByZipTier: true,
-      units: 2,
-      propertyType: 'multi',
-      roofAgeYears: 8,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: false,
-    },
-  },
-  {
-    name: 'RED by units-unknown (7B-1, multi)',
-    ctx: {
-      price: 500000,
-      effectiveRehab: 30000,
-      cashToClose: 40000,
-      netPiti: 2400,
-      piti: 2400,
-      qualifyingIncome: 5714,
-      zip: '94590',
-      zipTier: 'tier1',
-      isExcludedByZipTier: false,
-      units: 2,
-      propertyType: 'multi',
-      roofAgeYears: 8,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: true,
-    },
-  },
-  {
-    // Sprint 7B review follow-up: Python's units_unknown trigger is
-    // propertyType-agnostic. A mis-classified SFR that fails unit detection
-    // must also hard-fail — no silent duplex math. This fixture pins the
-    // propertyType='sfh' + hardFailUnitsUnknown=true path so JS + Python
-    // stay aligned on the broader signal.
-    name: 'RED by units-unknown + SFR (broad trigger)',
-    ctx: {
-      price: 450000,
-      effectiveRehab: 25000,
-      cashToClose: 38000,
-      netPiti: 2300,
-      piti: 2300,
-      qualifyingIncome: 5400,
-      zip: '94590',
-      zipTier: 'tier1',
-      isExcludedByZipTier: false,
-      units: 1,
-      propertyType: 'sfh',
-      roofAgeYears: 6,
-      hasFlatRoof: false,
-      hasUnpermittedAdu: false,
-      isPre1978WithGalvanized: false,
-      hardFailUnitsUnknown: true,
-    },
-  },
-];
+const FIXTURE_PATH = resolve(REPO_ROOT, 'tests/fixtures/verdict_parity.json');
+const FIXTURES = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8'));
 
 // -------------------------------------------------------------------------
-// Python verdict invocation — one subprocess call with all 5 fixtures.
+// Python verdict invocation — one subprocess call with all fixtures.
 // -------------------------------------------------------------------------
 function runPythonVerdict(fixtures) {
   const pyPath = resolve(REPO_ROOT, 'venv/bin/python');
@@ -282,8 +151,6 @@ payload = json.loads(sys.stdin.read())
 out = []
 for fx in payload:
     ctx = fx["ctx"]
-    # Python expects snake_case for a few keys? No — compute_jose_verdict reads
-    # camelCase keys directly (see batch/verdict.py). Pass as-is.
     res = compute_jose_verdict(ctx)
     out.append({"name": fx["name"], "verdict": res["verdict"], "reasons": res["reasons"]})
 print(json.dumps(out))
@@ -314,22 +181,30 @@ let pass = 0;
 const divergences = [];
 
 for (let i = 0; i < FIXTURES.length; i++) {
+  const fx = FIXTURES[i];
   const js = jsResults[i];
   const py = pyResults[i];
   const verdictMatch = js.verdict === py.verdict;
   const jsReasons = (js.reasons || []).map(String);
   const pyReasons = (py.reasons || []).map(String);
-  // Upgraded per Code Review: compare reason TEXT, not just count.
-  // Order matters — both sides must surface reasons in the same priority.
   const reasonsMatch =
     jsReasons.length === pyReasons.length &&
     jsReasons.every((r, idx) => r === pyReasons[idx]);
-  if (verdictMatch && reasonsMatch) {
+  // When `expected_verdict` is present in the fixture it also has to match
+  // both sides — catches cases where JS+Python silently agree on the wrong
+  // answer.
+  const expectedMatch = fx.expected_verdict
+    ? js.verdict === fx.expected_verdict
+    : true;
+  if (verdictMatch && reasonsMatch && expectedMatch) {
     pass++;
-    console.log(`  ok  [${FIXTURES[i].name}] → ${js.verdict} (${jsReasons.length} reasons)`);
+    console.log(`  ok  [${fx.name}] → ${js.verdict} (${jsReasons.length} reasons)`);
   } else {
-    divergences.push({ fixture: FIXTURES[i].name, js, py });
-    console.log(`  FAIL [${FIXTURES[i].name}]`);
+    divergences.push({ fixture: fx.name, js, py, expected: fx.expected_verdict });
+    console.log(`  FAIL [${fx.name}]`);
+    if (!expectedMatch) {
+      console.log(`       EXPECTED verdict: ${fx.expected_verdict}  got JS=${js.verdict} PY=${py.verdict}`);
+    }
     console.log(`       JS verdict: ${js.verdict}   PY verdict: ${py.verdict}`);
     console.log(`       JS reasons: ${JSON.stringify(jsReasons)}`);
     console.log(`       PY reasons: ${JSON.stringify(pyReasons)}`);
