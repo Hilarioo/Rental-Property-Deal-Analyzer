@@ -2564,8 +2564,23 @@
     // Effective rehab (post contractor edge)
     if (c.effectiveRehab > T.rehabGreen) {
       var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(c.effectiveRehab - T.rehabGreen);
-      if (_classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed) === 'red') redReasons.push(rehabMsg);
+      var rehabCls = _classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed);
+      if (rehabCls === 'red') redReasons.push(rehabMsg);
       else yellowReasons.push(rehabMsg);
+
+      // Sprint 12-6: when cash-funded rehab red-fails but the server
+      // computed a viable 203(k) stretch scenario, surface it as a
+      // YELLOW hint so Jose sees "but with 203(k) it pencils". Does not
+      // flip the primary verdict — the cash-funded RED stands.
+      if (rehabCls === 'red' && c.stretchScenario && c.stretchScenario.viable) {
+        var sc = c.stretchScenario;
+        var sharePct = Math.round((sc.self_perform_share || 0) * 100);
+        yellowReasons.push(
+          '203(k) stretch viable: PITI ' + fmt$(sc.piti || 0) +
+          ', cash-to-close ' + fmt$(sc.cash_to_close || 0) +
+          ' (self-perform ' + sharePct + '%)'
+        );
+      }
     }
 
     // ZIP tier
@@ -6184,6 +6199,22 @@
         // raw debug info on hover).
         var badge = cacheBadgeCopy(r.cache_stale_reason, (r.llm_analysis && r.llm_analysis._analyzed_at) || r.analyzed_at);
         html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
+        // Sprint 12-6: 203(k) stretch scenario row — renders when the cash-
+        // funded rehab red-failed AND contractorStretch conditions pass.
+        var stretch = r.metrics && r.metrics.stretch_scenario;
+        if (stretch && stretch.viable) {
+          var sharePct = Math.round((stretch.self_perform_share || 0) * 100);
+          html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.75rem;">'
+            + '<span style="background:rgba(234,179,8,0.15);color:#ca8a04;padding:2px 8px;border-radius:10px;font-weight:600;margin-right:8px;">203(k) stretch</span>'
+            + 'PITI ' + fmtUsd(stretch.piti) + ' · cash-to-close ' + fmtUsd(stretch.cash_to_close)
+            + ' · rehab ' + fmtUsd(stretch.effective_rehab) + ' financed'
+            + ' · self-perform ' + sharePct + '%'
+            + '</td></tr>';
+        } else if (stretch && !stretch.viable && stretch.block_reason) {
+          html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">'
+            + '203(k) stretch not viable — ' + escapeHtml(stretch.block_reason)
+            + '</td></tr>';
+        }
       });
       html += '</tbody></table></div>';
     }

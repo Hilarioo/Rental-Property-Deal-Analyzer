@@ -248,6 +248,21 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
         )
         (red_reasons if cls == "red" else yellow_reasons).append(msg)
 
+        # Sprint 12-6: if the cash-funded rehab would RED-fail but
+        # contractorStretch is viable, surface the parallel 203(k) numbers
+        # as a YELLOW hint so Jose can see "but with 203(k) it pencils".
+        # Doesn't flip the primary verdict — cash-funded verdict stays what
+        # it is.
+        if cls == "red":
+            stretch = c.get("stretchScenario") or None
+            if isinstance(stretch, dict) and stretch.get("viable"):
+                share_pct = int(round((stretch.get("self_perform_share") or 0) * 100))
+                yellow_reasons.append(
+                    f"203(k) stretch viable: PITI {_fmt_usd(stretch.get('piti') or 0)}, "
+                    f"cash-to-close {_fmt_usd(stretch.get('cash_to_close') or 0)} "
+                    f"(self-perform {share_pct}%)"
+                )
+
     zip_tier = c.get("zipTier")
     if zip_tier == "outside":
         red_reasons.append("ZIP outside all target market tiers")

@@ -91,6 +91,100 @@ def _auto_pm_pct(units: int) -> float:
     return 0.0
 
 
+# Sprint 12-6: 203(k) contractor-stretch scenario. Jose's profile has a
+# `contractorStretch` block (enabled, maxRehab, selfPerformMinPct) declaring
+# he's willing to do heavy rehab if financed via FHA 203(k) AND his self-
+# perform share is high enough to actually pull off the work. Without this
+# code, the config silently did nothing and heavy-rehab deals simply
+# RED-failed on the `rehabRed` threshold.
+_CONTRACTOR_STRETCH: dict[str, Any] = (
+    (_spec.profile_raw or {}).get("contractorStretch") or {}
+)
+
+
+def _stretch_self_perform_share(retail: float, effective: float) -> float:
+    """Fraction of retail rehab Jose plans to self-perform, [0, 1]."""
+    if retail <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (retail - effective) / retail))
+
+
+def _compute_stretch_scenario(
+    *,
+    price: float,
+    effective_rehab: float,
+    retail_rehab: float,
+    annual_taxes: float,
+    annual_ins: float,
+    rental_offset: float,
+    rehab_red_threshold: float,
+) -> dict[str, Any] | None:
+    """Sprint 12-6: compute the 203(k) scenario numbers when preconditions
+    hold. Returns None when the stretch path isn't viable (config disabled,
+    rehab under the red threshold so no stretch needed, or self-perform
+    share too low).
+
+    203(k) math vs. cash-funded:
+      - Loan principal *includes* the rehab → higher PITI.
+      - Cash-to-close drops by the rehab amount (rehab is no longer out-of-pocket).
+      - FHA MIP still applies to the full financed balance.
+    """
+    if not _CONTRACTOR_STRETCH.get("enabled"):
+        return None
+    max_rehab = _CONTRACTOR_STRETCH.get("maxRehab")
+    min_self_perform_pct = _CONTRACTOR_STRETCH.get("selfPerformMinPct")
+    if not isinstance(max_rehab, (int, float)) or not isinstance(min_self_perform_pct, (int, float)):
+        return None
+    # Only relevant when the deal would otherwise RED-fail on rehab. Below
+    # rehab_red, the base scenario is fine and 203(k) only adds complexity.
+    if effective_rehab <= rehab_red_threshold:
+        return None
+    # Respect Jose's absolute ceiling.
+    if effective_rehab > float(max_rehab):
+        return {
+            "viable": False,
+            "block_reason": f"effectiveRehab ${int(round(effective_rehab)):,} exceeds contractorStretch.maxRehab ${int(max_rehab):,}",
+        }
+    share = _stretch_self_perform_share(retail_rehab, effective_rehab)
+    if share * 100 < float(min_self_perform_pct):
+        return {
+            "viable": False,
+            "block_reason": (
+                f"self-perform share {share * 100:.0f}% below contractorStretch."
+                f"selfPerformMinPct {int(min_self_perform_pct)}%"
+            ),
+            "self_perform_share": round(share, 3),
+        }
+
+    # 203(k) loan math — rehab financed, upfront MIP on the full base.
+    down_pct = DEFAULTS["downPaymentPct"] / 100.0
+    base_loan = price * (1 - down_pct) + effective_rehab
+    upfront_mip = base_loan * (DEFAULTS["fhaUpfrontMipPct"] / 100.0)
+    financed = base_loan + upfront_mip
+    pi = _monthly_pi(financed, DEFAULTS["interestRatePct"], DEFAULTS["termYears"])
+    mip_monthly = base_loan * (DEFAULTS["fhaAnnualMipPct"] / 100.0) / 12
+    piti_stretch = pi + annual_taxes / 12 + annual_ins / 12 + mip_monthly
+    net_piti_stretch = max(0.0, piti_stretch - rental_offset)
+
+    # Cash-to-close under 203(k) — rehab is financed, not out of pocket.
+    down_payment = price * down_pct
+    closing_costs = price * (DEFAULTS["closingCostsPct"] / 100.0)
+    cash_to_close_stretch = down_payment + closing_costs
+
+    return {
+        "viable": True,
+        "loan_type": "FHA-203k",
+        "base_loan": round(base_loan, 2),
+        "financed_loan": round(financed, 2),
+        "piti": round(piti_stretch, 2),
+        "net_piti": round(net_piti_stretch, 2),
+        "cash_to_close": round(cash_to_close_stretch, 2),
+        "effective_rehab": round(effective_rehab, 2),
+        "retail_rehab": round(retail_rehab, 2),
+        "self_perform_share": round(share, 3),
+    }
+
+
 # Sprint 12-5: per-ZIP preset overrides. Each preset carries its own
 # tax/insurance/vacancy numbers (e.g. Vallejo 1.25% vs Richmond 1.35%).
 # When a listing's ZIP matches a preset's search.zips, use that preset's
@@ -568,6 +662,7 @@ def compute_property_metrics(
     closing_costs = p * (DEFAULTS["closingCostsPct"] / 100)
 
     effective_rehab, contractor_edge = _effective_rehab(llm_analysis.get("rehabBand") or {})
+    retail_rehab = effective_rehab + contractor_edge  # Sprint 12-6: needed for stretch share.
     cash_to_close = down_payment + closing_costs
     all_in_cost = p + closing_costs + effective_rehab
 
@@ -621,6 +716,20 @@ def compute_property_metrics(
     enrichment_lat = enrichment_row.get("lat") if enrichment_row else None
     enrichment_lng = enrichment_row.get("lng") if enrichment_row else None
 
+    # Sprint 12-6: compute the 203(k) contractor-stretch scenario alongside
+    # the cash-funded numbers. Only emits a payload when rehab would red-fail
+    # the cash-funded scenario AND profile.contractorStretch gates pass.
+    rehab_red_threshold = (_spec.jose or {}).get("rehabRed") or 0
+    stretch_scenario = _compute_stretch_scenario(
+        price=p,
+        effective_rehab=effective_rehab,
+        retail_rehab=retail_rehab,
+        annual_taxes=annual_taxes,
+        annual_ins=annual_ins,
+        rental_offset=rental_offset,
+        rehab_red_threshold=float(rehab_red_threshold),
+    )
+
     verdict_ctx = {
         "zip": zip_code,
         "zipTier": zip_tier if zip_tier != "excluded" else "outside",
@@ -643,6 +752,7 @@ def compute_property_metrics(
         "lat": enrichment_lat,
         "lng": enrichment_lng,
         "address": address,
+        "stretchScenario": stretch_scenario,  # Sprint 12-6: 203(k) parallel path.
     }
     verdict_result = compute_jose_verdict(verdict_ctx)
 
@@ -682,6 +792,7 @@ def compute_property_metrics(
         "price_vs_zip_median": 0.0,  # §C.3 derived metric; 0 until we have history
         "qualifying_income": round(qualifying_income, 2),
         "gross_rent_monthly_all": round(gross_rent_monthly_all, 2),
+        "stretch_scenario": stretch_scenario,  # Sprint 12-6: 203(k) parallel.
     }
 
     return {

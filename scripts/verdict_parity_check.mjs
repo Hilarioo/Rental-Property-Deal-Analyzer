@@ -153,8 +153,19 @@ function computeJoseVerdict(ctx) {
 
   if (c.effectiveRehab > T.rehabGreen) {
     var rehabMsg = 'Rehab ' + fmt$(c.effectiveRehab) + ' exceeds ' + fmt$(T.rehabGreen) + ' by ' + fmt$(c.effectiveRehab - T.rehabGreen);
-    if (classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed) === 'red') redReasons.push(rehabMsg);
+    var rehabCls = classifyOverage(c.effectiveRehab, T.rehabGreen, T.rehabYellow, T.rehabRed);
+    if (rehabCls === 'red') redReasons.push(rehabMsg);
     else yellowReasons.push(rehabMsg);
+    // Sprint 12-6 parity mirror: 203(k) stretch hint when cash-funded red-fails.
+    if (rehabCls === 'red' && c.stretchScenario && c.stretchScenario.viable) {
+      var sc = c.stretchScenario;
+      var sharePct = Math.round((sc.self_perform_share || 0) * 100);
+      yellowReasons.push(
+        '203(k) stretch viable: PITI ' + fmt$(sc.piti || 0) +
+        ', cash-to-close ' + fmt$(sc.cash_to_close || 0) +
+        ' (self-perform ' + sharePct + '%)'
+      );
+    }
   }
 
   if (c.zipTier === 'outside') {
