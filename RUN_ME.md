@@ -88,7 +88,23 @@ After editing, hard-refresh the browser or clear localStorage to bypass cached s
 
 ## 9. Updating your target markets
 
-ZIP tiers and excluded cities live near line 2087 in `index.html` (`ZIP_TIERS` object). Presets live near line 2050 (`PRESETS` array). Edit the arrays directly; no rebuild.
+ZIP tiers and excluded cities live in `spec/constants.json` (`zipTiers` block). Presets live in the same file under `presets`. Edit directly; no rebuild.
+
+### Auto-generate a preset for a new market (Sprint 13a)
+
+Use `scripts/generate_preset.py` to pull live Redfin inventory + rent-comp medians for a city/ZIP set and print a preset block:
+
+```bash
+venv/bin/python scripts/generate_preset.py \
+    --name "Pittsburg / East CoCo" \
+    --zips 94565,94531,94509 \
+    --property-type multi-family
+
+# append directly into spec/constants.json when the output looks right:
+venv/bin/python scripts/generate_preset.py ... --write
+```
+
+The generator fills `search.minPrice` from the 20th percentile of current Redfin inventory (floored to nearest $10K) and `search.maxPrice` from your profile's `jose.priceCeilingDuplex`. `defaults.propertyTaxRatePct` is left null — that needs a manual entry or awaits Sprint 13b's county-assessor scraper. Each generated preset is tagged `_source: "auto"` with timestamp + raw diagnostics.
 
 ---
 

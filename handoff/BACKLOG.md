@@ -4,7 +4,7 @@ Owner: Jose H Gonzalez
 Updated: 2026-04-19
 Source: consolidated from 5 audit lanes (security, code health, performance, architecture, docs). Sprints 11 / 11.5 / 12 landed 2026-04-19 driven by Jose's stated workflow ask + Lane 3 decisions.
 
-Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12 SHIPPED plus hotfixes/feats #6–#15 (2026-04-19 bundle). Sprint 13 (automated per-ZIP data puller) and Sprint 14 (Neighborhood Search UX polish) both queued. Do not mix lanes.
+Scope rule: Sprints 7A/7B/7C/8/9/10A/10B/10-6/11/11.5/12/14 SHIPPED plus hotfixes/feats #6–#17 (2026-04-19 bundle). Sprint 13 split: **13a shipped** (preset auto-generator CLI), 13b (county assessor scraper) + 13c (GreatSchools + insurance refinement) queued. Do not mix lanes.
 
 **Hotfixes + follow-up feats landed 2026-04-19 (post-Sprint-12, all merged):**
 - **#6** — Anthropic model IDs bumped to Claude 4.X (Opus 4.7 / Sonnet 4.6 / Haiku 4.5 / batch default Sonnet 4.6). Unblocked the AI analysis final page that was 404ing.
@@ -421,7 +421,43 @@ Sprint 12 DoD: all 6 shipped; parity harness green; Jose runs 3 real listings ac
 
 ---
 
-## Sprint 13 — Automated per-ZIP data puller (queued, ~8–10h)
+## Sprint 13a — Preset auto-generator CLI skeleton (SHIPPED 2026-04-19)
+
+First cut of Sprint 13 shipped. `scripts/generate_preset.py` pulls live Redfin inventory + rent-comp medians for a city/ZIP set and prints a ready-to-paste preset block. Optional `--write` flag appends to `spec/constants.json` in place.
+
+Wiring:
+- Inventory sample: reuses `app._search_redfin_page` (Playwright + Sprint 8-1 browser pool). Per-ZIP max-listings cap 75.
+- Rent comps: reuses `batch.rent_comps.get_rent_estimate` (rent_comps_cache + Redfin fallback + in-flight dedup).
+- Auto min-price = 20th percentile of inventory, floored to nearest $10K. Auto max-price = `profile.jose.priceCeilingDuplex`. User can override with `--min-price` / `--max-price`.
+- Output block carries `_source: "auto"`, `_generated_at`, `_inventory` + `_rent_medians` diagnostics, and `_todo` pointing at Sprint 13b/c gaps.
+
+Deferred to Sprint 13b/c (tracked below).
+
+---
+
+## Sprint 13b — County assessor property-tax-rate scraper (queued, ~4–6h)
+
+Sprint 13a left `defaults.propertyTaxRatePct` as `null`; this sprint fills it. Each California county assessor publishes effective rates differently — one parser per county. Priority order based on Jose's target markets:
+
+- **Solano County** (Vallejo, American Canyon) — solanocounty.com/depts/ar/
+- **Contra Costa County** (Pittsburg, Antioch, Concord, Richmond, Hercules, Rodeo, Crockett, Pinole) — contracosta.ca.gov/2190
+- **Alameda County** (Oakland — currently excluded but may unblock later) — alamedacountyca.gov/government/
+- **Sacramento County** (conditional-tier) — assessor.saccounty.gov
+
+Output: `presets[city].defaults.propertyTaxRatePct` + any known Mello-Roos CFD overlays keyed by ZIP. Cache 90 days. CLI: `python scripts/fetch_assessor_rate.py --county "Contra Costa" --zip 94565`.
+
+Risks: anti-bot / CAPTCHA on some assessor sites. Fall back to a static CSV that Jose updates once per year if scrapers prove too brittle.
+
+---
+
+## Sprint 13c — GreatSchools + enrichment-driven insurance (queued, ~3–4h)
+
+- **GreatSchools API** (paid, ~$0.001/req): per-address school ratings → populates the Sprint 12 schoolRating gate. Adds `GREATSCHOOLS_API_KEY` to `.env`; CLI flag `--school-lookup` turns it on (default off to avoid accidental spend).
+- **Insurance refinement**: the Sprint 13a generator emits `insuranceAnnual: 1800` (baseline). Extend to pull FEMA flood + Cal Fire WUI zones for each ZIP and apply the existing `insuranceHeuristic` multipliers so auto-generated presets carry zone-adjusted insurance defaults.
+
+---
+
+## Sprint 13 — (original umbrella brief, ~8–10h; superseded by 13a/13b/13c split above)
 
 Driver: Jose declined to ask his agent to fill a per-city table ("prefer pulling programmatically over agent memory"). Sprint 13 builds the puller so preset blocks self-populate from public data, not tribal knowledge.
 
