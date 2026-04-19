@@ -1302,7 +1302,11 @@ async def search_neighborhood(request: Request):
         "max_price": body.get("max_price"),
         "min_beds": body.get("min_beds"),
         "property_type": body.get("property_type"),
-        "max_results": min(body.get("max_results", 25), 75),
+        # Sprint 14-3: raise ceiling 75 → 500. Redfin's own paginated result
+        # page rarely exceeds ~500 listings per ZIP anyway; the scroll-loop in
+        # _search_redfin_page is already bounded to 8 scroll-down cycles + an
+        # early-out when no new cards load, so the upper bound is natural.
+        "max_results": min(int(body.get("max_results") or 25), 500),
     }
 
     result = await _search_redfin_page(location, filters)
