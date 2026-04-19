@@ -2742,10 +2742,12 @@
     var grid = $('unitRentsGrid');
     if (!grid) return;
     var existing = [];
+    var userEdited = [];
     // Preserve any values the user already typed.
     for (var i = 0; i < 4; i++) {
       var existingEl = $('unitRent_' + i);
       existing[i] = existingEl ? existingEl.value : '';
+      userEdited[i] = existingEl ? !!existingEl.dataset.userEdited : false;
     }
     var html = '';
     for (var idx = 0; idx < units; idx++) {
@@ -2756,27 +2758,90 @@
         ? '<span style="color:var(--text-muted);font-weight:normal;font-size:0.78rem;"> (you live here — $0 toward qualifying)</span>'
         : '';
       var labelStyle = isOwner ? ' style="color:var(--text-muted);"' : '';
-      // Default value: preserve existing, else 0. We deliberately do NOT
-      // preset $900 or any other rent number — that would fabricate data.
-      // Escape as attribute — defence in depth even though the only source
-      // is a type=number input that coerces out non-numeric chars.
+      // Preserve existing values; default to 0. No fabricated fallbacks
+      // here — prefill from scrape / rent-comps / profile happens in
+      // __prefillPerUnitRents__() after render, so the signal source is
+      // auditable (placeholder + `data-rent-source` attr).
       var rawValue = existing[idx] !== '' ? existing[idx] : '0';
       var value = String(rawValue).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      var userAttr = userEdited[idx] ? ' data-user-edited="1"' : '';
       html += '<div class="input-group">'
         + '<label for="unitRent_' + idx + '"' + labelStyle + '>'
         + label + annotation
         + '</label>'
         + '<input type="number" id="unitRent_' + idx + '" class="unit-rent" '
-        + 'data-unit-index="' + idx + '" '
+        + 'data-unit-index="' + idx + '"' + userAttr + ' '
         + 'value="' + value + '" min="0" step="25">'
         + '</div>';
     }
     grid.innerHTML = html;
     // Wire up change handlers (they're not inside .input-grid at page-scan
-    // time, so the generic allInputs listener doesn't auto-attach).
+    // time, so the generic allInputs listener doesn't auto-attach). Mark
+    // user-edited so subsequent prefill passes don't overwrite.
     grid.querySelectorAll('input').forEach(function(inp) {
-      inp.addEventListener('input', function() { calculate(); });
+      inp.addEventListener('input', function() {
+        inp.dataset.userEdited = '1';
+        calculate();
+      });
     });
+    // Sprint 12-7: after render, run the prefill cascade to populate
+    // non-owner unit rents from scraped data / rent-comps / profile.
+    try { __prefillPerUnitRents__(); } catch (e) { /* non-fatal */ }
+  };
+
+  // Sprint 12-7: prefill priority cascade for non-owner unit rents.
+  // Sources (in order):
+  //   1. scrapedData.rentZestimate          (listing's own rent estimate)
+  //   2. window.__lastRentEstimate          (cached /api/rent-estimate median)
+  //   3. DEFAULTS.targetMonthlyRent         (profile.defaults.targetMonthlyRent)
+  //
+  // Only fills unit-1+ inputs that are currently 0 or empty AND have no
+  // `data-user-edited` flag. Owner unit (index 0) stays 0 per FHA math.
+  // Each filled input gets `data-rent-source` + a placeholder for audit.
+  window.__prefillPerUnitRents__ = function () {
+    var countEl = $('unitCount');
+    var count = countEl ? Math.max(1, parseInt(countEl.value) || 1) : 1;
+    if (count < 2) return; // SFR path uses the single `monthlyRent` field.
+    var ownerOcc = getOwnerOccupied();
+    var nonOwnerCount = ownerOcc ? Math.max(1, count - 1) : count;
+
+    // Resolve candidate per-unit rent from each source, in priority order.
+    var sources = [];
+    var scrapeTotal = (window.scrapedData && (window.scrapedData.rentZestimate || window.scrapedData.monthlyRent)) || 0;
+    if (scrapeTotal > 0) {
+      // Scraped rent is typically building-total for multifamily listings.
+      // Divide across non-owner units — if the listing only advertised a
+      // single unit's rent that's still better signal than nothing.
+      sources.push({ value: Math.round(scrapeTotal / nonOwnerCount), source: 'scrape' });
+    }
+    var comps = window.__lastRentEstimate;
+    if (comps && typeof comps.median === 'number' && comps.median > 0) {
+      sources.push({ value: Math.round(comps.median), source: 'rent-comps' });
+    }
+    if (DEFAULTS && DEFAULTS.targetMonthlyRent && DEFAULTS.targetMonthlyRent > 0) {
+      sources.push({ value: Math.round(DEFAULTS.targetMonthlyRent), source: 'profile' });
+    }
+    if (!sources.length) return;
+
+    var chosen = sources[0];
+    for (var idx = 0; idx < count; idx++) {
+      // Skip the owner unit — it stays 0 per FHA rental-offset math.
+      if (ownerOcc && idx === 0) continue;
+      var el = $('unitRent_' + idx);
+      if (!el) continue;
+      if (el.dataset.userEdited === '1') continue;
+      var current = parseFloat(el.value) || 0;
+      if (current > 0) continue;
+      el.value = chosen.value;
+      el.dataset.rentSource = chosen.source;
+      el.placeholder = chosen.source === 'scrape'
+        ? 'from listing'
+        : chosen.source === 'rent-comps'
+          ? 'from rent comps'
+          : 'from profile target';
+    }
+    // Recalculate downstream math now that new rent numbers are in.
+    try { calculate(); } catch (e) { /* non-fatal */ }
   };
 
   // Read current per-unit rents from the rendered inputs. Returns an array
@@ -3203,6 +3268,11 @@
         $('monthlyRent').value = data.rentZestimate;
         autoFilledFields['monthlyRent'] = true;
       }
+
+      // Sprint 12-7: fresh scrape data may include a rent estimate — kick
+      // the per-unit prefill cascade so Multifamily (2-4) inputs populate
+      // without the user having to type each unit's rent manually.
+      try { __prefillPerUnitRents__(); } catch (e) { /* non-fatal */ }
 
       if (data.annualTax) {
         $('propertyTaxes').value = data.annualTax;
@@ -4165,6 +4235,9 @@
       var data = await resp.json();
       if (data.stats && data.stats.count > 0) {
         var s = data.stats;
+        // Sprint 12-7: cache the median so __prefillPerUnitRents__() can
+        // use rent-comps as a secondary source ahead of the profile target.
+        window.__lastRentEstimate = { median: s.median, count: s.count, location: location };
         $('rentEstimateStats').innerHTML =
           '<div class="rent-stat"><div class="rent-label">Low (25th)</div><div class="rent-value">$' + fmtInt(s.low) + '</div></div>' +
           '<div class="rent-stat"><div class="rent-label">Median</div><div class="rent-value highlight">$' + fmtInt(s.median) + '</div></div>' +
@@ -4173,12 +4246,34 @@
         $('rentEstimateLocation').textContent = location + ' (' + s.count + ' listings)';
         $('rentEstimateNote').textContent = 'Click a value to use it as your rent. Based on ' + s.count + ' active Redfin rental listings.';
         $('rentEstimateSection').style.display = '';
+        // Multifamily path: push the comp median into any unfilled per-unit
+        // rent inputs too. Respects user-edited flags set by the input
+        // handler in renderPerUnitRentInputs.
+        try { __prefillPerUnitRents__(); } catch (e) { /* non-fatal */ }
         // Make stats clickable
         $('rentEstimateStats').querySelectorAll('.rent-stat').forEach(function(el) {
           el.style.cursor = 'pointer';
           el.onclick = function() {
             var val = el.querySelector('.rent-value').textContent.replace(/[^0-9]/g, '');
+            var valNum = parseFloat(val) || 0;
             $('monthlyRent').value = val;
+            // Sprint 12-7: multifamily path — apply the picked bucket to
+            // every non-owner unit input, overriding prior prefill/edits
+            // since the user explicitly clicked to use this value.
+            if (typeof propertyType !== 'undefined' && propertyType === 'multi') {
+              window.__lastRentEstimate = { median: valNum, count: 0, location: '' };
+              var cntEl = $('unitCount');
+              var cnt = cntEl ? (parseInt(cntEl.value) || 1) : 1;
+              var oo = getOwnerOccupied();
+              for (var i = 0; i < cnt; i++) {
+                if (oo && i === 0) continue;
+                var inp = $('unitRent_' + i);
+                if (!inp) continue;
+                inp.value = valNum;
+                inp.dataset.rentSource = 'rent-comps';
+                delete inp.dataset.userEdited;
+              }
+            }
             calculate();
           };
         });
