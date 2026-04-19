@@ -1,4 +1,4 @@
-import os, json, re, webbrowser, threading, time, asyncio, logging, uuid
+import os, json, re, time, asyncio, logging, uuid
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
@@ -2687,10 +2687,5 @@ async def property_history(url_hash: str):
     })
 
 
-def open_browser():
-    webbrowser.open("http://localhost:8000")
-
-
 if __name__ == "__main__":
-    threading.Timer(1.5, open_browser).start()
     uvicorn.run(app, host="127.0.0.1", port=8000)
