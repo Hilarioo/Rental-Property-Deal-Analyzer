@@ -331,3 +331,29 @@ export function maxPitiAtDti({ qualifyingIncome, dtiPct, monthlyDebts = 0 }) {
   // the UI would render a nonsense "-$500" otherwise.
   return Math.max(0, qualifyingIncome * dtiPct / 100 - monthlyDebts);
 }
+
+// =====================================================================
+// ADR-002: shared constants loader
+// =====================================================================
+//
+// The FHA constants above (FHA_MIP_UPFRONT_RATE, FHA_MIP_ANNUAL_STANDARD,
+// FHA_MIP_ANNUAL_HIGH, FHA_BASELINE_LOAN_LIMIT, FHA_RENTAL_OFFSET) are
+// kept as module defaults so the 61-test baseline keeps passing without
+// a running server. Real runtime callers (index.html, future ESM imports)
+// should fetch the shared JSON via loadSpecConstants() and use those
+// values. The module-level defaults and the JSON file are populated from
+// the same source of truth (handoff/USER_PROFILE.md) — drift only matters
+// if someone edits one without the other, which is exactly what the
+// single JSON file exists to kill.
+
+/** Fetch the shared spec/constants.json (served at /spec/constants.json).
+ *  Returns the parsed object. Throws on network or parse failure — by
+ *  design; silent fallback is the drift mode this file was created to
+ *  kill. */
+export async function loadSpecConstants(url = '/spec/constants.json') {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`spec load failed: HTTP ${resp.status}`);
+  const spec = await resp.json();
+  if (!spec?._meta?.version) throw new Error('spec missing _meta.version');
+  return spec;
+}

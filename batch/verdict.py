@@ -19,18 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
-JOSE_THRESHOLDS: dict[str, float] = {
-    "netPitiGreen": 2500,
-    "netPitiRed": 3200,
-    "cashCloseGreen": 45000,
-    "cashCloseRed": 60000,
-    "rehabGreen": 60000,
-    "rehabRed": 80000,
-    "priceCeilingDuplex": 525000,
-    "priceCeilingTriplex": 650000,
-    "maxDtiPct": 55,
-    "roofAgeYellow": 15,
-}
+# ADR-002: thresholds now live in spec/constants.json.
+# Hard-fail at import time if the spec is missing or malformed.
+from spec import constants as _spec
+
+JOSE_THRESHOLDS: dict[str, float] = _spec.jose
 
 
 def _fmt_usd(n: float) -> str:
@@ -160,10 +153,11 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 # --- ZIP tier lookup (USER_PROFILE §6, §7) ---
-TIER1_ZIPS = {"94590", "94591"}
-TIER2_ZIPS = {"94547", "94572", "94525", "94564"}
-TIER3_ZIPS = {"94801", "94804", "94805"}
-EXCLUDED_ZIPS = {"94803", "94806"}  # Point Richmond, Hilltop Richmond
+# ADR-002: ZIP tiers now read from spec/constants.json.
+TIER1_ZIPS = set(_spec.zip_tiers["tier1"])
+TIER2_ZIPS = set(_spec.zip_tiers["tier2"])
+TIER3_ZIPS = set(_spec.zip_tiers["tier3"])
+EXCLUDED_ZIPS = set(_spec.zip_tiers["excludedZips"])  # e.g. Point Richmond, Hilltop
 
 
 def classify_zip_tier(zip_code: str | None) -> str:

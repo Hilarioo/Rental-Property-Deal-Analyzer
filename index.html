@@ -2077,7 +2077,12 @@
   //   - Money is in dollars
   //   - Booleans are true/false (not "yes"/"no" strings)
   //   - Term is in years
-  var DEFAULTS = Object.freeze({
+  // ADR-002: DEFAULTS is mutable so __applySpec__() can overwrite values
+  // from spec/constants.json at page boot. The literals below are the
+  // same values that live in spec/constants.json — they're retained here
+  // only as a failsafe if the spec fetch fails (a red banner is shown in
+  // that case).
+  var DEFAULTS = {
     buyerAnnualIncomeW2: 54080,
     buyerMonthlyIncomeW2: 4506,
     seIncomeForQualifying: 0,
@@ -2105,8 +2110,9 @@
     reserveMonths: 2,
     selfPerformRoofing: true,
     roofingCostMultiplier: 0.60,
-  });
+  };
   window.__DEFAULTS__ = DEFAULTS; // expose for tests / dev-console inspection
+  window.DEFAULTS = DEFAULTS;
 
   // ======================================================================
   // Sprint 3: Market presets — partial overrides of DEFAULTS, plus a
@@ -2114,8 +2120,10 @@
   // handoff/USER_PROFILE.md §6. Each preset is a starter — tune after first
   // real scrape.
   // ======================================================================
-  var PRESETS = Object.freeze({
-    "Vallejo Priority": Object.freeze({
+  // ADR-002: PRESETS is mutable so __applySpec__() can overwrite values
+  // from spec/constants.json at page boot.
+  var PRESETS = {
+    "Vallejo Priority": {
       defaults: { propertyTaxRatePct: 1.25, insuranceAnnual: 1800, vacancyPct: 5 },
       search: {
         zips: ['94590', '94591'],
@@ -2125,8 +2133,8 @@
         keywords: ['duplex', 'two on one', 'income property', 'fixer'],
         minDom: undefined,
       }
-    }),
-    "East Bay Nearby": Object.freeze({
+    },
+    "East Bay Nearby": {
       defaults: { propertyTaxRatePct: 1.15, insuranceAnnual: 1900, vacancyPct: 5 },
       search: {
         zips: ['94547', '94572', '94525', '94564'],
@@ -2136,8 +2144,8 @@
         keywords: [],
         minDom: undefined,
       }
-    }),
-    "Richmond Motivated": Object.freeze({
+    },
+    "Richmond Motivated": {
       defaults: { propertyTaxRatePct: 1.35, insuranceAnnual: 2100, vacancyPct: 8 },
       search: {
         zips: ['94801', '94804', '94805'],
@@ -2147,18 +2155,19 @@
         keywords: [],
         minDom: 30,
       }
-    }),
-  });
+    },
+  };
 
   // ZIP tiering + excluded markets (matched by address substring).
-  var ZIP_TIERS = Object.freeze({
+  // ADR-002: mutable for __applySpec__() overrides.
+  var ZIP_TIERS = {
     TIER_1: ['94590', '94591'],
     TIER_2: ['94547', '94572', '94525', '94564'],
     TIER_3: ['94801', '94804', '94805'],
     EXCLUDED_ZIPS: ['94803', '94806'],
     // Cities / neighborhoods Jose excludes regardless of ZIP.
     EXCLUDED_CITIES: ['Oakland', 'Berkeley', 'Benicia', 'Sacramento', 'Mare Island', 'Glen Cove', 'Hiddenbrooke'],
-  });
+  };
 
   // Returns 'tier1' | 'tier2' | 'tier3' | 'excluded' | 'outside'.
   // Excluded city match wins over ZIP tier match (address is ground truth).
@@ -2182,6 +2191,8 @@
     return 'outside';
   }
   window.__PRESETS__ = PRESETS;
+  window.PRESETS = PRESETS;
+  window.ZIP_TIERS = ZIP_TIERS;
   window.__getZipTier__ = getZipTier;
 
   // ======================================================================
@@ -2189,14 +2200,16 @@
   // ======================================================================
   // Multipliers live in this constant map, not inline in the render. If
   // Jose upgrades classification, edit here. See USER_PROFILE §5.
-  var REHAB_CATEGORIES = Object.freeze([
-    Object.freeze({ key: 'roof',       label: 'Roof',       selfPerformMultiplier: 0.60, defaultSelfPerform: true  }),
-    Object.freeze({ key: 'plumbing',   label: 'Plumbing',   selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
-    Object.freeze({ key: 'electrical', label: 'Electrical', selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
-    Object.freeze({ key: 'cosmetic',   label: 'Cosmetic',   selfPerformMultiplier: 0.80, defaultSelfPerform: false }),
-    Object.freeze({ key: 'hvac',       label: 'HVAC',       selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
-    Object.freeze({ key: 'other',      label: 'Other',      selfPerformMultiplier: 1.00, defaultSelfPerform: false }),
-  ]);
+  // ADR-002: mutable array for __applySpec__() overrides.
+  var REHAB_CATEGORIES = [
+    { key: 'roof',       label: 'Roof',       selfPerformMultiplier: 0.60, defaultSelfPerform: true  },
+    { key: 'plumbing',   label: 'Plumbing',   selfPerformMultiplier: 1.00, defaultSelfPerform: false },
+    { key: 'electrical', label: 'Electrical', selfPerformMultiplier: 1.00, defaultSelfPerform: false },
+    { key: 'cosmetic',   label: 'Cosmetic',   selfPerformMultiplier: 0.80, defaultSelfPerform: false },
+    { key: 'hvac',       label: 'HVAC',       selfPerformMultiplier: 1.00, defaultSelfPerform: false },
+    { key: 'other',      label: 'Other',      selfPerformMultiplier: 1.00, defaultSelfPerform: false },
+  ];
+  window.REHAB_CATEGORIES = REHAB_CATEGORIES;
 
   // Render the rehab category table into #rehabCategories.
   function renderRehabCategoryTable() {
@@ -2273,7 +2286,9 @@
   // Sprint 4: Jose-tuned GREEN / YELLOW / RED scorer
   // ======================================================================
   // Thresholds from USER_PROFILE.md §11. Tune here, nowhere else.
-  var JOSE_THRESHOLDS = Object.freeze({
+  // ADR-002: mutable so __applySpec__() can overwrite values from
+  // spec/constants.json at page boot.
+  var JOSE_THRESHOLDS = {
     netPitiGreen: 2500,
     netPitiRed:   3200,
     cashCloseGreen: 45000,
@@ -2284,8 +2299,9 @@
     priceCeilingTriplex: 650000,
     maxDtiPct: 55,        // PITI > 55% of qualifying income => hard RED
     roofAgeYellow: 15,    // > 15 years => FHA appraisal risk
-  });
+  };
   window.__JOSE_THRESHOLDS__ = JOSE_THRESHOLDS;
+  window.JOSE_THRESHOLDS = JOSE_THRESHOLDS;
 
   // Compute Jose's verdict. Returns { verdict: 'green'|'yellow'|'red', reasons: [...] }.
   // Up to 3 reasons. Ordering: hard-fail gates first, then numeric predicates, then soft flags.
@@ -2620,7 +2636,99 @@
     }
   }
 
-  initDefaults();
+  // ======================================================================
+  // ADR-002: spec/constants.json loader — overrides the mutable globals
+  // declared above (DEFAULTS, JOSE_THRESHOLDS, PRESETS, ZIP_TIERS,
+  // REHAB_CATEGORIES, FHA_*) with values from the single source of truth.
+  // Hard-fail semantics: on fetch or parse failure, a red banner surfaces
+  // so Jose knows the in-page fallbacks may be stale.
+  // ======================================================================
+  var __SPEC__ = null;
+
+  function __applySpec__(spec) {
+    // Scalars / dicts — mutate in place so existing references keep working.
+    if (spec.defaults) Object.assign(DEFAULTS, spec.defaults);
+    if (spec.jose)     Object.assign(JOSE_THRESHOLDS, spec.jose);
+
+    // FHA rates — re-bind the module-level vars (var-scoped, so this works).
+    if (spec.fha) {
+      FHA_MIP_UPFRONT_RATE    = spec.fha.upfrontMipRate;
+      FHA_MIP_ANNUAL_STANDARD = spec.fha.annualMipStandard;
+      FHA_MIP_ANNUAL_HIGH     = spec.fha.annualMipHigh;
+      FHA_BASELINE_LOAN_LIMIT = spec.fha.baselineLoanLimit;
+      FHA_RENTAL_OFFSET       = spec.fha.rentalOffset;
+    }
+
+    // ZIP tiers — mutate the arrays in place.
+    if (spec.zipTiers) {
+      ZIP_TIERS.TIER_1.length = 0;          Array.prototype.push.apply(ZIP_TIERS.TIER_1, spec.zipTiers.tier1 || []);
+      ZIP_TIERS.TIER_2.length = 0;          Array.prototype.push.apply(ZIP_TIERS.TIER_2, spec.zipTiers.tier2 || []);
+      ZIP_TIERS.TIER_3.length = 0;          Array.prototype.push.apply(ZIP_TIERS.TIER_3, spec.zipTiers.tier3 || []);
+      ZIP_TIERS.EXCLUDED_ZIPS.length = 0;   Array.prototype.push.apply(ZIP_TIERS.EXCLUDED_ZIPS, spec.zipTiers.excludedZips || []);
+      ZIP_TIERS.EXCLUDED_CITIES.length = 0; Array.prototype.push.apply(ZIP_TIERS.EXCLUDED_CITIES, spec.zipTiers.excludedCities || []);
+    }
+
+    // Presets — mutate each entry in place; add new keys; drop keys not in spec.
+    if (spec.presets) {
+      Object.keys(PRESETS).forEach(function(k) { if (!(k in spec.presets)) delete PRESETS[k]; });
+      Object.keys(spec.presets).forEach(function(k) {
+        var src = spec.presets[k] || {};
+        if (!PRESETS[k]) PRESETS[k] = { defaults: {}, search: {} };
+        PRESETS[k].defaults = Object.assign({}, src.defaults || {});
+        var search = Object.assign({}, src.search || {});
+        // Normalize null -> undefined for minDom (preserves pre-spec semantics).
+        if (search.minDom === null) search.minDom = undefined;
+        PRESETS[k].search = search;
+      });
+    }
+
+    // Rehab categories — swap list contents.
+    if (Array.isArray(spec.rehabCategories)) {
+      REHAB_CATEGORIES.length = 0;
+      Array.prototype.push.apply(REHAB_CATEGORIES, spec.rehabCategories.map(function(c) {
+        return {
+          key: c.key,
+          label: c.label,
+          selfPerformMultiplier: c.selfPerformMultiplier,
+          defaultSelfPerform: !!c.defaultSelfPerform,
+        };
+      }));
+    }
+  }
+
+  function __showSpecFailureBanner__(err) {
+    console.error('Failed to load /spec/constants.json — using inline defaults.', err);
+    try {
+      var banner = document.createElement('div');
+      banner.textContent = '⚠ Spec failed to load — inline defaults in use. Numbers may be out of date.';
+      banner.style.cssText = 'background:#c00;color:#fff;padding:8px;text-align:center;font-weight:600;position:sticky;top:0;z-index:99999;';
+      if (document.body) document.body.prepend(banner);
+      else document.addEventListener('DOMContentLoaded', function() { document.body.prepend(banner); });
+    } catch(e) { /* no-op */ }
+  }
+
+  async function __loadSpec__() {
+    try {
+      var resp = await fetch('/spec/constants.json');
+      if (!resp.ok) throw new Error('spec HTTP ' + resp.status);
+      var spec = await resp.json();
+      if (!spec || !spec._meta || !spec._meta.version) {
+        throw new Error('spec missing _meta.version');
+      }
+      __SPEC__ = spec;
+      window.__SPEC__ = spec;
+      __applySpec__(spec);
+    } catch (err) {
+      __showSpecFailureBanner__(err);
+    }
+  }
+
+  // Run spec load BEFORE initDefaults so form defaults reflect spec values.
+  // We await the fetch synchronously via an async IIFE, then call initDefaults.
+  (async function __boot__() {
+    await __loadSpec__();
+    initDefaults();
+  })();
 
   // ======================================================================
   // Sprint 3: applyPreset — overlay a named preset's DEFAULTS overrides
@@ -3812,14 +3920,22 @@
   // ======================================================================
   // Calculation Engine
   // ======================================================================
-  // Sprint 1: FHA MIP constants. Mirror of calc.js FHA_MIP_UPFRONT_RATE /
-  // FHA_MIP_ANNUAL_STANDARD / FHA_BASELINE_LOAN_LIMIT. Any change here must
-  // also change calc.js (and vice versa). See calc.js header comment.
+  // Sprint 1: FHA MIP constants. ADR-002: overridden at page boot by
+  // __applySpec__() with values from spec/constants.json. The literals
+  // below are identical to the spec and serve only as a failsafe if the
+  // spec fetch fails (a red banner surfaces that state).
   var FHA_MIP_UPFRONT_RATE = 0.0175;         // 1.75% of base loan, financed in
   var FHA_MIP_ANNUAL_STANDARD = 0.0055;      // 0.55% annual, base loan ≤ $726,200
   var FHA_MIP_ANNUAL_HIGH = 0.0075;          // 0.75% annual, base loan > $726,200
   var FHA_BASELINE_LOAN_LIMIT = 726200;      // 2025 FHA conforming baseline
   var FHA_RENTAL_OFFSET = 0.75;              // 75% of non-owner-unit rents counts
+  window.__FHA__ = {
+    get FHA_MIP_UPFRONT_RATE() { return FHA_MIP_UPFRONT_RATE; },
+    get FHA_MIP_ANNUAL_STANDARD() { return FHA_MIP_ANNUAL_STANDARD; },
+    get FHA_MIP_ANNUAL_HIGH() { return FHA_MIP_ANNUAL_HIGH; },
+    get FHA_BASELINE_LOAN_LIMIT() { return FHA_BASELINE_LOAN_LIMIT; },
+    get FHA_RENTAL_OFFSET() { return FHA_RENTAL_OFFSET; },
+  };
 
   function calculate() {
     var price = val($('purchasePrice'), 0);

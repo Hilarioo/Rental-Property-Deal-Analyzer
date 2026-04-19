@@ -526,6 +526,24 @@ async def serve_frontend():
     return html
 
 
+@app.get("/spec/constants.json")
+async def serve_spec_constants():
+    """ADR-002: expose the shared constants file to the browser runtime.
+    Hard-fail (500) on missing file — silent fallback is the drift mode
+    this route was created to kill."""
+    # Anchor to this file's dir so a non-root cwd (systemd unit, container)
+    # doesn't diverge from spec/__init__.py's Path(__file__).parent resolution.
+    path = Path(__file__).parent / "spec" / "constants.json"
+    if not path.exists():
+        return JSONResponse({"error": "spec not found"}, status_code=500)
+    try:
+        return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError as exc:
+        return JSONResponse(
+            {"error": f"spec malformed: {exc}"}, status_code=500
+        )
+
+
 def _detect_source(hostname: str) -> str:
     """Detect data source from URL hostname."""
     if hostname and hostname.endswith("redfin.com"):

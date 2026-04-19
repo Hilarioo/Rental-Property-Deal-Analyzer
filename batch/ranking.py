@@ -11,22 +11,14 @@ from __future__ import annotations
 import math
 from typing import Any
 
+# ADR-002: TOPSIS weights now live in spec/constants.json.
+from spec import constants as _spec
+
 # ----- 13 criteria (see §C.1) ----------------------------------------------
-# (name, direction, weight)
+# (name, direction, weight) — built from spec.topsisWeights.criteria.
 CRITERIA: list[tuple[str, str, float]] = [
-    ("net_piti",              "cost",    0.18),
-    ("cash_to_close",         "cost",    0.12),
-    ("effective_rehab",       "cost",    0.10),
-    ("dti_headroom",          "benefit", 0.08),
-    ("coc_pct",               "benefit", 0.10),
-    ("npv_5yr",               "benefit", 0.10),
-    ("brrrr_equity_capture",  "benefit", 0.08),
-    ("zip_tier_score",        "benefit", 0.08),
-    ("cap_rate",              "benefit", 0.05),
-    ("contractor_edge",       "benefit", 0.04),
-    ("dom",                   "benefit", 0.03),
-    ("roof_age",              "cost",    0.02),
-    ("price_vs_zip_median",   "cost",    0.02),
+    (c["name"], c["direction"], float(c["weight"]))
+    for c in _spec.topsis_weights["criteria"]
 ]
 CRITERION_NAMES = [c[0] for c in CRITERIA]
 
@@ -153,7 +145,7 @@ def topsis_scores(
 # ----- Criteria extraction --------------------------------------------------
 
 
-_ZIP_TIER_SCORE = {"tier1": 3, "tier2": 2, "tier3": 1}
+_ZIP_TIER_SCORE = dict(_spec.topsis_weights["zipTierScore"])
 
 
 def criteria_from_metrics(metrics: dict[str, Any]) -> dict[str, float]:
