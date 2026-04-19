@@ -293,7 +293,7 @@ def _skip_row(
 # --------------------------------------------------------------------------
 
 
-def _finalize_row(prepared: dict[str, Any]) -> dict[str, Any]:
+async def _finalize_row(prepared: dict[str, Any], *, db_path: str) -> dict[str, Any]:
     """Turn a prepared row + (cached|fresh) llm_analysis into the rank-ready
     shape produced by pipeline._process_url."""
     if not prepared.get("scrape_ok"):
@@ -337,10 +337,31 @@ def _finalize_row(prepared: dict[str, Any]) -> dict[str, Any]:
     )
 
     zip_code = prepared.get("zip_code")
-    zip_tier = classify_zip_tier(zip_code)
-    rent_per_unit = TIER_DEFAULT_RENT_2BR.get(zip_tier, 2000)
+    # Rent comps — real medians via rent_comps_cache (§A.1/§F.1), with
+    # TIER_DEFAULT_RENT_2BR as the fallback on cache+Redfin miss.
+    from .rent_comps import derive_per_unit_profile, get_rent_estimate
 
+    zip_tier = classify_zip_tier(zip_code)
     scraped_units = scrape.get("units")
+    per_unit_beds, per_unit_baths = derive_per_unit_profile(
+        total_beds=scrape.get("beds"),
+        total_baths=scrape.get("baths"),
+        units=scraped_units,
+    )
+    rent_result = await get_rent_estimate(
+        zip_code=zip_code or "",
+        beds=per_unit_beds,
+        baths=per_unit_baths,
+        db_path=db_path,
+    )
+    if rent_result.get("median_rent") and rent_result["median_rent"] > 0:
+        rent_per_unit = rent_result["median_rent"]
+        rent_source = rent_result["source"]
+    else:
+        rent_per_unit = TIER_DEFAULT_RENT_2BR.get(zip_tier, 2000)
+        rent_source = "tier_default"
+    rent_comps_sample_size = int(rent_result.get("sample_size") or 0)
+
     units_unknown = scraped_units is None
     computed = compute_property_metrics(
         price=scrape.get("price"),
@@ -357,6 +378,10 @@ def _finalize_row(prepared: dict[str, Any]) -> dict[str, Any]:
         rent_per_unit=rent_per_unit,
         hard_fail_units_unknown=units_unknown,
     )
+    computed["metrics"]["rent_per_unit"] = int(round(rent_per_unit))
+    computed["metrics"]["rent_source"] = rent_source
+    computed["metrics"]["rent_comps_sample_size"] = rent_comps_sample_size
+
     criteria = ranking_mod.criteria_from_metrics(computed["metrics"])
     derived_metrics = {
         "price_velocity": None,
@@ -612,7 +637,7 @@ async def submit_async_batch(
             db_path=db_path, batch_id=batch_id,
             external_batch_id=None, prepared=prepared,
         )
-        finalized = [_finalize_row(p) for p in prepared]
+        finalized = [await _finalize_row(p, db_path=db_path) for p in prepared]
         ranked = ranking_mod.rank_batch(finalized)
         completed_at = utc_now_iso()
         _persist_batch_final(
@@ -1043,7 +1068,7 @@ async def poll_async_batch(
             "llm_ok": ok,
             "analyzed_at": analyzed_at,
         }
-        finalized.append(_finalize_row(prepared))
+        finalized.append(await _finalize_row(prepared, db_path=db_path))
 
     ranked = ranking_mod.rank_batch(finalized)
     completed_at = utc_now_iso()

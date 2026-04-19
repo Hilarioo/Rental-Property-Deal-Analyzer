@@ -755,10 +755,32 @@ async def _process_url(
         enrichment_missing=bool((enrichment_row or {}).get("enrichment_missing")),
     )
 
-    # Rent comps — use tier default in V1 (rent-comps-cache wiring skipped here;
-    # real values will flow through once /api/rent-estimate caching lands).
+    # Rent comps — look up real Redfin medians from rent_comps_cache (§A.1/§F.1).
+    # Cache-first; on miss we fetch via the app-level Redfin scraper, persist
+    # the payload, and fall back to TIER_DEFAULT_RENT_2BR only when no comps
+    # are available (or Redfin times out / errors).
+    from .rent_comps import derive_per_unit_profile, get_rent_estimate
+
     zip_tier = classify_zip_tier(zip_code)
-    rent_per_unit = TIER_DEFAULT_RENT_2BR.get(zip_tier, 2000)
+    scraped_units_for_rent = scrape.get("units")
+    per_unit_beds, per_unit_baths = derive_per_unit_profile(
+        total_beds=scrape.get("beds"),
+        total_baths=scrape.get("baths"),
+        units=scraped_units_for_rent,
+    )
+    rent_result = await get_rent_estimate(
+        zip_code=zip_code or "",
+        beds=per_unit_beds,
+        baths=per_unit_baths,
+        db_path=db_path,
+    )
+    if rent_result.get("median_rent") and rent_result["median_rent"] > 0:
+        rent_per_unit = rent_result["median_rent"]
+        rent_source = rent_result["source"]
+    else:
+        rent_per_unit = TIER_DEFAULT_RENT_2BR.get(zip_tier, 2000)
+        rent_source = "tier_default"
+    rent_comps_sample_size = int(rent_result.get("sample_size") or 0)
 
     # Metrics + verdict. Units-unknown silently DTI-passed duplex math before;
     # now we surface it as its own hard-fail reason while still running the math.
@@ -779,6 +801,12 @@ async def _process_url(
         rent_per_unit=rent_per_unit,
         hard_fail_units_unknown=units_unknown,
     )
+
+    # Expose rent-comp provenance on the metrics payload so the ranker +
+    # Jose can see whether a rank is backed by real comps or a tier guess.
+    computed["metrics"]["rent_per_unit"] = int(round(rent_per_unit))
+    computed["metrics"]["rent_source"] = rent_source
+    computed["metrics"]["rent_comps_sample_size"] = rent_comps_sample_size
 
     criteria = ranking_mod.criteria_from_metrics(computed["metrics"])
     derived_metrics = {
