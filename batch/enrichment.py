@@ -16,7 +16,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -65,6 +68,100 @@ HIGH_FLOOD = {"A", "AE", "AH", "AO", "VE", "V"}
 _LAST_OVERPASS_CALL_AT: float = 0.0  # process-wide cooldown (2s per §K.3)
 _OVERPASS_COOLDOWN_S = 2.0
 _OVERPASS_LOCK = asyncio.Lock()
+
+# Sprint 8-2 — coordinate-bucket cache.
+#
+# Bucket lat/lng to 3 decimals (~100m cell): two listings in the same ~100m
+# square share one Overpass fetch. Cache TTL is generous (30d) because
+# walkability shifts on the scale of new transit lines, not weekly.
+# In-flight dedupe via a futures map keeps concurrent callers for the same
+# bucket from firing duplicate requests — matches the pattern in
+# `batch/rent_comps.py`.
+OVERPASS_CACHE_TTL_DAYS = 30
+_OVERPASS_BUCKET_DECIMALS = 3
+_OVERPASS_INFLIGHT: dict[tuple[float, float], asyncio.Future] = {}
+_OVERPASS_INFLIGHT_LOCK = asyncio.Lock()
+
+
+def _default_overpass_db_path() -> str:
+    """Resolve the default SQLite DB path without importing app.py.
+
+    Mirrors scripts/init_db.DEFAULT_DB_PATH so this module can be used
+    standalone (tests) without paying an import cost on app.py.
+    """
+    return str(Path(__file__).resolve().parent.parent / "data" / "analyzer.db")
+
+
+def _bucket_coords(lat: float, lng: float) -> tuple[float, float]:
+    """Round a lat/lng to the cache bucket grid (~100m at 3 decimals)."""
+    return (
+        round(float(lat), _OVERPASS_BUCKET_DECIMALS),
+        round(float(lng), _OVERPASS_BUCKET_DECIMALS),
+    )
+
+
+def _overpass_cache_read(db_path: str, lat_b: float, lng_b: float) -> dict | None:
+    """Return ``{payload, fetched_at}`` if a fresh row exists, else None."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """SELECT payload_json, fetched_at
+               FROM overpass_cache
+               WHERE lat_bucket = ? AND lng_bucket = ?""",
+            (lat_b, lng_b),
+        )
+        row = cur.fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    fetched_at = row["fetched_at"]
+    try:
+        s = fetched_at[:-1] + "+00:00" if fetched_at.endswith("Z") else fetched_at
+        fetched = datetime.fromisoformat(s)
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if datetime.now(timezone.utc) - fetched > timedelta(days=OVERPASS_CACHE_TTL_DAYS):
+        return None
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return {"payload": payload, "fetched_at": fetched_at}
+
+
+def _overpass_cache_write(
+    db_path: str, lat_b: float, lng_b: float, payload: dict
+) -> None:
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            """INSERT INTO overpass_cache
+               (lat_bucket, lng_bucket, payload_json, fetched_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(lat_bucket, lng_bucket) DO UPDATE SET
+                   payload_json = excluded.payload_json,
+                   fetched_at   = excluded.fetched_at""",
+            (lat_b, lng_b, json.dumps(payload), now_iso),
+        )
+        conn.commit()
+    except sqlite3.Error as exc:  # pragma: no cover - defensive
+        logger.warning("overpass_cache persist failed for %s,%s: %s",
+                       lat_b, lng_b, exc)
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------
@@ -257,15 +354,42 @@ def _derive_walkability(counts: dict[str, int]) -> int:
     return max(0, min(100, int(value)))
 
 
-async def fetch_overpass(
+def _tally_overpass_elements(elements: list[dict]) -> dict[str, int]:
+    """Reduce raw Overpass elements into our amenity-count shape."""
+    counts = {
+        "groceriesWithin1Mile": 0,
+        "schoolsWithin1Mile": 0,
+        "restaurantsWithin1Mile": 0,
+        "transitStopsWithin0.5Mile": 0,
+        "trainStationsWithin1Mile": 0,
+        "parksWithin1Mile": 0,
+    }
+    for element in elements or []:
+        tags = element.get("tags") or {}
+        shop = tags.get("shop")
+        amenity = tags.get("amenity")
+        highway = tags.get("highway")
+        railway = tags.get("railway")
+        leisure = tags.get("leisure")
+        if shop in ("supermarket", "convenience"):
+            counts["groceriesWithin1Mile"] += 1
+        elif amenity in ("school", "kindergarten"):
+            counts["schoolsWithin1Mile"] += 1
+        elif amenity in ("restaurant", "cafe"):
+            counts["restaurantsWithin1Mile"] += 1
+        elif highway == "bus_stop":
+            counts["transitStopsWithin0.5Mile"] += 1
+        elif railway in ("station", "halt", "tram_stop"):
+            counts["trainStationsWithin1Mile"] += 1
+        elif leisure in ("park", "playground"):
+            counts["parksWithin1Mile"] += 1
+    return counts
+
+
+async def _fetch_overpass_remote(
     client: httpx.AsyncClient, lat: float, lng: float
 ) -> dict[str, Any]:
-    """Fetch amenity counts and derive walkability. Respects 2s cooldown (§K.3).
-
-    Cooldown check-write is wrapped in an asyncio.Lock so concurrent callers
-    serialize the cooldown window — the HTTP call itself runs outside the lock
-    to avoid serializing unrelated fetches on slow responses.
-    """
+    """Actually hit Overpass. Respects the 2s fair-use cooldown (§K.3)."""
     global _LAST_OVERPASS_CALL_AT
     async with _OVERPASS_LOCK:
         now = time.monotonic()
@@ -291,39 +415,84 @@ async def fetch_overpass(
     except ValueError as exc:
         return {"ok": False, "error": f"parse:{type(exc).__name__}"}
 
-    counts = {
-        "groceriesWithin1Mile": 0,
-        "schoolsWithin1Mile": 0,
-        "restaurantsWithin1Mile": 0,
-        "transitStopsWithin0.5Mile": 0,
-        "trainStationsWithin1Mile": 0,
-        "parksWithin1Mile": 0,
-    }
-    for element in payload.get("elements") or []:
-        tags = element.get("tags") or {}
-        shop = tags.get("shop")
-        amenity = tags.get("amenity")
-        highway = tags.get("highway")
-        railway = tags.get("railway")
-        leisure = tags.get("leisure")
-        if shop in ("supermarket", "convenience"):
-            counts["groceriesWithin1Mile"] += 1
-        elif amenity in ("school", "kindergarten"):
-            counts["schoolsWithin1Mile"] += 1
-        elif amenity in ("restaurant", "cafe"):
-            counts["restaurantsWithin1Mile"] += 1
-        elif highway == "bus_stop":
-            counts["transitStopsWithin0.5Mile"] += 1
-        elif railway in ("station", "halt", "tram_stop"):
-            counts["trainStationsWithin1Mile"] += 1
-        elif leisure in ("park", "playground"):
-            counts["parksWithin1Mile"] += 1
+    return {"ok": True, "raw": payload}
 
-    return {
-        "ok": True,
-        "amenity_counts": counts,
-        "walkability_index": _derive_walkability(counts),
-    }
+
+async def fetch_overpass(
+    client: httpx.AsyncClient,
+    lat: float,
+    lng: float,
+    *,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    """Fetch amenity counts + walkability, cache-aware.
+
+    Sprint 8-2: bucket lat/lng to ~100m, read from ``overpass_cache``, and
+    on miss coalesce concurrent callers for the same bucket via an
+    in-flight futures map so 5 URLs in the same block trigger ONE Overpass
+    request. The 2s cooldown still applies to actual network fetches; cache
+    hits bypass it entirely.
+    """
+    lat_b, lng_b = _bucket_coords(lat, lng)
+    db_path = db_path or _default_overpass_db_path()
+
+    cached = _overpass_cache_read(db_path, lat_b, lng_b)
+    if cached is not None:
+        counts = cached["payload"].get("amenity_counts") or _tally_overpass_elements(
+            cached["payload"].get("elements") or []
+        )
+        return {
+            "ok": True,
+            "amenity_counts": counts,
+            "walkability_index": _derive_walkability(counts),
+        }
+
+    key = (lat_b, lng_b)
+    async with _OVERPASS_INFLIGHT_LOCK:
+        fut = _OVERPASS_INFLIGHT.get(key)
+        is_owner = fut is None
+        if is_owner:
+            fut = asyncio.get_running_loop().create_future()
+            _OVERPASS_INFLIGHT[key] = fut
+
+    if not is_owner:
+        try:
+            return await fut  # type: ignore[return-value]
+        except Exception:
+            return {"ok": False, "error": "inflight_owner_failed"}
+
+    try:
+        raw_result = await _fetch_overpass_remote(client, lat, lng)
+        if not raw_result.get("ok"):
+            fut.set_result(raw_result)
+            return raw_result
+
+        payload = raw_result["raw"]
+        counts = _tally_overpass_elements(payload.get("elements") or [])
+        result = {
+            "ok": True,
+            "amenity_counts": counts,
+            "walkability_index": _derive_walkability(counts),
+        }
+        # Persist a slim shape (counts only) so future cache hits skip the
+        # element-tally pass entirely. Ignore persist errors — the caller
+        # still gets the live result.
+        _overpass_cache_write(
+            db_path, lat_b, lng_b,
+            {"amenity_counts": counts},
+        )
+        fut.set_result(result)
+        return result
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("overpass: owner path crashed for %s,%s: %s",
+                       lat_b, lng_b, exc)
+        result = {"ok": False, "error": f"owner_crash:{type(exc).__name__}"}
+        if not fut.done():
+            fut.set_result(result)
+        return result
+    finally:
+        async with _OVERPASS_INFLIGHT_LOCK:
+            _OVERPASS_INFLIGHT.pop(key, None)
 
 
 # --------------------------------------------------------------------------
@@ -337,6 +506,7 @@ async def enrich_property(
     lat: float | None,
     lng: float | None,
     address: str | None,
+    db_path: str | None = None,
 ) -> dict[str, Any]:
     """Run geocoding (if needed) + FEMA + Cal Fire + Overpass in parallel.
 
@@ -382,7 +552,7 @@ async def enrich_property(
 
     fema_task = asyncio.create_task(fetch_fema(client, lat, lng))
     fire_task = asyncio.create_task(fetch_calfire(client, lat, lng))
-    overpass_task = asyncio.create_task(fetch_overpass(client, lat, lng))
+    overpass_task = asyncio.create_task(fetch_overpass(client, lat, lng, db_path=db_path))
 
     try:
         results = await asyncio.wait_for(

@@ -188,7 +188,17 @@ async def _prepare_url(
         except Exception:  # pragma: no cover
             pass
 
-    scrape = await _scrape_url(url)
+    # Sprint 8-4: reuse a warm snapshot if we scraped this URL recently.
+    from datetime import datetime, timezone
+    from .pipeline import _reuse_warm_snapshot
+
+    scrape = _reuse_warm_snapshot(
+        db_path=db_path,
+        url_hash=uh,
+        now_utc=datetime.now(timezone.utc),
+    )
+    if scrape is None:
+        scrape = await _scrape_url(url)
     if not scrape.get("ok"):
         return _skip_row(
             url=url, uh=uh, canonical=canonical, cached=cached,
@@ -225,6 +235,7 @@ async def _prepare_url(
             lat=scrape.get("lat"),
             lng=scrape.get("lng"),
             address=scrape.get("address"),
+            db_path=db_path,
         )
 
     cache_hit = (not stale) and bool(cached) and bool(cached.get("llm_analysis"))
@@ -446,6 +457,12 @@ def _persist_batch_final(
             )
             # Replace any stale rankings rows (poll path may be re-entered).
             c.execute("DELETE FROM rankings WHERE batch_id = ?", (batch_id,))
+
+            # Sprint 8-3: batch homogeneous rows for executemany.
+            snapshot_rows: list[tuple] = []
+            ranking_rows: list[tuple] = []
+            claude_run_rows: list[tuple] = []
+
             for row in ranked_rows:
                 _upsert_property_row(
                     c,
@@ -457,10 +474,16 @@ def _persist_batch_final(
                     last_dom=row.get("metrics", {}).get("dom"),
                     now_iso=completed_at,
                 )
-                _insert_snapshot(
-                    c, url_hash=row["url_hash"], now_iso=completed_at,
-                    scrape=row.get("scrape") or {"ok": False},
-                )
+                scrape = row.get("scrape") or {"ok": False}
+                snapshot_rows.append((
+                    row["url_hash"], completed_at,
+                    scrape.get("price"), scrape.get("beds"), scrape.get("baths"),
+                    scrape.get("sqft"), scrape.get("year_built"), scrape.get("units"),
+                    scrape.get("dom"), scrape.get("description"), scrape.get("image_url"),
+                    json.dumps(scrape),
+                    1 if scrape.get("ok") else 0,
+                    scrape.get("error") if not scrape.get("ok") else None,
+                ))
                 if row.get("enrichment"):
                     _upsert_enrichment(
                         c, url_hash=row["url_hash"],
@@ -477,43 +500,58 @@ def _persist_batch_final(
                         analyzed_at=row.get("analyzed_at"),
                     )
                     if row.get("cache_stale_reason") is not None and row.get("llm_ok") is not None:
-                        c.execute(
-                            """INSERT INTO claude_runs
-                               (run_id, batch_id, url_hash, mode, external_batch_id,
-                                prompt_cache_hit, input_tokens, cached_input_tokens,
-                                output_tokens, cost_usd, created_at, completed_at,
-                                status, error_reason)
-                               VALUES (?, ?, ?, 'async', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
-                            (
-                                new_uuid_hex(), batch_id, row["url_hash"],
-                                external_batch_id,
-                                1 if (row.get("llm_tokens") or {}).get("cached_input_read") else 0,
-                                (row.get("llm_tokens") or {}).get("input"),
-                                (row.get("llm_tokens") or {}).get("cached_input_read"),
-                                (row.get("llm_tokens") or {}).get("output"),
-                                completed_at, completed_at,
-                                "ok" if row.get("llm_ok") else "failed",
-                                None if row.get("llm_ok") else "extraction_failed",
-                            ),
-                        )
-                c.execute(
+                        tokens = row.get("llm_tokens") or {}
+                        claude_run_rows.append((
+                            new_uuid_hex(), batch_id, row["url_hash"],
+                            external_batch_id,
+                            1 if tokens.get("cached_input_read") else 0,
+                            tokens.get("input"),
+                            tokens.get("cached_input_read"),
+                            tokens.get("output"),
+                            completed_at, completed_at,
+                            "ok" if row.get("llm_ok") else "failed",
+                            None if row.get("llm_ok") else "extraction_failed",
+                        ))
+                ranking_rows.append((
+                    batch_id, row["url_hash"], row["rank"],
+                    float(row.get("topsis_score") or 0.0),
+                    1 if row.get("pareto_efficient") else 0,
+                    row.get("verdict", "red"),
+                    1 if row.get("hard_fail") else 0,
+                    json.dumps(row.get("verdict_reasons") or []),
+                    json.dumps(row.get("criteria") or {}),
+                    json.dumps(row.get("derived_metrics") or {}),
+                    (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+                    "ok" if include_narrative and row.get("scrape_ok") else "skipped",
+                ))
+
+            if snapshot_rows:
+                c.executemany(
+                    """INSERT INTO scrape_snapshots
+                       (url_hash, scraped_at, price, beds, baths, sqft, year_built,
+                        units, dom, description, image_url, raw_json, scrape_ok,
+                        error_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    snapshot_rows,
+                )
+            if claude_run_rows:
+                c.executemany(
+                    """INSERT INTO claude_runs
+                       (run_id, batch_id, url_hash, mode, external_batch_id,
+                        prompt_cache_hit, input_tokens, cached_input_tokens,
+                        output_tokens, cost_usd, created_at, completed_at,
+                        status, error_reason)
+                       VALUES (?, ?, ?, 'async', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
+                    claude_run_rows,
+                )
+            if ranking_rows:
+                c.executemany(
                     """INSERT INTO rankings
                        (batch_id, url_hash, rank, topsis_score, pareto_efficient,
                         verdict, hard_fail, reasons_json, criteria_json,
                         derived_metrics_json, claude_narrative, narrative_status)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        batch_id, row["url_hash"], row["rank"],
-                        float(row.get("topsis_score") or 0.0),
-                        1 if row.get("pareto_efficient") else 0,
-                        row.get("verdict", "red"),
-                        1 if row.get("hard_fail") else 0,
-                        json.dumps(row.get("verdict_reasons") or []),
-                        json.dumps(row.get("criteria") or {}),
-                        json.dumps(row.get("derived_metrics") or {}),
-                        (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
-                        "ok" if include_narrative and row.get("scrape_ok") else "skipped",
-                    ),
+                    ranking_rows,
                 )
         with_immediate_tx(conn, _write)
     finally:

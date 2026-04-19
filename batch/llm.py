@@ -119,7 +119,37 @@ Schema (emit exactly this shape; if undetermined, use default and lower confiden
   "narrativeForRanking": string
 }
 
+Confidence calibration (use real values, not a flat 0.8 default):
+- 0.9-1.0 when the listing text names the feature explicitly (e.g. "new roof installed 2021", "panel upgraded 2019"). Cite the exact phrase in `reasoning` / `evidence`.
+- 0.6-0.8 when the photo or year-built + neighborhood provide strong circumstantial evidence without direct text. Describe what you saw.
+- 0.3-0.5 when you're inferring from absence ("built 1908, no update mention"). Call out the uncertainty in `reasoning`.
+- 0.0-0.2 when you genuinely can't tell. Use the mid value from the rubric and a short "insufficient data" note.
+
+Per-category sanity rules (apply silently — don't describe them back):
+- `rehabBand.*.mid` must sit between `low` and `high`. If you're unsure, pick the rubric midpoint, not the extremes.
+- `rehabBand.roof.mid` must reflect the 0.6x C-39 self-perform multiplier — quote a lower dollar number than a non-C-39 buyer would see.
+- `riskFlags.galvanizedPlumbing` and `riskFlags.knobAndTubeElectrical` must both be explicitly `false` for post-1978 builds unless the listing specifically mentions them (they're the pre-1978 combo hard-fail).
+- `riskFlags.flatRoof.present = true` only on visible photo evidence OR explicit "flat roof" / "torch-down" / "membrane" text. Commercial conversions are the hard-fail case — if you see "mixed-use" or "live/work" with a flat roof, flag it.
+- `aduPotential.present = true` requires a permitted, legal ADU — either "ADU" / "accessory dwelling unit" in the listing, a separate address on title, or a clearly separate entrance with utilities. Don't confuse it with the `riskFlags.unpermittedAdu` gate.
+
+Narrative guidance for `narrativeForRanking`:
+- Write 2-3 sentences in Jose's voice — plain English, contractor-first framing.
+- Lead with the single biggest variable (usually the rehab delta or the risk flag that flips the verdict).
+- Name the specific numbers (price, DOM, roof condition) that drove the ranking — don't just say "good deal".
+- No marketing language. No "charming". Grade as if you were going to pull permits.
+
 Emit only valid JSON. No markdown. No explanation."""
+
+
+# Sprint 8-5: Fail loudly on import if the system prompt drops below the
+# Anthropic prompt-cache minimum. The cache kicks in at 1024 tokens
+# (≈4096 chars of English). 4400 chars (~1100 tokens) gives us a small
+# cushion so an accidental copy-edit can't silently disable caching and
+# quietly 10x the LLM bill. Intentionally loud — assertion IS the test.
+assert len(_SYSTEM_PROMPT) >= 4400, (
+    f"system prompt below 4400 chars ({len(_SYSTEM_PROMPT)}) — "
+    "prompt caching will silently disable"
+)
 
 
 # --------------------------------------------------------------------------

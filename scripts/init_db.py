@@ -168,6 +168,18 @@ CREATE TABLE IF NOT EXISTS rent_comps_cache (
     PRIMARY KEY (zip_code, beds, baths)
 );
 CREATE INDEX IF NOT EXISTS idx_rent_comps_fetched ON rent_comps_cache(fetched_at);
+
+-- 8) overpass_cache (Sprint 8-2) — cache OSM Overpass walkability fetches
+-- keyed by a lat/lng bucket (~100m cell). Two URLs in the same cell share
+-- one fetch; TTL 30 days since walkability changes slowly.
+CREATE TABLE IF NOT EXISTS overpass_cache (
+    lat_bucket    REAL NOT NULL,
+    lng_bucket    REAL NOT NULL,
+    payload_json  TEXT NOT NULL,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (lat_bucket, lng_bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_overpass_fetched ON overpass_cache(fetched_at);
 """
 
 
@@ -184,6 +196,7 @@ TABLE_NAMES = (
     "scrape_snapshots",
     "property_enrichment",
     "rent_comps_cache",
+    "overpass_cache",
     "batches",
     "batch_url_hashes",
     "rankings",

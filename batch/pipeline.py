@@ -82,6 +82,13 @@ TIER_DEFAULT_RENT_2BR = {
     "outside": 2000,
 }
 
+# Sprint 8-4: skip the live scrape if the property was fetched within this
+# window. Tight threshold (15m) is the "user pasted the same batch twice in
+# a row" optimization — long enough to avoid round-trip duplication in a
+# single analysis session, short enough that price/DOM changes propagate
+# within the hour. The 30-day LLM cache staleness check (§L.1) is unchanged.
+_WARM_SCRAPE_SKIP_MINUTES = 15
+
 
 # --------------------------------------------------------------------------
 # Math helpers (mirror calc.js)
@@ -153,6 +160,67 @@ def _looks_excluded(address: str | None) -> bool:
 # --------------------------------------------------------------------------
 # Scrape wrapper (delegates to existing app._fetch_and_parse_redfin path)
 # --------------------------------------------------------------------------
+
+
+def _reuse_warm_snapshot(
+    *,
+    db_path: str,
+    url_hash: str,
+    now_utc,
+) -> dict[str, Any] | None:
+    """Sprint 8-4: return a reconstructed scrape dict if the last snapshot
+    for this url_hash is within ``_WARM_SCRAPE_SKIP_MINUTES`` AND was
+    successful. Returns ``None`` otherwise (caller scrapes live).
+
+    The returned dict matches ``_scrape_url`` output so downstream code is
+    unchanged. We read the most recent successful snapshot via
+    ``idx_snapshots_urlhash_time`` (LIMIT 1).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = get_connection(db_path)
+    try:
+        # Read freshness from the SNAPSHOT row we're about to reuse, not from
+        # properties.last_scraped_at. Those diverge when a recent scrape
+        # failed: last_scraped_at advances to the failed attempt, while the
+        # latest successful snapshot may be older — which would make the
+        # 15-min gate reuse stale data. Code Review Sprint 8 finding.
+        cur = conn.execute(
+            """SELECT scrape_snapshots.scraped_at AS snapshot_at,
+                      scrape_snapshots.raw_json
+               FROM scrape_snapshots
+               WHERE scrape_snapshots.url_hash = ?
+                 AND scrape_snapshots.scrape_ok = 1
+               ORDER BY scrape_snapshots.scraped_at DESC
+               LIMIT 1""",
+            (url_hash,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row or not row["snapshot_at"] or not row["raw_json"]:
+        return None
+
+    last_iso = row["snapshot_at"]
+    try:
+        s = last_iso[:-1] + "+00:00" if last_iso.endswith("Z") else last_iso
+        last = datetime.fromisoformat(s)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+    if now_utc - last > timedelta(minutes=_WARM_SCRAPE_SKIP_MINUTES):
+        return None
+
+    try:
+        reused = json.loads(row["raw_json"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(reused, dict) or not reused.get("ok"):
+        return None
+    return reused
 
 
 async def _scrape_url(url: str) -> dict[str, Any]:
@@ -673,8 +741,19 @@ async def _process_url(
         except Exception:  # pragma: no cover - import/runtime guard
             pass
 
-    # Scrape (always).
-    scrape = await _scrape_url(url)
+    # Sprint 8-4: warm-cache skip. If the same URL was scraped in the last
+    # `_WARM_SCRAPE_SKIP_MINUTES` we reuse the stored snapshot instead of
+    # hitting the site again — the real-estate listing isn't going to
+    # change in 15 minutes, and re-pastes of the same batch are common.
+    from datetime import datetime, timezone
+
+    scrape = _reuse_warm_snapshot(
+        db_path=db_path,
+        url_hash=uh,
+        now_utc=datetime.now(timezone.utc),
+    )
+    if scrape is None:
+        scrape = await _scrape_url(url)
     if not scrape.get("ok"):
         return {
             "url": url,
@@ -729,6 +808,7 @@ async def _process_url(
             lat=scrape.get("lat"),
             lng=scrape.get("lng"),
             address=scrape.get("address"),
+            db_path=db_path,
         )
 
     # LLM extraction — cache hit branch.
@@ -935,6 +1015,16 @@ async def run_sync_batch(
                    VALUES (?, ?, ?, 'sync', ?, 'complete', ?, NULL)""",
                 (batch_id, created_at, now_iso, len(deduped), preset_name),
             )
+
+            # Sprint 8-3: collect homogeneous rows then ``executemany`` at
+            # the end to cut down BEGIN IMMEDIATE hold time. Property
+            # upserts stay per-row (their insert-vs-update branch is
+            # heterogeneous); same for enrichment (ON CONFLICT upsert with
+            # optional enrichment key) and analysis-cache updates.
+            snapshot_rows: list[tuple] = []
+            ranking_rows: list[tuple] = []
+            claude_run_rows: list[tuple] = []
+
             for row in ranked:
                 _upsert_property_row(
                     c,
@@ -946,10 +1036,16 @@ async def run_sync_batch(
                     last_dom=row.get("metrics", {}).get("dom"),
                     now_iso=now_iso,
                 )
-                _insert_snapshot(
-                    c, url_hash=row["url_hash"], now_iso=now_iso,
-                    scrape=row.get("scrape") or {"ok": False},
-                )
+                scrape = row.get("scrape") or {"ok": False}
+                snapshot_rows.append((
+                    row["url_hash"], now_iso,
+                    scrape.get("price"), scrape.get("beds"), scrape.get("baths"),
+                    scrape.get("sqft"), scrape.get("year_built"), scrape.get("units"),
+                    scrape.get("dom"), scrape.get("description"), scrape.get("image_url"),
+                    json.dumps(scrape),
+                    1 if scrape.get("ok") else 0,
+                    scrape.get("error") if not scrape.get("ok") else None,
+                ))
                 if row.get("enrichment"):
                     _upsert_enrichment(
                         c, url_hash=row["url_hash"],
@@ -966,33 +1062,56 @@ async def run_sync_batch(
                         analyzed_at=row.get("analyzed_at"),
                     )
                     if row.get("cache_stale_reason") is not None and row.get("llm_ok") is not None:
-                        _insert_claude_run(
-                            c,
-                            batch_id=batch_id,
-                            url_hash=row["url_hash"],
-                            tokens=row["llm_tokens"],
-                            status="ok" if row["llm_ok"] else "failed",
-                            error_reason=None if row["llm_ok"] else "extraction_failed",
-                            now_iso=now_iso,
-                        )
-                c.execute(
+                        tokens = row["llm_tokens"] or {}
+                        claude_run_rows.append((
+                            new_uuid_hex(),
+                            batch_id,
+                            row["url_hash"],
+                            1 if tokens.get("cached_input_read") else 0,
+                            tokens.get("input"), tokens.get("cached_input_read"), tokens.get("output"),
+                            now_iso, now_iso,
+                            "ok" if row["llm_ok"] else "failed",
+                            None if row["llm_ok"] else "extraction_failed",
+                        ))
+                ranking_rows.append((
+                    batch_id, row["url_hash"], row["rank"],
+                    float(row.get("topsis_score") or 0.0),
+                    1 if row.get("pareto_efficient") else 0,
+                    row.get("verdict", "red"),
+                    1 if row.get("hard_fail") else 0,
+                    json.dumps(row.get("verdict_reasons") or []),
+                    json.dumps(row.get("criteria") or {}),
+                    json.dumps(row.get("derived_metrics") or {}),
+                    (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+                    "ok" if include_narrative and row.get("scrape_ok") else "skipped",
+                ))
+
+            if snapshot_rows:
+                c.executemany(
+                    """INSERT INTO scrape_snapshots
+                       (url_hash, scraped_at, price, beds, baths, sqft, year_built,
+                        units, dom, description, image_url, raw_json, scrape_ok,
+                        error_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    snapshot_rows,
+                )
+            if claude_run_rows:
+                c.executemany(
+                    """INSERT INTO claude_runs
+                       (run_id, batch_id, url_hash, mode, prompt_cache_hit,
+                        input_tokens, cached_input_tokens, output_tokens, cost_usd,
+                        created_at, completed_at, status, error_reason)
+                       VALUES (?, ?, ?, 'sync', ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
+                    claude_run_rows,
+                )
+            if ranking_rows:
+                c.executemany(
                     """INSERT INTO rankings
                        (batch_id, url_hash, rank, topsis_score, pareto_efficient,
                         verdict, hard_fail, reasons_json, criteria_json,
                         derived_metrics_json, claude_narrative, narrative_status)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        batch_id, row["url_hash"], row["rank"],
-                        float(row.get("topsis_score") or 0.0),
-                        1 if row.get("pareto_efficient") else 0,
-                        row.get("verdict", "red"),
-                        1 if row.get("hard_fail") else 0,
-                        json.dumps(row.get("verdict_reasons") or []),
-                        json.dumps(row.get("criteria") or {}),
-                        json.dumps(row.get("derived_metrics") or {}),
-                        (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
-                        "ok" if include_narrative and row.get("scrape_ok") else "skipped",
-                    ),
+                    ranking_rows,
                 )
 
         with_immediate_tx(conn, _write)

@@ -51,6 +51,103 @@ except Exception as _db_exc:  # pragma: no cover - startup diagnostic
 
 
 # ---------------------------------------------------------------------------
+# Playwright browser pool (Sprint 8-1)
+#
+# Each ``p.chromium.launch()`` spends 800ms-1.5s on cold start. On a 30-URL
+# batch with 10 cache-miss rent-comp ZIPs, that's ~10-15s of pure launch
+# overhead. We keep a single, process-lifetime browser around and mint a
+# fresh ``new_context()`` (≈50ms) per call — contexts are isolated so the
+# shared browser doesn't leak cookies or state across URLs. The existing
+# ``_search_semaphore(3)`` still bounds concurrency; the pool only removes
+# the launch cost, not the concurrency cap.
+#
+# Lazy init (NOT module-import) because cold-start matters: we only pay
+# the first ~1.5s launch the first time a caller actually needs a browser.
+# ---------------------------------------------------------------------------
+_PLAYWRIGHT_BROWSER = None  # type: ignore[var-annotated]
+_PLAYWRIGHT_HANDLE = None  # type: ignore[var-annotated]
+_PLAYWRIGHT_BROWSER_LOCK = asyncio.Lock()
+
+
+async def _get_browser():
+    """Return a ready-to-use Playwright ``Browser``.
+
+    Double-checked locking: the fast path is a plain global read, and the
+    lock is only held across the launch itself. If the browser died
+    (crash, OOM, external `pkill`) we detect via ``is_connected()`` and
+    relaunch exactly once.
+    """
+    global _PLAYWRIGHT_BROWSER, _PLAYWRIGHT_HANDLE
+    b = _PLAYWRIGHT_BROWSER
+    if b is not None and b.is_connected():
+        return b
+    async with _PLAYWRIGHT_BROWSER_LOCK:
+        b = _PLAYWRIGHT_BROWSER
+        if b is not None and b.is_connected():
+            return b
+        # Either first-time init or the previous browser died. Clean up any
+        # dead handle before relaunching so the playwright driver doesn't
+        # hold a zombie process.
+        if _PLAYWRIGHT_HANDLE is not None:
+            try:
+                await _PLAYWRIGHT_HANDLE.stop()
+            except Exception:  # pragma: no cover - shutdown noise
+                pass
+            _PLAYWRIGHT_HANDLE = None
+        from playwright.async_api import async_playwright
+        _PLAYWRIGHT_HANDLE = await async_playwright().start()
+        _PLAYWRIGHT_BROWSER = await _PLAYWRIGHT_HANDLE.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        return _PLAYWRIGHT_BROWSER
+
+
+async def _get_browser_context(**context_kwargs):
+    """Return ``(context, browser)`` with one retry if the shared browser
+    died between the ``_get_browser`` readiness check and ``new_context``.
+
+    This closes the tight race Perf Benchmarker flagged: ``is_connected()``
+    returns True, then chromium OOMs, then ``new_context()`` raises. The
+    caller gets a clean retry instead of a hard fail on a single URL.
+    """
+    for attempt in (0, 1):
+        browser = await _get_browser()
+        try:
+            context = await browser.new_context(**context_kwargs)
+            return context, browser
+        except Exception:
+            # Force a relaunch on next _get_browser() call by nulling the
+            # handle. The double-checked lock inside _get_browser will
+            # re-initialize. Re-raise on the second failure so the caller
+            # sees a real error instead of spinning forever.
+            global _PLAYWRIGHT_BROWSER
+            _PLAYWRIGHT_BROWSER = None
+            if attempt == 1:
+                raise
+    raise RuntimeError("unreachable")
+
+
+async def _shutdown_browser_pool():
+    """Close the shared browser + stop the driver. Idempotent."""
+    global _PLAYWRIGHT_BROWSER, _PLAYWRIGHT_HANDLE
+    try:
+        if _PLAYWRIGHT_BROWSER is not None:
+            try:
+                await _PLAYWRIGHT_BROWSER.close()
+            except Exception:  # pragma: no cover - shutdown noise
+                pass
+        if _PLAYWRIGHT_HANDLE is not None:
+            try:
+                await _PLAYWRIGHT_HANDLE.stop()
+            except Exception:  # pragma: no cover - shutdown noise
+                pass
+    finally:
+        _PLAYWRIGHT_BROWSER = None
+        _PLAYWRIGHT_HANDLE = None
+
+
+# ---------------------------------------------------------------------------
 # Rate Limiter (in-memory, per-IP)
 # ---------------------------------------------------------------------------
 _rate_limits: dict[str, list[float]] = defaultdict(list)
@@ -476,20 +573,19 @@ def _extract_from_dom(soup):
 # ---------------------------------------------------------------------------
 
 async def _fetch_with_playwright(url: str) -> str:
-    """Use a headless browser to fetch the page (bypasses bot detection)."""
-    from playwright.async_api import async_playwright
+    """Use a headless browser to fetch the page (bypasses bot detection).
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            user_agent=HEADERS["User-Agent"],
-            viewport={"width": 1280, "height": 900},
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
+    Sprint 8-1: reuses the shared process-lifetime browser pool. Each call
+    still mints a fresh ``new_context()`` so cookies / storage don't leak
+    between URLs.
+    """
+    context, _ = await _get_browser_context(
+        user_agent=HEADERS["User-Agent"],
+        viewport={"width": 1280, "height": 900},
+        locale="en-US",
+        timezone_id="America/New_York",
+    )
+    try:
         page = await context.new_page()
 
         # Remove webdriver flag to avoid bot detection
@@ -506,7 +602,11 @@ async def _fetch_with_playwright(url: str) -> str:
         await page.wait_for_timeout(1000)
 
         html = await page.content()
-        await browser.close()
+    finally:
+        try:
+            await context.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
     return html
 
 
@@ -901,111 +1001,108 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
 
     Scrolls down multiple times to load more listings via lazy-loading.
     """
-    from playwright.async_api import async_playwright
-
     direct_url = _build_redfin_search_url(location, filters)
     max_results = filters.get("max_results", 40)
 
-    async with _search_semaphore, async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
+    # Sprint 8-1: shared browser pool. Context is per-call (isolates cookies);
+    # the semaphore still caps concurrent page sessions.
+    async with _search_semaphore:
+        context, _ = await _get_browser_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1280, "height": 900},
             locale="en-US",
             timezone_id="America/New_York",
         )
-        page = await context.new_page()
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
-
-        if direct_url:
-            # Zip code — navigate directly
-            try:
-                await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
-            except Exception:
-                await browser.close()
-                return {"error": "Could not connect to Redfin. Please try again later."}
-        else:
-            # City name — use Redfin search bar to resolve
-            try:
-                await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
-                # Type in search box and pick first suggestion
-                search_input = page.locator("input[type='text'][placeholder*='Search'], input[type='search'], #search-box-input, [data-testid='search-box-input']").first
-                await search_input.fill(location.strip())
-                await page.wait_for_timeout(1500)
-                # Press Enter to search (autocomplete should resolve)
-                await search_input.press("Enter")
-                await page.wait_for_timeout(3000)
-                # Now append filters to the URL
-                current_url = page.url
-                filter_path = _build_redfin_filter_path(filters)
-                if filter_path and "/filter/" not in current_url:
-                    await page.goto(current_url.rstrip("/") + filter_path, wait_until="domcontentloaded", timeout=20000)
-            except Exception:
-                await browser.close()
-                return {"error": "Could not connect to Redfin. Please try again later."}
-
-        # Check for redirect to main page (bad location)
-        final_url = page.url
-        if "/zipcode/" not in final_url and "/city/" not in final_url and "/neighborhood/" not in final_url and "/filter/" not in final_url and "/county/" not in final_url and "/state/" not in final_url:
-            await browser.close()
-            return {"error": f'Could not find location "{location}". Try a zip code (e.g. "78701") or city + state (e.g. "Austin, TX").'}
-
-        # Wait for listing cards to render
         try:
-            await page.wait_for_selector(".MapHomeCardReact, [class*='HomeCard']", timeout=8000)
-        except Exception:
-            # No listings found or page didn't load cards
-            html_text = await page.content()
-            await browser.close()
-            if "No results found" in html_text or "0 homes" in html_text:
-                return {"listings": [], "total": 0}
-            return {"error": "No listings found. Try adjusting your filters or searching a different area."}
-
-        await page.wait_for_timeout(2000)
-
-        # Scroll down to load more lazy-loaded listings
-        # More scrolls = more listings. Stop early if no new content loaded.
-        prev_count = 0
-        for _ in range(8):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1000)
-            cur_count = await page.evaluate(
-                "document.querySelectorAll('.MapHomeCardReact, [class*=\"HomeCard\"]').length"
+            page = await context.new_page()
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
-            if cur_count == prev_count and cur_count >= 10:
-                break  # no new listings loaded
-            prev_count = cur_count
 
-        # Extract total count from page (e.g., "47 homes" in the results header)
-        page_total = await page.evaluate("""
-            () => {
-                const el = document.querySelector('[class*="homes"], [class*="result"]');
-                if (el) {
-                    const m = el.textContent.match(/(\\d+)\\s*home/i);
-                    if (m) return parseInt(m[1]);
+            if direct_url:
+                # Zip code — navigate directly
+                try:
+                    await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    return {"error": "Could not connect to Redfin. Please try again later."}
+            else:
+                # City name — use Redfin search bar to resolve
+                try:
+                    await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
+                    # Type in search box and pick first suggestion
+                    search_input = page.locator("input[type='text'][placeholder*='Search'], input[type='search'], #search-box-input, [data-testid='search-box-input']").first
+                    await search_input.fill(location.strip())
+                    await page.wait_for_timeout(1500)
+                    # Press Enter to search (autocomplete should resolve)
+                    await search_input.press("Enter")
+                    await page.wait_for_timeout(3000)
+                    # Now append filters to the URL
+                    current_url = page.url
+                    filter_path = _build_redfin_filter_path(filters)
+                    if filter_path and "/filter/" not in current_url:
+                        await page.goto(current_url.rstrip("/") + filter_path, wait_until="domcontentloaded", timeout=20000)
+                except Exception:
+                    return {"error": "Could not connect to Redfin. Please try again later."}
+
+            # Check for redirect to main page (bad location)
+            final_url = page.url
+            if "/zipcode/" not in final_url and "/city/" not in final_url and "/neighborhood/" not in final_url and "/filter/" not in final_url and "/county/" not in final_url and "/state/" not in final_url:
+                return {"error": f'Could not find location "{location}". Try a zip code (e.g. "78701") or city + state (e.g. "Austin, TX").'}
+
+            # Wait for listing cards to render
+            try:
+                await page.wait_for_selector(".MapHomeCardReact, [class*='HomeCard']", timeout=8000)
+            except Exception:
+                # No listings found or page didn't load cards
+                html_text = await page.content()
+                if "No results found" in html_text or "0 homes" in html_text:
+                    return {"listings": [], "total": 0}
+                return {"error": "No listings found. Try adjusting your filters or searching a different area."}
+
+            await page.wait_for_timeout(2000)
+
+            # Scroll down to load more lazy-loaded listings
+            # More scrolls = more listings. Stop early if no new content loaded.
+            prev_count = 0
+            for _ in range(8):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(1000)
+                cur_count = await page.evaluate(
+                    "document.querySelectorAll('.MapHomeCardReact, [class*=\"HomeCard\"]').length"
+                )
+                if cur_count == prev_count and cur_count >= 10:
+                    break  # no new listings loaded
+                prev_count = cur_count
+
+            # Extract total count from page (e.g., "47 homes" in the results header)
+            page_total = await page.evaluate("""
+                () => {
+                    const el = document.querySelector('[class*="homes"], [class*="result"]');
+                    if (el) {
+                        const m = el.textContent.match(/(\\d+)\\s*home/i);
+                        if (m) return parseInt(m[1]);
+                    }
+                    return null;
                 }
-                return null;
-            }
-        """)
+            """)
 
-        # Extract location label from page title
-        title = await page.title()
-        label = location
-        if title:
-            # "78701, TX Real Estate & Homes for Sale | Redfin"
-            # "Memphis, TN Homes for Sale & Real Estate | Redfin"
-            label = re.sub(r"\s*\|.*$", "", title)
-            label = re.sub(r"\s*(Real Estate|Homes for Sale|Houses for Sale|&).*$", "", label).strip()
-            if not label:
-                label = location
+            # Extract location label from page title
+            title = await page.title()
+            label = location
+            if title:
+                # "78701, TX Real Estate & Homes for Sale | Redfin"
+                # "Memphis, TN Homes for Sale & Real Estate | Redfin"
+                label = re.sub(r"\s*\|.*$", "", title)
+                label = re.sub(r"\s*(Real Estate|Homes for Sale|Houses for Sale|&).*$", "", label).strip()
+                if not label:
+                    label = location
 
-        listings = await page.evaluate(_REDFIN_SEARCH_JS)
-        await browser.close()
+            listings = await page.evaluate(_REDFIN_SEARCH_JS)
+        finally:
+            try:
+                await context.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     # Filter out listings without price and cap results
     listings = [l for l in listings if l.get("price")][:max_results]
@@ -1330,9 +1427,10 @@ async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict
 
     For zip codes, navigates directly. For city names, uses Playwright
     search bar (Redfin uses numeric city IDs that can't be URL-constructed).
-    """
-    from playwright.async_api import async_playwright
 
+    Sprint 8-1: reuses the shared browser pool so cold-cache rent-comp
+    batches don't pay a ~1s launch per ZIP.
+    """
     query = location.strip()
     is_zip = bool(re.match(r"^\d{5}$", query))
 
@@ -1341,72 +1439,70 @@ async def _search_redfin_rentals(location: str, beds: int | None = None) -> dict
     if beds and beds > 0:
         bed_filter = f"/filter/min-beds={int(beds)},max-beds={int(beds)}"
 
-    async with _search_semaphore, async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
+    async with _search_semaphore:
+        context, _ = await _get_browser_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1280, "height": 900},
             locale="en-US",
             timezone_id="America/New_York",
         )
-        page = await context.new_page()
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
-
-        if is_zip:
-            # Zip code — navigate directly
-            base = f"https://www.redfin.com/zipcode/{query}/apartments-for-rent{bed_filter}"
-            try:
-                await page.goto(base, wait_until="domcontentloaded", timeout=30000)
-            except Exception:
-                await browser.close()
-                return {"error": "Could not connect to Redfin."}
-        else:
-            # City name — use Redfin search bar to resolve, then switch to rentals
-            try:
-                await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
-                search_input = page.locator(
-                    "input[type='text'][placeholder*='Search'], input[type='search'], "
-                    "#search-box-input, [data-testid='search-box-input']"
-                ).first
-                await search_input.fill(query)
-                await page.wait_for_timeout(1500)
-                await search_input.press("Enter")
-                await page.wait_for_timeout(3000)
-                # Now on the for-sale page; switch to rentals
-                current_url = page.url
-                # Replace for-sale path with rental path
-                rental_url = re.sub(
-                    r"(/filter/.*)?$", "/apartments-for-rent" + bed_filter, current_url.rstrip("/")
-                )
-                if "/apartments-for-rent" not in rental_url:
-                    rental_url = current_url.rstrip("/") + "/apartments-for-rent" + bed_filter
-                await page.goto(rental_url, wait_until="domcontentloaded", timeout=20000)
-            except Exception:
-                await browser.close()
-                return {"error": "Could not connect to Redfin."}
-
         try:
-            await page.wait_for_selector(
-                ".MapHomeCardReact, [class*='HomeCard']", timeout=8000
+            page = await context.new_page()
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
-        except Exception:
-            await browser.close()
-            return {"rentals": [], "total": 0}
 
-        await page.wait_for_timeout(1500)
+            if is_zip:
+                # Zip code — navigate directly
+                base = f"https://www.redfin.com/zipcode/{query}/apartments-for-rent{bed_filter}"
+                try:
+                    await page.goto(base, wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    return {"error": "Could not connect to Redfin."}
+            else:
+                # City name — use Redfin search bar to resolve, then switch to rentals
+                try:
+                    await page.goto("https://www.redfin.com", wait_until="domcontentloaded", timeout=20000)
+                    search_input = page.locator(
+                        "input[type='text'][placeholder*='Search'], input[type='search'], "
+                        "#search-box-input, [data-testid='search-box-input']"
+                    ).first
+                    await search_input.fill(query)
+                    await page.wait_for_timeout(1500)
+                    await search_input.press("Enter")
+                    await page.wait_for_timeout(3000)
+                    # Now on the for-sale page; switch to rentals
+                    current_url = page.url
+                    # Replace for-sale path with rental path
+                    rental_url = re.sub(
+                        r"(/filter/.*)?$", "/apartments-for-rent" + bed_filter, current_url.rstrip("/")
+                    )
+                    if "/apartments-for-rent" not in rental_url:
+                        rental_url = current_url.rstrip("/") + "/apartments-for-rent" + bed_filter
+                    await page.goto(rental_url, wait_until="domcontentloaded", timeout=20000)
+                except Exception:
+                    return {"error": "Could not connect to Redfin."}
 
-        # Scroll to load more rental listings
-        for _ in range(4):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(800)
+            try:
+                await page.wait_for_selector(
+                    ".MapHomeCardReact, [class*='HomeCard']", timeout=8000
+                )
+            except Exception:
+                return {"rentals": [], "total": 0}
 
-        rentals = await page.evaluate(_REDFIN_RENT_JS)
-        await browser.close()
+            await page.wait_for_timeout(1500)
+
+            # Scroll to load more rental listings
+            for _ in range(4):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(800)
+
+            rentals = await page.evaluate(_REDFIN_RENT_JS)
+        finally:
+            try:
+                await context.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     rentals = [r for r in rentals if r.get("rent") and r["rent"] > 0][:40]
     if not rentals:
@@ -2497,6 +2593,16 @@ async def _on_startup_reconcile_async_batches():
         asyncio.create_task(_reconcile_async_batches(str(_BATCH_DB_PATH)))
     except Exception:  # pragma: no cover - startup diagnostic
         logger.exception("Failed to schedule async batch reconcile")
+
+
+@app.on_event("shutdown")
+async def _on_shutdown_close_browser_pool():
+    """Sprint 8-1: tear down the shared Playwright browser cleanly so we
+    don't leak chromium processes between reloads."""
+    try:
+        await _shutdown_browser_pool()
+    except Exception:  # pragma: no cover - shutdown diagnostic
+        logger.exception("Browser pool shutdown failed")
 
 
 @app.post("/api/property/extract")
