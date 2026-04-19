@@ -1414,6 +1414,43 @@
         <div id="batch-results" style="display:none;margin-top:14px;"></div>
       </details>
 
+      <!-- ===== Sprint 11-4: ZIP-Scan Orchestrator ===== -->
+      <details id="scan-zips-panel" style="margin-bottom:20px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;background:rgba(34,197,94,0.05);">
+        <summary style="cursor:pointer;font-weight:600;color:var(--text);list-style:revert;">Scan ZIPs (paste a list, auto-rank)</summary>
+        <p style="color:var(--text-muted);font-size:0.82rem;margin:10px 0 6px;">Paste ZIP codes (one per line or comma-separated). For each, we'll pull Redfin results, take the top N cheapest, drop excluded markets, and run everything through the full batch pipeline. Designed for the "walk away, come back to a ranked list" flow.</p>
+        <textarea id="scan-zips-list" rows="4" placeholder="94590&#10;94591&#10;94547" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;"></textarea>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:8px;font-size:0.82rem;">
+          <div class="input-group" style="margin:0;">
+            <label for="scan-zips-preset" style="font-size:0.78rem;">Preset</label>
+            <select id="scan-zips-preset">
+              <option value="">(none)</option>
+              <option value="Vallejo Priority">Vallejo Priority</option>
+              <option value="East Bay Nearby">East Bay Nearby</option>
+              <option value="Richmond Motivated">Richmond Motivated</option>
+            </select>
+          </div>
+          <div class="input-group" style="margin:0;">
+            <label for="scan-zips-top-n" style="font-size:0.78rem;">Top N per ZIP</label>
+            <input type="number" id="scan-zips-top-n" min="1" max="15" step="1" value="10">
+          </div>
+          <div class="input-group" style="margin:0;">
+            <label for="scan-zips-mode" style="font-size:0.78rem;">Mode</label>
+            <select id="scan-zips-mode">
+              <option value="">Auto (sync if ≤30, async otherwise)</option>
+              <option value="sync">Force sync</option>
+              <option value="async">Force async (overnight)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+          <span id="scan-zips-count" style="font-size:0.82rem;color:var(--text-muted);">0 ZIPs</span>
+          <button id="scan-zips-submit" class="btn btn-small" type="button" onclick="runScanZips()">Scan ZIPs</button>
+        </div>
+        <div id="scan-zips-loading" style="display:none;margin-top:10px;color:var(--text-muted);font-size:0.85rem;">Scanning... each ZIP runs a Redfin search (~3-6s), then survivors go through the full pipeline. 5 ZIPs × 10 listings cold-cache ≈ 60-90s.</div>
+        <div id="scan-zips-error" style="display:none;margin-top:10px;color:#f87171;font-size:0.85rem;"></div>
+        <div id="scan-zips-summary" style="display:none;margin-top:12px;font-size:0.85rem;"></div>
+      </details>
+
       <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px;">Search for listings in a zip code, city, or neighborhood. Results are scored using your target rent to find the best deals.</p>
 
       <div class="search-filters">
@@ -1478,6 +1515,7 @@
             </label>
             <button class="btn btn-small btn-secondary" onclick="toggleAlertConfig()">Deal Alerts</button>
             <button class="btn btn-small btn-secondary" onclick="exportSearchCSV()">Export CSV</button>
+            <button class="btn btn-small" id="analyzeAllBtn" onclick="analyzeAllSearchResults()" title="Run the full batch pipeline (TOPSIS + Jose verdict + FEMA/fire/LLM) on every visible result">Analyze all</button>
           </div>
         </div>
 
@@ -2830,9 +2868,14 @@
 
   // Run spec load BEFORE initDefaults so form defaults reflect spec values.
   // We await the fetch synchronously via an async IIFE, then call initDefaults.
+  // Sprint 11-1: after spec+defaults are applied, populate the Neighborhood
+  // Search form from the profile's default preset. initSearchDefaults is
+  // idempotent (only fills blanks), so it's safe whether loadSearchFilters
+  // ran earlier (sync path) or not.
   (async function __boot__() {
     await __loadSpec__();
     initDefaults();
+    try { initSearchDefaults(); } catch(e) { console.warn('initSearchDefaults failed', e); }
   })();
 
   // ======================================================================
@@ -2866,10 +2909,55 @@
     if (s.minPrice !== undefined) { var mn = $('searchMinPrice'); if (mn) mn.value = s.minPrice; }
     if (s.maxPrice !== undefined) { var mx = $('searchMaxPrice'); if (mx) mx.value = s.maxPrice; }
     if (s.propertyType) { var pt = $('searchPropType'); if (pt) pt.value = s.propertyType; }
+    if (s.minBeds !== undefined) { var mb = $('searchMinBeds'); if (mb) mb.value = String(s.minBeds); }
+
+    // Sprint 11-2: target rent comes from profile defaults, not preset (it's
+    // buyer-specific, not market-specific). Only overwrite when profile has a
+    // non-zero value AND the field is currently blank — never stomp user input.
+    var tr = $('searchTargetRent');
+    if (tr && !tr.value && DEFAULTS.targetMonthlyRent && DEFAULTS.targetMonthlyRent > 0) {
+      tr.value = DEFAULTS.targetMonthlyRent;
+    }
 
     // Recalc so downstream PITI/DTI reflect new taxes/insurance/vacancy.
     if (typeof calculate === 'function') { try { calculate(); } catch(e) {} }
   };
+
+  // ======================================================================
+  // Sprint 11-1: initSearchDefaults — on page load, populate Neighborhood
+  // Search form from the profile's default preset + targetMonthlyRent.
+  // Runs AFTER loadSearchFilters() so user's last-used values take priority
+  // (we only fill blanks, never overwrite).
+  // ======================================================================
+  function initSearchDefaults() {
+    var presetName = DEFAULTS.defaultPreset;
+    if (presetName && PRESETS[presetName]) {
+      var preset = PRESETS[presetName];
+      var s = preset.search || {};
+      var loc = $('searchLocation');
+      if (loc && !loc.value && s.zips && s.zips.length) loc.value = s.zips.join(', ');
+      var mn = $('searchMinPrice');
+      if (mn && !mn.value && s.minPrice !== undefined) mn.value = s.minPrice;
+      var mx = $('searchMaxPrice');
+      if (mx && !mx.value && s.maxPrice !== undefined) mx.value = s.maxPrice;
+      var pt = $('searchPropType');
+      if (pt && !pt.value && s.propertyType) pt.value = s.propertyType;
+      var mb = $('searchMinBeds');
+      if (mb && mb.value === '0' && s.minBeds !== undefined) mb.value = String(s.minBeds);
+      // Visually indicate the active preset in the header dropdown if present.
+      var dd = $('presetSelect');
+      if (dd && !dd.value) {
+        for (var i = 0; i < dd.options.length; i++) {
+          if (dd.options[i].value === presetName) { dd.value = presetName; break; }
+        }
+      }
+    }
+    var tr = $('searchTargetRent');
+    if (tr && !tr.value && DEFAULTS.targetMonthlyRent && DEFAULTS.targetMonthlyRent > 0) {
+      tr.value = DEFAULTS.targetMonthlyRent;
+    }
+  }
+  window.RPDA.initSearchDefaults = initSearchDefaults;
 
   // ======================================================================
   // Sprint 3: renderTierBanner — classify analyzed property by ZIP/address
@@ -3104,13 +3192,21 @@
   window.runNeighborhoodSearch = async function() {
     if (window.RPDA.cloudDemo) { showSearchStatus('Search features are only available when running locally. Clone the repo and run python app.py.', true); return; }
     var location = $('searchLocation').value.trim();
+    // Sprint 11-7: fall back to profile's targetMonthlyRent when the field is
+    // blank. Only block with the red banner when BOTH the input and profile
+    // are empty — otherwise auto-fill and proceed.
     var targetRent = parseFloat($('searchTargetRent').value);
+    if ((!targetRent || targetRent <= 0) && DEFAULTS.targetMonthlyRent && DEFAULTS.targetMonthlyRent > 0) {
+      targetRent = DEFAULTS.targetMonthlyRent;
+      var trEl = $('searchTargetRent');
+      if (trEl && !trEl.value) trEl.value = targetRent;
+    }
     if (!location) {
       showSearchStatus('Please enter a location (zip code or city).', true);
       return;
     }
     if (!targetRent || targetRent <= 0) {
-      showSearchStatus('Please enter a target monthly rent.', true);
+      showSearchStatus('Please enter a target monthly rent (or set it in spec/profile.local.json to skip this).', true);
       return;
     }
 
@@ -3176,7 +3272,21 @@
     var rate = mortgageRate || (DEFAULTS.interestRate / 100);
     if (!price || price <= 0 || !rent || rent <= 0) return { stars: 0, numericScore: 0, details: [], cssClass: 'score-0' };
 
-    // Flag suspiciously cheap listings (likely vacant lots or teardowns)
+    // Sprint 11.5: "likely lot" detection. Stars rank on cash flow, which
+    // assumes a rentable unit. No beds AND no sqft means it's almost always
+    // a vacant lot or auction shell — rent assumption is meaningless. Also
+    // catches the $95K / $64.9K Redfin-filter-bypass case in ZIP 94591.
+    // Returns zero-star score with an explicit "land only" warning.
+    var beds = listing.beds || 0;
+    var sqft = listing.sqft || 0;
+    if (!beds && !sqft && (price < 200000 || !listing.address)) {
+      return {
+        stars: 0,
+        numericScore: 0,
+        details: [{ text: 'Likely land only — no beds/sqft reported', cls: 'warn' }],
+        cssClass: 'score-0',
+      };
+    }
     var isLikelyLot = price < 20000;
 
     var stars = 0;
@@ -3388,6 +3498,62 @@
     }
     tbody.innerHTML = html;
   }
+
+  // ======================================================================
+  // Sprint 11-3: analyzeAllSearchResults — take every listing in the current
+  // search result set (respecting the "Good deals only" filter if active),
+  // drop the URLs into the batch textarea, and kick off runBatchAnalyze.
+  // Auto-selects sync/async based on URL count so Jose doesn't have to pick.
+  // ======================================================================
+  window.analyzeAllSearchResults = function() {
+    if (!searchResults || !searchResults.length) {
+      showSearchStatus('No search results to analyze. Run a search first.', true);
+      return;
+    }
+    var filterGood = $('filterGoodDeals') && $('filterGoodDeals').checked;
+    var urls = [];
+    searchResults.forEach(function(l) {
+      if (!l.listingUrl) return;
+      if (filterGood && l._score && l._score.stars < 3) return;
+      // Only pipe URLs the batch pipeline will accept (redfin/zillow).
+      var u = l.listingUrl.toLowerCase();
+      if (u.indexOf('redfin.com') === -1 && u.indexOf('zillow.com') === -1) return;
+      urls.push(l.listingUrl);
+    });
+    if (!urls.length) {
+      showSearchStatus('No Redfin/Zillow URLs in results to analyze.', true);
+      return;
+    }
+
+    // Expand the Batch panel so Jose can see progress + narratives.
+    var batchDetails = document.querySelector('details');
+    // First <details> inside the search mode is the batch panel — confirm via id.
+    var batchTa = $('batch-urls');
+    if (batchTa) {
+      batchTa.value = urls.join('\n');
+      batchTa.dispatchEvent(new Event('input'));
+      var container = batchTa.closest('details');
+      if (container && !container.open) container.open = true;
+    }
+
+    // Choose mode. SYNC_MAX lives in the batch module; assume 30 if undefined.
+    var syncCap = (typeof SYNC_MAX === 'number') ? SYNC_MAX : 30;
+    if (urls.length > syncCap) {
+      var asyncRadio = document.querySelector('input[name="batch-mode"][value="async"]');
+      if (asyncRadio) asyncRadio.checked = true;
+    } else {
+      var syncRadio = document.querySelector('input[name="batch-mode"][value="sync"]');
+      if (syncRadio) syncRadio.checked = true;
+    }
+
+    if (typeof window.runBatchAnalyze === 'function') {
+      // Scroll the batch area into view so progress is visible.
+      if (batchTa && batchTa.scrollIntoView) batchTa.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.runBatchAnalyze();
+    } else {
+      showSearchStatus('Batch analyzer is not ready yet — try again in a moment.', true);
+    }
+  };
 
   window.analyzeFromSearch = function(idx) {
     var l = searchResults[idx];
@@ -6079,10 +6245,149 @@
     }
   };
 
+  // ====================================================================
+  // Sprint 11-4: runScanZips — POST /api/scan-zips, render sync envelope
+  // through existing renderResults OR pipe async batchId into the
+  // pending-poll machinery the batch panel already owns.
+  // ====================================================================
+  function parseZipInput(raw) {
+    if (!raw) return [];
+    var parts = raw.split(/[\s,;]+/);
+    var zips = [];
+    var seen = {};
+    for (var i = 0; i < parts.length; i++) {
+      var z = (parts[i] || '').trim();
+      if (!/^\d{5}$/.test(z)) continue;
+      if (seen[z]) continue;
+      seen[z] = 1;
+      zips.push(z);
+    }
+    return zips;
+  }
+
+  function updateScanZipCount() {
+    var ta = $('scan-zips-list');
+    var el = $('scan-zips-count');
+    if (!ta || !el) return;
+    var zips = parseZipInput(ta.value);
+    el.textContent = zips.length + (zips.length === 1 ? ' ZIP' : ' ZIPs');
+  }
+
+  function renderScanSummary(summary, perZip, rejected) {
+    var root = $('scan-zips-summary');
+    if (!root) return;
+    if (!summary) { root.style.display = 'none'; return; }
+    var html = '';
+    html += '<div style="font-weight:600;margin-bottom:6px;">Scan summary</div>';
+    html += '<div style="color:var(--text-muted);">';
+    html += 'Scanned <b>' + summary.zips_scanned + '</b>/' + summary.zip_count + ' ZIPs';
+    html += ' · <b>' + summary.survivors + '</b> survivors';
+    html += ' · top ' + summary.top_n_per_zip + ' per ZIP';
+    html += ' · ' + Math.round((summary.elapsed_ms || 0) / 100) / 10 + 's';
+    html += '</div>';
+    if (perZip && perZip.length) {
+      html += '<div style="margin-top:8px;font-size:0.80rem;">';
+      perZip.forEach(function(p) {
+        html += '<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid var(--border);border-radius:999px;">';
+        html += p.zip + ': ' + p.kept + '/' + p.found;
+        html += '</span>';
+      });
+      html += '</div>';
+    }
+    var r = rejected || {};
+    var totalRej = (r.zip_excluded || []).length + (r.city_excluded || []).length + (r.search_errors || []).length;
+    if (totalRej) {
+      html += '<details style="margin-top:8px;font-size:0.80rem;"><summary style="cursor:pointer;">Rejected (' + totalRej + ')</summary>';
+      (r.zip_excluded || []).forEach(function(x) {
+        html += '<div>&mdash; ZIP ' + x.zip + ': ' + x.reason + '</div>';
+      });
+      (r.city_excluded || []).forEach(function(x) {
+        html += '<div>&mdash; ' + (x.address || x.url) + ': ' + x.reason + '</div>';
+      });
+      (r.search_errors || []).forEach(function(x) {
+        html += '<div>&mdash; ZIP ' + x.zip + ' search failed</div>';
+      });
+      html += '</details>';
+    }
+    root.innerHTML = html;
+    root.style.display = 'block';
+  }
+
+  window.runScanZips = async function () {
+    var ta = $('scan-zips-list');
+    var errEl = $('scan-zips-error');
+    var loadEl = $('scan-zips-loading');
+    var sumEl = $('scan-zips-summary');
+    var btn = $('scan-zips-submit');
+    if (errEl) errEl.style.display = 'none';
+    if (sumEl) sumEl.style.display = 'none';
+
+    var zips = parseZipInput(ta && ta.value);
+    if (!zips.length) {
+      if (errEl) { errEl.textContent = 'Paste at least one 5-digit ZIP.'; errEl.style.display = 'block'; }
+      return;
+    }
+    var topN = parseInt(($('scan-zips-top-n') || {}).value, 10);
+    if (!topN || topN < 1) topN = 10;
+    if (topN > 15) topN = 15;
+    var preset = ($('scan-zips-preset') || {}).value || undefined;
+    var mode = ($('scan-zips-mode') || {}).value || undefined;
+
+    if (btn) btn.disabled = true;
+    if (loadEl) loadEl.style.display = 'block';
+
+    try {
+      var resp = await fetch('/api/scan-zips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          zips: zips,
+          top_n_per_zip: topN,
+          preset_name: preset,
+          mode: mode,
+        }),
+      });
+      var data = await resp.json();
+      if (!resp.ok) {
+        var msg = (data.error && data.error.message) || 'Scan failed.';
+        var rid = (data.error && data.error.request_id) ? ' (request ' + data.error.request_id.slice(0, 8) + ')' : '';
+        if (errEl) { errEl.textContent = msg + rid; errEl.style.display = 'block'; }
+        return;
+      }
+      renderScanSummary(data.summary, data.per_zip, data.rejected);
+      if (data.status === 'empty') {
+        if (errEl) { errEl.textContent = 'No survivors after filters — nothing submitted to batch.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (data.mode === 'sync' && data.envelope) {
+        try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(data.envelope)); } catch (_) {}
+        renderResults(data.envelope);
+      } else if (data.mode === 'async' && data.batch) {
+        var pending = {
+          batchId: data.batch.batchId || data.batch.batch_id,
+          submittedAt: Date.now(),
+          urlCount: (data.summary && data.summary.survivors) || 0,
+        };
+        if (pending.batchId) {
+          savePending(pending);
+          renderPending(pending);
+          if (typeof startAutoPoll === 'function') startAutoPoll();
+        }
+      }
+    } catch (e) {
+      if (errEl) { errEl.textContent = 'Network error. Try again.'; errEl.style.display = 'block'; }
+    } finally {
+      if (btn) btn.disabled = false;
+      if (loadEl) loadEl.style.display = 'none';
+    }
+  };
+
   // Wire events + restore last-run results / pending batch on reload.
   document.addEventListener('DOMContentLoaded', function () {
     var ta = $('batch-urls');
     if (ta) ta.addEventListener('input', updateCount);
+    var scanTa = $('scan-zips-list');
+    if (scanTa) scanTa.addEventListener('input', updateScanZipCount);
     var radios = document.querySelectorAll('input[name="batch-mode"]');
     for (var i = 0; i < radios.length; i++) {
       radios[i].addEventListener('change', function () {

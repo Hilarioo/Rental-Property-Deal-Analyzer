@@ -1215,8 +1215,51 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
             except Exception:  # pragma: no cover - defensive
                 pass
 
-    # Filter out listings without price and cap results
-    listings = [l for l in listings if l.get("price")][:max_results]
+    # Sprint 11.5: Python-side post-filter. Redfin's URL filters sometimes
+    # no-op (multi-ZIP input, autocomplete fallback, layout changes) and
+    # Redfin returns vacant lots even when property-type=multifamily. Defense
+    # in depth — re-enforce min/max/beds/property_type on what actually came
+    # back, and drop "likely lot" entries (no beds AND no sqft, low price).
+    filter_min_price = filters.get("min_price") or 0
+    filter_max_price = filters.get("max_price") or 0
+    filter_min_beds = filters.get("min_beds") or 0
+    filter_ptype = filters.get("property_type") or None
+
+    def _passes_filters(l: dict) -> bool:
+        price = l.get("price") or 0
+        if price <= 0:
+            return False
+        if filter_min_price and price < filter_min_price:
+            return False
+        if filter_max_price and price > filter_max_price:
+            return False
+        beds = l.get("beds") or 0
+        sqft = l.get("sqft") or 0
+        if filter_min_beds and beds < filter_min_beds:
+            return False
+        # "Likely lot" heuristic: no beds, no sqft, suspiciously cheap. Triggers
+        # when beds=0 AND sqft=0 AND (price < 200_000 OR no address). Addresses
+        # the Vallejo 94591 $95K / $64.9K cases where Redfin returned vacant
+        # lots under a multi-family filter.
+        if (not beds) and (not sqft) and (price < 200_000 or not l.get("address")):
+            return False
+        # Property-type enforcement — Redfin exposes multiple shapes; accept
+        # either the string we asked for or a close synonym.
+        if filter_ptype:
+            ptype = (l.get("propertyType") or "").lower()
+            if filter_ptype == "multi-family":
+                if ptype and "multi" not in ptype and "duplex" not in ptype and "triplex" not in ptype and "fourplex" not in ptype:
+                    return False
+            elif filter_ptype == "house":
+                # Reject obvious non-houses (condos, townhomes, land).
+                if "land" in ptype or "lot" in ptype or "manufactured" in ptype:
+                    return False
+            elif filter_ptype == "condo":
+                if ptype and "condo" not in ptype and "town" not in ptype:
+                    return False
+        return True
+
+    listings = [l for l in listings if _passes_filters(l)][:max_results]
 
     return {
         "listings": listings,
@@ -1241,6 +1284,18 @@ async def search_neighborhood(request: Request):
         return JSONResponse({"error": "Location is required."}, status_code=400)
     if len(location) > 200:
         return JSONResponse({"error": "Location query is too long."}, status_code=400)
+
+    # Sprint 11.5: reject comma-separated multi-ZIP in the Location field.
+    # Before this guard, Redfin fell through to the search-bar fallback and
+    # silently returned unfiltered results (min/max/property-type ignored).
+    # Multi-ZIP now belongs in the Scan ZIPs panel, which fans out per ZIP.
+    if "," in location:
+        parts = [p.strip() for p in location.split(",") if p.strip()]
+        if len(parts) > 1 and all(re.fullmatch(r"\d{5}", p) for p in parts):
+            return JSONResponse(
+                {"error": "Multi-ZIP searches belong in the Scan ZIPs panel — the Location field accepts a single ZIP or city."},
+                status_code=400,
+            )
 
     filters = {
         "min_price": body.get("min_price"),
@@ -2473,6 +2528,7 @@ from batch.async_pipeline import (  # noqa: E402
     reconcile_pending_batches_on_startup as _reconcile_async_batches,
 )
 from scripts.init_db import DEFAULT_DB_PATH as _BATCH_DB_PATH  # noqa: E402
+from spec import constants as _spec_constants  # noqa: E402 — Sprint 11-4
 
 
 _BATCH_MAX_URLS_SYNC = 30
@@ -2710,6 +2766,375 @@ async def batch_submit_async(request: Request):
         return JSONResponse(result, status_code=502)
     # pending — provider accepted the batch.
     return JSONResponse(result, status_code=202)
+
+
+# =====================================================================
+# Sprint 11-4: /api/scan-zips — paste a list of ZIPs + optional preset,
+# fan out Redfin searches, take top N per ZIP, reject excluded markets,
+# and submit survivors to the existing batch pipeline. Inherits every
+# Sprint 10A invariant: _error_envelope paths, rate limiting, shared
+# URL validator, loopback-only profile. Must NOT echo profile PII
+# (income, cash, credit) in any response.
+# =====================================================================
+_SCAN_ZIPS_MAX_ZIPS = 20
+_SCAN_ZIPS_DEFAULT_TOP_N = 10
+_SCAN_ZIPS_MAX_TOP_N = 15
+_SCAN_ZIPS_MAX_STRING_LEN = 64
+_ZIP_RE = re.compile(r"^\d{5}$")
+# Process-lifetime semaphore: Redfin searches are Playwright-heavy and a
+# second parallel scan would starve the browser pool. Sprint 11-5 ask.
+_scan_zips_sem = asyncio.Semaphore(1)
+
+
+def _scan_excluded_city_match(address: str, excluded_cities: list) -> str | None:
+    """Case-insensitive substring match; returns the matched city name."""
+    if not address:
+        return None
+    lower = address.lower()
+    for city in excluded_cities or []:
+        if not isinstance(city, str) or not city:
+            continue
+        if city.lower() in lower:
+            return city
+    return None
+
+
+@app.post("/api/scan-zips")
+async def scan_zips(request: Request):
+    """Orchestrator: N ZIPs → N Redfin searches → top K per ZIP → batch.
+    Returns a single envelope with rankings (sync) or batchId (async), plus
+    per-zip + rejection summaries so Jose can see why anything was dropped.
+    """
+    request_id = uuid.uuid4().hex
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"scan:{client_ip}", 2):
+        return JSONResponse(
+            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
+            status_code=429,
+        )
+    if _scan_zips_sem.locked():
+        return JSONResponse(
+            _error_envelope(
+                "SCAN_BUSY",
+                "Another ZIP scan is already running. Wait for it to finish.",
+                request_id,
+            ),
+            status_code=429,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
+            status_code=400,
+        )
+
+    # --- Validate zips ---
+    raw_zips = body.get("zips") or []
+    if not isinstance(raw_zips, list) or not raw_zips:
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "`zips` must be a non-empty array.", request_id),
+            status_code=400,
+        )
+    if len(raw_zips) > _SCAN_ZIPS_MAX_ZIPS:
+        return JSONResponse(
+            _error_envelope(
+                "VALIDATION_ERROR",
+                f"Too many ZIPs. Cap is {_SCAN_ZIPS_MAX_ZIPS} per scan.",
+                request_id,
+            ),
+            status_code=400,
+        )
+    zips: list[str] = []
+    for raw_z in raw_zips:
+        if not isinstance(raw_z, str):
+            return JSONResponse(
+                _error_envelope(
+                    "VALIDATION_ERROR",
+                    "Each ZIP must be a 5-digit string.",
+                    request_id,
+                ),
+                status_code=400,
+            )
+        z = raw_z.strip()
+        if not _ZIP_RE.fullmatch(z):
+            return JSONResponse(
+                _error_envelope(
+                    "VALIDATION_ERROR",
+                    "Invalid ZIP — expected 5-digit US ZIP.",
+                    request_id,
+                ),
+                status_code=400,
+            )
+        zips.append(z)
+    seen_z: set[str] = set()
+    zips = [z for z in zips if not (z in seen_z or seen_z.add(z))]
+
+    # --- Validate top_n_per_zip ---
+    try:
+        top_n = int(body.get("top_n_per_zip") or _SCAN_ZIPS_DEFAULT_TOP_N)
+    except (TypeError, ValueError):
+        top_n = _SCAN_ZIPS_DEFAULT_TOP_N
+    top_n = max(1, min(top_n, _SCAN_ZIPS_MAX_TOP_N))
+
+    # --- Resolve preset (optional) ---
+    preset_name = body.get("preset_name") or None
+    if preset_name is not None:
+        if (
+            not isinstance(preset_name, str)
+            or len(preset_name) > _SCAN_ZIPS_MAX_STRING_LEN
+            or preset_name not in _spec_constants.presets
+        ):
+            return JSONResponse(
+                _error_envelope("VALIDATION_ERROR", "Invalid preset_name.", request_id),
+                status_code=400,
+            )
+    preset_search = (
+        (_spec_constants.presets.get(preset_name) or {}).get("search", {})
+        if preset_name
+        else {}
+    )
+
+    # --- Per-request filter overrides (caller beats preset) ---
+    def _opt_int(field, default=None):
+        v = body.get(field)
+        if v is None or v == "":
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
+    def _opt_str(field):
+        v = body.get(field)
+        if v is None:
+            return None
+        if not isinstance(v, str) or len(v) > _SCAN_ZIPS_MAX_STRING_LEN:
+            return None
+        return v.strip() or None
+
+    min_price = _opt_int("min_price", preset_search.get("minPrice"))
+    max_price = _opt_int("max_price", preset_search.get("maxPrice"))
+    min_beds = _opt_int("min_beds", preset_search.get("minBeds"))
+    property_type = _opt_str("property_type") or preset_search.get("propertyType")
+    max_results_per_search = max(top_n, 20)
+
+    mode = (_opt_str("mode") or "").lower()
+    if mode not in ("sync", "async", ""):
+        mode = ""
+
+    # --- Apply ZIP-level exclusion ---
+    excluded_zips_set = set(_spec_constants.zip_tiers.get("excludedZips") or [])
+    excluded_cities = _spec_constants.zip_tiers.get("excludedCities") or []
+    rejected_zip_excluded: list = []
+    scan_zips_in: list[str] = []
+    for z in zips:
+        if z in excluded_zips_set:
+            rejected_zip_excluded.append({"zip": z, "reason": f"ZIP {z} is in excludedZips"})
+        else:
+            scan_zips_in.append(z)
+
+    if not scan_zips_in:
+        return JSONResponse(
+            _error_envelope(
+                "VALIDATION_ERROR",
+                "All requested ZIPs are in the excluded list — nothing to scan.",
+                request_id,
+            ),
+            status_code=400,
+        )
+
+    t0 = time.monotonic()
+    search_sem = asyncio.Semaphore(3)
+
+    async def _one_search(zip_code: str):
+        filters = {
+            "min_price": min_price,
+            "max_price": max_price,
+            "min_beds": min_beds,
+            "property_type": property_type,
+            "max_results": max_results_per_search,
+        }
+        async with search_sem:
+            try:
+                res = await _search_redfin_page(zip_code, filters)
+                return zip_code, res
+            except Exception:
+                logger.exception(
+                    "scan-zips search failed for zip %s (request_id=%s)",
+                    zip_code, request_id,
+                )
+                return zip_code, {"error": "search_failed", "listings": []}
+
+    async with _scan_zips_sem:
+        results = await asyncio.gather(*[_one_search(z) for z in scan_zips_in])
+
+        survivors: list[str] = []
+        seen_urls: set[str] = set()
+        per_zip_summary: list = []
+        rejected_city: list = []
+        search_errors: list = []
+        for zip_code, res in results:
+            if res.get("error") and not res.get("listings"):
+                search_errors.append({"zip": zip_code, "reason": "search_failed"})
+                per_zip_summary.append({"zip": zip_code, "found": 0, "kept": 0})
+                continue
+            listings = res.get("listings") or []
+            usable = [l for l in listings if l.get("price") and l.get("listingUrl")]
+            usable.sort(key=lambda l: (l.get("price") or 0))
+            kept_for_zip = 0
+            for l in usable:
+                if kept_for_zip >= top_n:
+                    break
+                url = l.get("listingUrl") or ""
+                if not url or url in seen_urls:
+                    continue
+                addr = l.get("address") or ""
+                hit = _scan_excluded_city_match(addr, excluded_cities)
+                if hit:
+                    rejected_city.append({
+                        "zip": zip_code,
+                        "url": url,
+                        "address": addr,
+                        "reason": f"excluded city: {hit}",
+                    })
+                    continue
+                seen_urls.add(url)
+                survivors.append(url)
+                kept_for_zip += 1
+            per_zip_summary.append({
+                "zip": zip_code,
+                "found": len(listings),
+                "kept": kept_for_zip,
+            })
+
+        rejected_block = {
+            "zip_excluded": rejected_zip_excluded,
+            "city_excluded": rejected_city,
+            "search_errors": search_errors,
+        }
+
+        if not survivors:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "scan_zips zip_count=%d survivors=0 elapsed=%dms",
+                len(scan_zips_in), elapsed_ms,
+            )
+            return JSONResponse({
+                "status": "empty",
+                "mode": "none",
+                "request_id": request_id,
+                "summary": {
+                    "zip_count": len(zips),
+                    "zips_scanned": len(scan_zips_in),
+                    "survivors": 0,
+                    "top_n_per_zip": top_n,
+                    "elapsed_ms": elapsed_ms,
+                },
+                "per_zip": per_zip_summary,
+                "rejected": rejected_block,
+            })
+
+        # Defense-in-depth: revalidate URLs with the shared batch validator.
+        clean_urls, err = _validate_batch_urls(survivors)
+        if err is not None:
+            logger.warning(
+                "scan-zips produced invalid URLs (request_id=%s): %s",
+                request_id, err[0],
+            )
+            return JSONResponse(
+                _error_envelope("VALIDATION_ERROR", err[0], request_id),
+                status_code=err[1],
+            )
+        survivors = clean_urls
+
+        want_async = mode == "async" or len(survivors) > _BATCH_MAX_URLS_SYNC
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        if want_async:
+            try:
+                sub_result = await _submit_async_batch(
+                    survivors,
+                    db_path=str(_BATCH_DB_PATH),
+                    client_ip=client_ip,
+                    api_key=api_key,
+                    preset_name=preset_name,
+                )
+            except Exception:
+                logger.exception(
+                    "scan-zips async submit failed (request_id=%s)", request_id
+                )
+                return JSONResponse(
+                    _error_envelope(
+                        "INTERNAL_ERROR",
+                        "Async batch submission failed.",
+                        request_id,
+                    ),
+                    status_code=500,
+                )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "scan_zips zip_count=%d survivors=%d mode=async elapsed=%dms",
+                len(scan_zips_in), len(survivors), elapsed_ms,
+            )
+            response = {
+                "status": sub_result.get("status", "pending"),
+                "mode": "async",
+                "request_id": request_id,
+                "batch": sub_result,
+                "summary": {
+                    "zip_count": len(zips),
+                    "zips_scanned": len(scan_zips_in),
+                    "survivors": len(survivors),
+                    "top_n_per_zip": top_n,
+                    "elapsed_ms": elapsed_ms,
+                },
+                "per_zip": per_zip_summary,
+                "rejected": rejected_block,
+            }
+            status_code = 202 if response["status"] == "pending" else 200
+            return JSONResponse(response, status_code=status_code)
+
+        try:
+            envelope = await _run_sync_batch(
+                survivors,
+                db_path=str(_BATCH_DB_PATH),
+                api_key=api_key,
+                preset_name=preset_name,
+                include_narrative=True,
+                client_ip=client_ip,
+            )
+        except Exception:
+            logger.exception(
+                "scan-zips sync batch failed (request_id=%s)", request_id
+            )
+            return JSONResponse(
+                _error_envelope(
+                    "INTERNAL_ERROR", "Batch processing failed.", request_id,
+                ),
+                status_code=500,
+            )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "scan_zips zip_count=%d survivors=%d mode=sync elapsed=%dms",
+            len(scan_zips_in), len(survivors), elapsed_ms,
+        )
+        return JSONResponse({
+            "status": "complete",
+            "mode": "sync",
+            "request_id": request_id,
+            "envelope": envelope,
+            "summary": {
+                "zip_count": len(zips),
+                "zips_scanned": len(scan_zips_in),
+                "survivors": len(survivors),
+                "top_n_per_zip": top_n,
+                "elapsed_ms": elapsed_ms,
+            },
+            "per_zip": per_zip_summary,
+            "rejected": rejected_block,
+        })
 
 
 _BATCH_ID_RE = re.compile(r"[a-f0-9]{32}")

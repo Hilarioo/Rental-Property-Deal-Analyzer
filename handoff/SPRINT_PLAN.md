@@ -445,9 +445,5 @@ After V1 shipped, Jose's real shopping workflow surfaced the "40 tabs on a weeke
 
 See [`BACKLOG.md`](./BACKLOG.md) for:
 
-- **Sprint 7A** — remaining security hotfixes (hard gate)
-- **Sprint 7B** — code health cleanup (pipeline module split, dead-code prune)
-- **Sprint 7C** — doc refresh (USER_FLOW batch coverage, ACCEPTANCE_CRITERIA post-V1 additions)
-- **Sprint 8** — performance (enrichment parallelism, DB indexes)
-- **Sprint 9** — architecture (migration framework, observability)
-- **Sprint 10** — long-term (weight editor UI, multi-device sync if ever needed)
+- **Sprints 7A/7B/7C/8/9/10A/10B/10-6** — SHIPPED (security hotfixes, drift closure, docs refresh, perf, parity harness, security/quality hygiene, UX wins, window-global consolidation)
+- **Sprint 11 — NEXT** — profile-driven automation + ZIP-scan overnight flow (~8–10h). Drivers: eliminate manual form-field entry (profile + preset auto-populate), add "Analyze all search results" one-click batch, add `/api/scan-zips` orchestrator so pasting a list of ZIPs returns a ranked list without per-row clicks. Security gate: new endpoints must inherit Sprint 10A invariants (`_safe_error`, loopback profile, URL validation). Perf gate: 10-ZIP × 10-listing cold scan ≤ 90s using existing Sprint 8 browser pool + Overpass cache.

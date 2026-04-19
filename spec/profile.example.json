@@ -7,15 +7,52 @@
 
   "jose": {
     "netPitiGreen": 0,
+    "netPitiYellow": 0,
     "netPitiRed": 0,
     "cashCloseGreen": 0,
     "cashCloseRed": 0,
     "rehabGreen": 0,
+    "rehabYellow": 0,
     "rehabRed": 0,
     "priceCeilingDuplex": 0,
     "priceCeilingTriplex": 0,
     "maxDtiPct": 45,
-    "roofAgeYellow": 15
+    "roofAgeYellow": 15,
+    "schoolRatingMinimum": 4,
+    "schoolRatingYellowThreshold": 5,
+    "schoolRatingGreenThreshold": 7,
+    "schoolRatingResaleWeight": 0.15
+  },
+
+  "location": {
+    "homeBase": { "name": "", "lat": 0, "lng": 0 },
+    "maxMilesHard": 35,
+    "_doc": "Haversine radius from homeBase gates eligibility. Sprint 12-2 consumes this."
+  },
+
+  "rentalStrategy": {
+    "primary": "LTR",
+    "consideredSecondary": "MTR",
+    "strExcluded": true,
+    "vacancyPct": 5,
+    "vacancyPctMtr": 12,
+    "rentMultiplierMtr": 1.35,
+    "mtrMinLandlordMonths": 12,
+    "_doc": "MTR rents credited only once landlord months ≥ mtrMinLandlordMonths. Sprint 12-3."
+  },
+
+  "selfManagement": {
+    "selfManageCap": 3,
+    "propertyManagementTriggerUnits": 4,
+    "propertyManagementFallbackPct": 9,
+    "_doc": "When units >= trigger AND not self-managed, PITI math auto-injects fallback PM %. Sprint 12-4."
+  },
+
+  "contractorStretch": {
+    "enabled": false,
+    "maxRehab": 150000,
+    "selfPerformMinPct": 40,
+    "_doc": "Activates 203(k) scenarios when rehab > rehabRed AND self-perform share >= minPct. Sprint 12-5."
   },
 
   "defaults": {
@@ -45,6 +82,9 @@
     "maxCashToClose": 0,
     "reserveMonths": 2,
     "selfPerformRoofing": false,
-    "roofingCostMultiplier": 1.0
+    "roofingCostMultiplier": 1.0,
+    "targetMonthlyRent": 0,
+    "defaultPreset": "Vallejo Priority",
+    "scanTopNPerZip": 10
   }
 }
