@@ -1431,7 +1431,7 @@
           </div>
           <div class="input-group" style="margin:0;">
             <label for="scan-zips-top-n" style="font-size:0.78rem;">Top N per ZIP</label>
-            <input type="number" id="scan-zips-top-n" min="1" max="15" step="1" value="10">
+            <input type="number" id="scan-zips-top-n" min="1" max="50" step="1" value="10">
           </div>
           <div class="input-group" style="margin:0;">
             <label for="scan-zips-mode" style="font-size:0.78rem;">Mode</label>
@@ -6494,7 +6494,7 @@
     var topNEl = $('scan-zips-top-n');
     var topN = parseInt((topNEl || {}).value, 10);
     if (!topN || topN < 1) topN = 10;
-    if (topN > 15) topN = 15;
+    if (topN > 50) topN = 50;
     // Reflect the clamped value back into the field so the UI matches what
     // the server will actually use — fixes the "I typed 550000 but got 15"
     // silent-clamp that looked like a bug in the Scan ZIPs screenshot.
@@ -6600,7 +6600,7 @@
       scanTopN.addEventListener('blur', function () {
         var v = parseInt(scanTopN.value, 10);
         if (!v || v < 1) v = 10;
-        if (v > 15) v = 15;
+        if (v > 50) v = 50;
         scanTopN.value = v;
       });
     }
