@@ -17,6 +17,7 @@ If the two implementations ever disagree, the JS frontend is authoritative
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # ADR-002: thresholds now live in spec/constants.json.
@@ -26,8 +27,112 @@ from spec import constants as _spec
 JOSE_THRESHOLDS: dict[str, float] = _spec.jose
 
 
+# Sprint 12-2: geospatial settings. location lives on the PRIVATE profile
+# (Jose's home base is PII-adjacent — commute radius reveals where he lives).
+# conditionalCities is PUBLIC (market logic, not buyer identity).
+_PROFILE_LOCATION: dict[str, Any] = (
+    (_spec.profile_raw or {}).get("location") or {}
+)
+_CONDITIONAL_CITIES: dict[str, Any] = (
+    _spec.zip_tiers.get("conditionalCities") or {}
+)
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance in statute miles between two (lat, lng) points."""
+    R_MILES = 3958.8
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * R_MILES * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _geospatial_fail(ctx: dict[str, Any]) -> str | None:
+    """Return a RED-reason string if the listing fails geospatial gates, else None.
+
+    Two gates, in order:
+      1. Hard commute radius — `profile.location.maxMilesHard`.
+         If listing's distance from `homeBase` exceeds it, RED.
+      2. Conditional cities — `zipTiers.conditionalCities[<city>]`.
+         If the listing's address contains a conditional city name AND
+         its distance exceeds that city's threshold, RED. (If inside the
+         threshold, the listing is implicitly *allowed* to proceed even
+         though the name would otherwise fail `_looks_excluded` checks.)
+
+    If lat/lng or homeBase is missing (e.g. single-property analyzer with
+    no geocode), both gates no-op. This preserves JS↔Py parity for the
+    pre-12-2 fixtures that don't carry coordinates.
+    """
+    lat = ctx.get("lat")
+    lng = ctx.get("lng")
+    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+        return None
+    home = _PROFILE_LOCATION.get("homeBase") or {}
+    home_lat = home.get("lat")
+    home_lng = home.get("lng")
+    if not isinstance(home_lat, (int, float)) or not isinstance(home_lng, (int, float)):
+        return None
+    if home_lat == 0 and home_lng == 0:
+        return None  # redacted example profile — skip.
+
+    miles = _haversine_miles(float(lat), float(lng), float(home_lat), float(home_lng))
+
+    max_hard = _PROFILE_LOCATION.get("maxMilesHard")
+    if isinstance(max_hard, (int, float)) and miles > max_hard:
+        return (
+            f"Outside commute radius — {miles:.0f} mi from home base "
+            f"exceeds {int(max_hard)} mi hard cap"
+        )
+
+    address_lower = (ctx.get("address") or "").lower()
+    for city, rule in _CONDITIONAL_CITIES.items():
+        if not isinstance(rule, dict):
+            continue
+        if city.lower() not in address_lower:
+            continue
+        if rule.get("rule") != "maxMilesFromHomeBase":
+            continue
+        threshold = rule.get("threshold")
+        if not isinstance(threshold, (int, float)):
+            continue
+        if miles > threshold:
+            return (
+                f"{city} conditional-market rule: {miles:.0f} mi from home base "
+                f"exceeds {int(threshold)} mi threshold"
+            )
+    return None
+
+
 def _fmt_usd(n: float) -> str:
     return "$" + f"{round(n):,}"
+
+
+def _classify_overage(
+    value: float,
+    green: float,
+    yellow: float | None,
+    red: float,
+) -> str | None:
+    """Sprint 12-1: layered Yellow classification.
+
+    Returns 'green' (≤ green, no issue), 'yellow', or 'red'.
+    Yellow fires if EITHER the explicit yellow threshold allows it OR the
+    legacy 10% rule allows it (missed green by ≤10%). Red only when BOTH
+    fail. Backward-compatible: if `yellow` is None, falls back to pure 10%.
+    """
+    if value <= green:
+        return "green"
+    if value > red:
+        return "red"
+    # Layered: pass if either the explicit yellow band OR the 10% overage rule
+    # accepts the value.
+    ten_pct_ok = (value - green) / green <= 0.10
+    explicit_yellow_ok = yellow is not None and value <= yellow
+    if explicit_yellow_ok or ten_pct_ok:
+        return "yellow"
+    return "red"
 
 
 def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -54,6 +159,12 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
     units = c.get("units") or 1
     if c.get("propertyType") == "sfh" and units <= 1:
         red_reasons.append("SFR without legal ADU — no 75% rental offset possible")
+    # Sprint 12-2: geospatial hard-fail (commute radius + conditional cities).
+    # Only fires when lat/lng are present AND a homeBase is configured;
+    # otherwise no-ops (preserves parity for pre-12-2 fixtures).
+    geo_fail = _geospatial_fail(c)
+    if geo_fail:
+        red_reasons.append(geo_fail)
     # Units-unknown hard-fail is appended LAST so dominant fails show first.
     units_unknown_fail = bool(c.get("hardFailUnitsUnknown"))
     qualifying_income = c.get("qualifyingIncome") or 0
@@ -79,44 +190,48 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
         )
         (red_reasons if over_pct > 0.10 else yellow_reasons).append(msg)
 
+    # Sprint 12-1: layered Yellow. Each band reads an optional explicit
+    # yellow threshold from spec; falls back to the Sprint 4 10%-overage
+    # rule. Layering means the MORE forgiving classification wins — either
+    # condition can downgrade Red → Yellow.
     net_piti = c.get("netPiti") or 0
     if net_piti > T["netPitiGreen"]:
-        net_over = net_piti - T["netPitiGreen"]
-        net_over_pct = net_over / T["netPitiGreen"]
+        cls = _classify_overage(
+            net_piti, T["netPitiGreen"], T.get("netPitiYellow"), T["netPitiRed"]
+        )
         msg = (
             f"Net PITI {_fmt_usd(net_piti)} exceeds {_fmt_usd(T['netPitiGreen'])} "
-            f"by {_fmt_usd(net_over)}"
+            f"by {_fmt_usd(net_piti - T['netPitiGreen'])}"
         )
-        if net_piti > T["netPitiRed"] or net_over_pct > 0.10:
-            red_reasons.append(msg)
-        else:
-            yellow_reasons.append(msg)
+        (red_reasons if cls == "red" else yellow_reasons).append(msg)
 
     cash_to_close = c.get("cashToClose") or 0
     if cash_to_close > T["cashCloseGreen"]:
-        cash_over = cash_to_close - T["cashCloseGreen"]
-        cash_over_pct = cash_over / T["cashCloseGreen"]
+        cls = _classify_overage(
+            cash_to_close,
+            T["cashCloseGreen"],
+            T.get("cashCloseYellow"),
+            T["cashCloseRed"],
+        )
         msg = (
             f"Cash to close {_fmt_usd(cash_to_close)} exceeds "
-            f"{_fmt_usd(T['cashCloseGreen'])} by {_fmt_usd(cash_over)}"
+            f"{_fmt_usd(T['cashCloseGreen'])} by {_fmt_usd(cash_to_close - T['cashCloseGreen'])}"
         )
-        if cash_to_close > T["cashCloseRed"] or cash_over_pct > 0.10:
-            red_reasons.append(msg)
-        else:
-            yellow_reasons.append(msg)
+        (red_reasons if cls == "red" else yellow_reasons).append(msg)
 
     effective_rehab = c.get("effectiveRehab") or 0
     if effective_rehab > T["rehabGreen"]:
-        rehab_over = effective_rehab - T["rehabGreen"]
-        rehab_over_pct = rehab_over / T["rehabGreen"]
+        cls = _classify_overage(
+            effective_rehab,
+            T["rehabGreen"],
+            T.get("rehabYellow"),
+            T["rehabRed"],
+        )
         msg = (
             f"Rehab {_fmt_usd(effective_rehab)} exceeds {_fmt_usd(T['rehabGreen'])} "
-            f"by {_fmt_usd(rehab_over)}"
+            f"by {_fmt_usd(effective_rehab - T['rehabGreen'])}"
         )
-        if effective_rehab > T["rehabRed"] or rehab_over_pct > 0.10:
-            red_reasons.append(msg)
-        else:
-            yellow_reasons.append(msg)
+        (red_reasons if cls == "red" else yellow_reasons).append(msg)
 
     zip_tier = c.get("zipTier")
     if zip_tier == "outside":

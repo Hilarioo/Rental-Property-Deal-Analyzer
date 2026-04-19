@@ -1,5 +1,31 @@
 [
   {
+    "name": "Sprint 12-2: Sacramento listing outside 35mi commute radius → red",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "95814", "zipTier": "outside", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false,
+      "lat": 38.5816, "lng": -121.4944, "address": "1234 J St, Sacramento, CA 95814"
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "Sprint 12-2: Vallejo listing inside 35mi commute radius → passes geo gate",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false,
+      "lat": 38.1041, "lng": -122.2567, "address": "401 Foo St, Vallejo, CA 94590"
+    },
+    "expected_verdict": "green"
+  },
+  {
     "name": "GREEN happy-path clean",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
@@ -168,7 +194,7 @@
     "expected_verdict": "yellow"
   },
   {
-    "name": "netPiti $3200 — red via >10% overage",
+    "name": "netPiti $3200 — yellow under explicit Yellow threshold (Sprint 12-1 layered rule)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 3200, "piti": 3200, "qualifyingIncome": 10000,
@@ -177,7 +203,7 @@
       "hasFlatRoof": false, "hasUnpermittedAdu": false,
       "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
     },
-    "expected_verdict": "red"
+    "expected_verdict": "yellow"
   },
   {
     "name": "cashToClose $45000 exact — green (strict >)",
@@ -264,7 +290,7 @@
     "expected_verdict": "red"
   },
   {
-    "name": "YELLOW by >10% miss on netPiti flips to RED",
+    "name": "netPiti $2800 — layered: 10% rule says red, Yellow-threshold rule says yellow; yellow wins (Sprint 12-1)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 2800, "piti": 2800, "qualifyingIncome": 10000,
@@ -273,7 +299,7 @@
       "hasFlatRoof": false, "hasUnpermittedAdu": false,
       "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
     },
-    "expected_verdict": "red"
+    "expected_verdict": "yellow"
   },
   {
     "name": "Multiple yellow misses across criteria",
