@@ -53,6 +53,7 @@ from .db import (
 from .insurance import compute_insurance
 from .pipeline import (
     TIER_DEFAULT_RENT_2BR,
+    _coerce_narrative,
     _extract_zip,
     _insert_snapshot,
     _read_enrichment,
@@ -513,6 +514,7 @@ def _persist_batch_final(
                             "ok" if row.get("llm_ok") else "failed",
                             None if row.get("llm_ok") else "extraction_failed",
                         ))
+                narrative_raw = (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None
                 ranking_rows.append((
                     batch_id, row["url_hash"], row["rank"],
                     float(row.get("topsis_score") or 0.0),
@@ -522,7 +524,7 @@ def _persist_batch_final(
                     json.dumps(row.get("verdict_reasons") or []),
                     json.dumps(row.get("criteria") or {}),
                     json.dumps(row.get("derived_metrics") or {}),
-                    (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+                    _coerce_narrative(narrative_raw),
                     "ok" if include_narrative and row.get("scrape_ok") else "skipped",
                 ))
 
@@ -584,7 +586,7 @@ def _build_response_rankings(ranked_rows: list[dict[str, Any]]) -> list[dict[str
             "insurance_breakdown": row.get("insurance_breakdown") or {},
             "llm_analysis": row.get("llm_analysis"),
             "enrichment": row.get("enrichment"),
-            "claude_narrative": (row.get("llm_analysis") or {}).get("narrativeForRanking"),
+            "claude_narrative": _coerce_narrative((row.get("llm_analysis") or {}).get("narrativeForRanking")),
         })
     return out
 

@@ -188,6 +188,28 @@ def _effective_rehab(rehab_band: dict[str, Any]) -> tuple[float, float]:
     return effective, max(0.0, retail - effective)
 
 
+def _coerce_narrative(value: Any) -> str | None:
+    """Normalize `narrativeForRanking` for DB binding.
+
+    The LLM schema declares this a string but older in-flight batches (and
+    the occasional malformed cache row) can hold a dict/list — sqlite3
+    rejects those at bind with ``type 'dict' is not supported``, crashing
+    the rankings INSERT. str/None pass through; dict/list become a JSON
+    dump; anything else becomes ``str(value)``. Shared by pipeline.py and
+    async_pipeline.py so both write paths serialize identically.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, separators=(",", ":"))
+        except Exception:
+            return str(value)
+    return str(value)
+
+
 def _extract_zip(address: str | None) -> str | None:
     if not address:
         return None
@@ -1247,6 +1269,7 @@ async def run_sync_batch(
                             "ok" if row["llm_ok"] else "failed",
                             None if row["llm_ok"] else "extraction_failed",
                         ))
+                narrative_raw = (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None
                 ranking_rows.append((
                     batch_id, row["url_hash"], row["rank"],
                     float(row.get("topsis_score") or 0.0),
@@ -1256,7 +1279,7 @@ async def run_sync_batch(
                     json.dumps(row.get("verdict_reasons") or []),
                     json.dumps(row.get("criteria") or {}),
                     json.dumps(row.get("derived_metrics") or {}),
-                    (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+                    _coerce_narrative(narrative_raw),
                     "ok" if include_narrative and row.get("scrape_ok") else "skipped",
                 ))
 
@@ -1317,7 +1340,7 @@ async def run_sync_batch(
             "insurance_breakdown": row.get("insurance_breakdown") or {},
             "llm_analysis": row.get("llm_analysis"),
             "enrichment": row.get("enrichment"),
-            "claude_narrative": (row.get("llm_analysis") or {}).get("narrativeForRanking") if include_narrative else None,
+            "claude_narrative": _coerce_narrative((row.get("llm_analysis") or {}).get("narrativeForRanking")) if include_narrative else None,
         })
 
     return {
