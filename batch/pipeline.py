@@ -418,22 +418,60 @@ async def _scrape_url(url: str) -> dict[str, Any]:
             continue
 
     units = None
+    units_source: str | None = None
     for m in re.finditer(r'"numberOfUnits"[^0-9]*(\d+)', html_text):
         try:
             units = int(m.group(1))
+            units_source = "json_numberOfUnits"
             break
         except ValueError:
             continue
 
-    # Very cheap duplex / triplex hint from address + description.
+    # Multifamily hints from description + propertyType (2+ units).
     if not units:
         haystack = (extract.get("description") or "").lower() + " " + (extract.get("propertyType") or "").lower()
         if "duplex" in haystack or "2 unit" in haystack or "two unit" in haystack:
             units = 2
+            units_source = "keyword_duplex"
         elif "triplex" in haystack or "3 unit" in haystack:
             units = 3
+            units_source = "keyword_triplex"
         elif "fourplex" in haystack or "four" in haystack and "unit" in haystack:
             units = 4
+            units_source = "keyword_fourplex"
+
+    # Sprint 12 hotfix 2026-04-19: single-unit inference from address suffix
+    # and property-type when the scraper couldn't find `numberOfUnits`.
+    # Examples of URLs this fixes:
+    #   https://www.zillow.com/homedetails/401-Stinson-St-APT-3-Vallejo-...
+    #   .../123-Foo-St-UNIT-5-...
+    #   .../123-Foo-St-#12-...
+    # Before this, the tool hard-failed with "Unit count not detected — re-
+    # scrape or enter manually" on valid condo listings. Now we surface the
+    # clearer "single unit — no 75% rental offset" RED reason.
+    if not units:
+        addr = extract.get("address") or ""
+        if re.search(r"\b(apt|apartment|unit|suite|ste)\s*[#]?\s*\w+\b", addr, re.IGNORECASE):
+            units = 1
+            units_source = "address_suffix"
+        elif re.search(r"#\s*\w+", addr):
+            units = 1
+            units_source = "address_hash_suffix"
+        else:
+            # Also detect from the URL path itself (common Zillow slug shape
+            # like ".../APT-3-..." when address parsing was incomplete).
+            url_lower = url.lower()
+            if re.search(r"/[^/]*\b(apt|unit|suite)\b[-_]\w+", url_lower):
+                units = 1
+                units_source = "url_slug"
+
+    # Property-type based fallback — single-family / condo / townhouse all
+    # imply units = 1 for FHA owner-occupied math.
+    if not units:
+        pt_lower = (extract.get("propertyType") or "").lower()
+        if any(sig in pt_lower for sig in ("condo", "townhouse", "townhome", "single family", "single-family", "sfr", "sfh")):
+            units = 1
+            units_source = "property_type"
 
     normalized = {
         "ok": True,
@@ -445,6 +483,8 @@ async def _scrape_url(url: str) -> dict[str, Any]:
         "sqft": _as_int(extract.get("sqft")),
         "year_built": _as_int(extract.get("yearBuilt")),
         "units": units,
+        "units_source": units_source,   # Sprint 12 hotfix: for verdict copy.
+        "property_type_raw": extract.get("propertyType"),  # condo / TOWNHOUSE / etc.
         "dom": dom,
         "description": extract.get("description"),
         "image_url": extract.get("imageUrl"),
@@ -492,6 +532,8 @@ def compute_property_metrics(
     insurance_breakdown: dict[str, Any],
     rent_per_unit: float,
     hard_fail_units_unknown: bool = False,
+    property_type_raw: str | None = None,  # Sprint 12 hotfix 2026-04-19.
+    units_source: str | None = None,
 ) -> dict[str, Any]:
     """Compute the full set of metrics the ranker and verdict need."""
     p = float(price or 0)
@@ -587,6 +629,8 @@ def compute_property_metrics(
         "hasUnpermittedAdu": has_unpermitted_adu,
         "isPre1978WithGalvanized": is_pre1978_gal,
         "propertyType": "multi" if u > 1 else "sfh",
+        "propertyTypeRaw": property_type_raw,
+        "unitsSource": units_source,
         "units": u,
         "price": p,
         "netPiti": net_piti,
@@ -1042,6 +1086,8 @@ async def process_url(
         insurance_breakdown=insurance,
         rent_per_unit=rent_per_unit,
         hard_fail_units_unknown=units_unknown,
+        property_type_raw=scrape.get("property_type_raw"),
+        units_source=scrape.get("units_source"),
     )
 
     # Expose rent-comp provenance on the metrics payload so the ranker +
