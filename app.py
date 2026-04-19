@@ -2531,8 +2531,8 @@ from scripts.init_db import DEFAULT_DB_PATH as _BATCH_DB_PATH  # noqa: E402
 from spec import constants as _spec_constants  # noqa: E402 — Sprint 11-4
 
 
-_BATCH_MAX_URLS_SYNC = 30
-_BATCH_HARD_CAP = 50
+_BATCH_MAX_URLS_SYNC = 100
+_BATCH_HARD_CAP = 150
 # Anthropic Message Batches hard limit is 10_000 requests per submission.
 _BATCH_ASYNC_MAX_URLS = 10_000
 _BATCH_ASYNC_WARN_URLS = 1_000

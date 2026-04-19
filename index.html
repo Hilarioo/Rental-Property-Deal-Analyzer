@@ -1400,7 +1400,7 @@
         <textarea id="batch-urls" rows="6" placeholder="https://www.redfin.com/CA/Vallejo/..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;"></textarea>
         <fieldset id="batch-mode-fieldset" style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
           <legend style="padding:0 6px;">Mode</legend>
-          <label style="margin-right:14px;"><input type="radio" name="batch-mode" value="sync" checked> Quick sync (&le;30 URLs)</label>
+          <label style="margin-right:14px;"><input type="radio" name="batch-mode" value="sync" checked> Quick sync (&le;100 URLs)</label>
           <label><input type="radio" name="batch-mode" value="async"> Overnight batch (unlimited, 50% cost, up to 24h)</label>
           <div id="batch-mode-note" style="display:none;margin-top:4px;color:var(--text);"></div>
         </fieldset>
@@ -3598,8 +3598,8 @@
       if (container && !container.open) container.open = true;
     }
 
-    // Choose mode. SYNC_MAX lives in the batch module; assume 30 if undefined.
-    var syncCap = (typeof SYNC_MAX === 'number') ? SYNC_MAX : 30;
+    // Choose mode. SYNC_MAX lives in the batch module; assume 100 if undefined.
+    var syncCap = (typeof SYNC_MAX === 'number') ? SYNC_MAX : 100;
     if (urls.length > syncCap) {
       var asyncRadio = document.querySelector('input[name="batch-mode"][value="async"]');
       if (asyncRadio) asyncRadio.checked = true;
@@ -5805,7 +5805,7 @@
   'use strict';
   var BATCH_STORAGE_KEY = 'batchanalyzer.lastBatch';
   var PENDING_STORAGE_KEY = 'batchanalyzer.pendingBatchId';
-  var SYNC_MAX = 30;
+  var SYNC_MAX = 100;
 
   function $(id) { return document.getElementById(id); }
 
@@ -5945,6 +5945,62 @@
     return html;
   }
 
+  // Sprint 12 hotfix: envelope source badge. Set by runScanZips/runBatchAnalyze
+  // before renderResults so the rankings card tells Jose which flow produced it.
+  function sourceBadgeHtml(source) {
+    if (!source) return '';
+    var map = {
+      scan_zips:   { label: 'Scan ZIPs',   bg: 'rgba(34,197,94,0.18)',  fg: '#16a34a' },
+      batch_paste: { label: 'Paste batch', bg: 'rgba(99,102,241,0.18)', fg: '#6366f1' },
+    };
+    var cfg = map[source];
+    if (!cfg) return '';
+    return '<span style="background:' + cfg.bg + ';color:' + cfg.fg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;margin-right:8px;">' + escapeHtml(cfg.label) + '</span>';
+  }
+
+  // Sprint 12 hotfix: row-delete + bulk-clear-failed helpers. Mutate the
+  // in-memory envelope kept in localStorage, then re-render. "Failed"
+  // here means hard_fail rows (rate-limited, scrape-failed, excluded
+  // markets) — the noise Jose wants out of his view after a self-DDoS scan.
+  function _loadEnvelopeCache() {
+    try {
+      var raw = localStorage.getItem(BATCH_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  }
+  function _saveEnvelopeCache(env) {
+    try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(env)); } catch (_) {}
+  }
+  window.__deleteBatchRow = function (urlHash) {
+    var env = _loadEnvelopeCache();
+    if (!env) return;
+    env.rankings = (env.rankings || []).filter(function (r) { return r.url_hash !== urlHash; });
+    env.rankings.forEach(function (r, i) { r.rank = i + 1; });
+    _saveEnvelopeCache(env);
+    renderResults(env);
+  };
+  window.__clearFailedBatchRows = function () {
+    var env = _loadEnvelopeCache();
+    if (!env) return;
+    var before = (env.rankings || []).length;
+    env.rankings = (env.rankings || []).filter(function (r) { return !r.hard_fail; });
+    env.rankings.forEach(function (r, i) { r.rank = i + 1; });
+    // Also drop failed URLs that were rate-limited etc. from the failures section.
+    env.failures = (env.failures || []).filter(function (f) {
+      return (f.reason || '').indexOf('rate_limit') === -1;
+    });
+    _saveEnvelopeCache(env);
+    renderResults(env);
+    var removed = before - env.rankings.length;
+    console.log('cleared ' + removed + ' hard-fail rows');
+  };
+  window.__clearAllBatchRows = function () {
+    if (!window.confirm('Clear all rankings from this view? Submitted URLs and their cached analyses are kept — only the batch-results card resets.')) return;
+    try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch (_) {}
+    var root = $('batch-results');
+    if (root) { root.innerHTML = ''; root.style.display = 'none'; }
+  };
+
   function renderResults(envelope) {
     var root = $('batch-results');
     if (!root) return;
@@ -5955,19 +6011,36 @@
       root.style.display = 'block';
       return;
     }
+    var hardFailCount = rows.filter(function (r) { return r.hard_fail; }).length;
     var html = '';
     html += scoreLegendHtml(); // Sprint 10B-2
-    html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:6px;">';
+    html += '<div>';
+    html += sourceBadgeHtml(envelope.source);
     html += '<strong>Batch ' + escapeHtml((envelope.batch_id || '').slice(0, 8)) + '</strong>';
+    html += '</div>';
     var metaLine = rows.length + ' ranked · ' + (envelope.duplicates_removed || 0) + ' dupes removed';
     if (failures.length) metaLine += ' · ' + failures.length + ' failed';
     html += '<span style="font-size:0.78rem;color:var(--text-muted);">' + metaLine + '</span>';
     html += '</div>';
+    // Sprint 12 hotfix: show scan-origin summary inline when available.
+    if (envelope.source === 'scan_zips' && envelope.scan_summary) {
+      var s = envelope.scan_summary;
+      html += '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">';
+      html += 'From Scan ZIPs — ' + s.zips_scanned + '/' + s.zip_count + ' ZIPs, top ' + s.top_n_per_zip + ' per ZIP, ' + s.survivors + ' survivors';
+      html += '</div>';
+    }
+    if (hardFailCount > 0) {
+      html += '<div style="margin-bottom:8px;">';
+      html += '<button class="btn btn-small btn-secondary" type="button" onclick="window.__clearFailedBatchRows()">Clear ' + hardFailCount + ' failed row' + (hardFailCount === 1 ? '' : 's') + '</button>';
+      html += '<button class="btn btn-small btn-secondary" type="button" style="margin-left:6px;" onclick="window.__clearAllBatchRows()">Clear all</button>';
+      html += '</div>';
+    }
     if (rows.length) {
       html += '<div style="overflow-x:auto;">';
       html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
       html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
-      ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', ''].forEach(function (h) {
+      ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', '', ''].forEach(function (h) {
         html += '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">' + h + '</th>';
       });
       html += '</tr></thead><tbody>';
@@ -5987,11 +6060,12 @@
         html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
         html += '<td style="padding:6px 8px;color:var(--text-muted);">' + escapeHtml(reasons) + '</td>';
         html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + JSON.stringify(r.canonical_url).replace(/"/g, '&quot;') + ')">Open</button></td>';
+        html += '<td style="padding:6px 4px;"><button type="button" title="Remove this row from the list" aria-label="Remove row" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="window.__deleteBatchRow(' + JSON.stringify(r.url_hash).replace(/"/g, '&quot;') + ')">×</button></td>';
         html += '</tr>';
         // Sprint 10B-4: Jose-facing cache-source badge (title attr keeps
         // raw debug info on hover).
         var badge = cacheBadgeCopy(r.cache_stale_reason, (r.llm_analysis && r.llm_analysis._analyzed_at) || r.analyzed_at);
-        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
+        html += '<tr><td colspan="8" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
       });
       html += '</tbody></table></div>';
     }
@@ -6249,6 +6323,13 @@
       if (envelope.status === 'complete' && envelope.rankings) {
         stopAutoPoll(); // Sprint 10B-3: terminal state, drop the timer.
         clearPending();
+        // Sprint 12 hotfix: preserve scan vs paste origin after async completes.
+        if (!envelope.source) {
+          envelope.source = pending.source || 'batch_paste';
+        }
+        if (pending.scan_summary && !envelope.scan_summary) {
+          envelope.scan_summary = pending.scan_summary;
+        }
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
         renderResults(envelope);
       } else if (envelope.status === 'failed') {
@@ -6297,6 +6378,8 @@
         if (err) { err.textContent = msg + rid; err.style.display = 'block'; }
         return;
       }
+      // Sprint 12 hotfix: tag source for the batch-results card pill.
+      envelope.source = 'batch_paste';
       try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
       renderResults(envelope);
     } catch (e) {
@@ -6442,6 +6525,10 @@
       if (batchPanel && !batchPanel.open) batchPanel.open = true;
 
       if (data.mode === 'sync' && data.envelope) {
+        // Sprint 12 hotfix: tag envelope source so the batch-results card
+        // shows a "Scan ZIPs" pill and the per-scan summary line.
+        data.envelope.source = 'scan_zips';
+        data.envelope.scan_summary = data.summary;
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(data.envelope)); } catch (_) {}
         renderResults(data.envelope);
         var resultsEl = $('batch-results');
@@ -6457,6 +6544,10 @@
           batchId: data.batch.batchId || data.batch.batch_id,
           submittedAt: Date.now(),
           urlCount: (data.summary && data.summary.survivors) || 0,
+          // Sprint 12 hotfix: origin + summary stick through the async poll
+          // so the eventual rankings card still shows the "Scan ZIPs" pill.
+          source: 'scan_zips',
+          scan_summary: data.summary || null,
         };
         if (pending.batchId) {
           savePending(pending);
