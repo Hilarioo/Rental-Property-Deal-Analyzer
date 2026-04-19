@@ -676,7 +676,9 @@ async def serve_frontend():
     html = Path("index.html").read_text(encoding="utf-8")
     if IS_CLOUD:
         # Inject flag so frontend can disable scraping-dependent features
-        html = html.replace("</head>", '<script>window.__CLOUD_DEMO__=true;</script></head>')
+        # Sprint 10-6: cloudDemo now lives on the RPDA namespace. Guard the
+        # init so load order against the inline/module scripts doesn't matter.
+        html = html.replace("</head>", '<script>window.RPDA=window.RPDA||{};window.RPDA.cloudDemo=true;</script></head>')
     return html
 
 

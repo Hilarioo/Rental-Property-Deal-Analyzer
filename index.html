@@ -1262,7 +1262,7 @@
       <button data-mode="smart" onclick="toggleSearchMode('smart')">Smart Deal Finder</button>
     </div>
 
-    <!-- Cloud demo notice (hidden by default, shown via JS when __CLOUD_DEMO__ is set) -->
+    <!-- Cloud demo notice (hidden by default, shown via JS when RPDA.cloudDemo is set) -->
     <div id="cloudDemoNotice" style="display:none;background:rgba(99,102,241,0.12);border:1px solid var(--accent);border-radius:var(--radius);padding:16px 20px;margin-bottom:16px;">
       <strong style="color:var(--accent);">Live Demo Limitation</strong>
       <p style="margin:6px 0 0;color:var(--text-muted);font-size:0.9rem;">
@@ -2038,19 +2038,25 @@
   // oninput handlers) can call it without breaking those handlers.
   // DO NOT convert the big <script> below to type="module" — module-scoped
   // functions are unreachable from inline HTML attributes.
+  //
+  // Sprint 10-6: single namespace for all debug/export globals so a future
+  // bookmarklet or third-party script collision has one name to worry about,
+  // not 14. Does NOT change the public onclick/oninput surface — those
+  // handlers still reach `window.fnName` directly.
+  window.RPDA = window.RPDA || {};
   import * as calc from '/calc.js';
-  window.__calc__ = calc;
-  window.__calcReady__ = true;
-  if (typeof window.__onCalcReady__ === 'function') {
-    try { window.__onCalcReady__(); } catch (e) { console.error('__onCalcReady__ threw', e); }
+  window.RPDA.calc = calc;
+  window.RPDA.calcReady = true;
+  if (typeof window.RPDA.onCalcReady === 'function') {
+    try { window.RPDA.onCalcReady(); } catch (e) { console.error('RPDA.onCalcReady threw', e); }
   }
 </script>
 <script>
   // ADR-002 Phase B safety net: if the module import above failed (network,
-  // 500, syntax error), __calcReady__ never flips and calculate() silently
+  // 500, syntax error), RPDA.calcReady never flips and calculate() silently
   // no-ops. Fire a user-visible banner so Jose isn't staring at a dead UI.
   window.setTimeout(function() {
-    if (window.__calcReady__) return;
+    if (window.RPDA && window.RPDA.calcReady) return;
     var banner = document.createElement('div');
     banner.textContent = '⚠ /calc.js failed to load — math engine is unavailable. Reload the page; if it persists, check the server and browser console.';
     banner.style.cssText = 'background:#dc2626;color:#fff;padding:10px;text-align:center;font-weight:600;position:sticky;top:0;z-index:9999;';
@@ -2060,6 +2066,11 @@
 
 <script>
 (function() {
+  // Sprint 10-6: single namespace for all debug/export globals. The module
+  // bootstrapper above also initializes this — the `|| {}` guard keeps the
+  // two call sites idempotent regardless of load order.
+  window.RPDA = window.RPDA || {};
+
   // ======================================================================
   // DOM helpers
   // ======================================================================
@@ -2137,7 +2148,7 @@
     selfPerformRoofing: true,
     roofingCostMultiplier: 0.60,
   };
-  window.__DEFAULTS__ = DEFAULTS; // expose for tests / dev-console inspection
+  window.RPDA.defaults = DEFAULTS; // expose for tests / dev-console inspection
   window.DEFAULTS = DEFAULTS;
 
   // ======================================================================
@@ -2216,10 +2227,10 @@
     if (ZIP_TIERS.TIER_3.indexOf(z) !== -1) return 'tier3';
     return 'outside';
   }
-  window.__PRESETS__ = PRESETS;
+  window.RPDA.presets = PRESETS;
   window.PRESETS = PRESETS;
   window.ZIP_TIERS = ZIP_TIERS;
-  window.__getZipTier__ = getZipTier;
+  window.RPDA.getZipTier = getZipTier;
 
   // ======================================================================
   // Sprint 4: Rehab category table (Jose C-39 contractor edge)
@@ -2295,7 +2306,7 @@
       useCategories: true,
     };
   }
-  window.__computeRehabTotals__ = computeRehabTotals;
+  window.RPDA.computeRehabTotals = computeRehabTotals;
 
   // Toggle legacy rehab input visibility based on category checkbox.
   function updateRehabMode() {
@@ -2306,7 +2317,7 @@
     if (catHost) catHost.style.display = useCategories ? '' : 'none';
     if (legacyGroup) legacyGroup.style.display = useCategories ? 'none' : '';
   }
-  window.__updateRehabMode__ = updateRehabMode;
+  window.RPDA.updateRehabMode = updateRehabMode;
 
   // ======================================================================
   // Sprint 4: Jose-tuned GREEN / YELLOW / RED scorer
@@ -2326,7 +2337,7 @@
     maxDtiPct: 55,        // PITI > 55% of qualifying income => hard RED
     roofAgeYellow: 15,    // > 15 years => FHA appraisal risk
   };
-  window.__JOSE_THRESHOLDS__ = JOSE_THRESHOLDS;
+  window.RPDA.joseThresholds = JOSE_THRESHOLDS;
   window.JOSE_THRESHOLDS = JOSE_THRESHOLDS;
 
   // Compute Jose's verdict. Returns { verdict: 'green'|'yellow'|'red', reasons: [...] }.
@@ -2445,7 +2456,7 @@
     // Cap at 3 reasons (noise budget per spec).
     return { verdict: verdict, reasons: reasons.slice(0, 3) };
   }
-  window.__computeJoseVerdict__ = computeJoseVerdict;
+  window.RPDA.computeJoseVerdict = computeJoseVerdict;
 
   // ======================================================================
   // State
@@ -2796,7 +2807,7 @@
       if (profile.jose)     merged.jose     = profile.jose;
     }
     __SPEC__ = merged;
-    window.__SPEC__ = merged;
+    window.RPDA.spec = merged;
     __applySpec__(merged);
   }
 
@@ -2873,7 +2884,7 @@
     el.style.borderColor = cfg.border;
     el.style.display = '';
   }
-  window.__renderTierBanner__ = renderTierBanner;
+  window.RPDA.renderTierBanner = renderTierBanner;
 
   // Re-render per-unit rents when ownerOccupied changes so the owner-unit
   // annotation appears/disappears correctly.
@@ -3066,7 +3077,7 @@
     // Show cloud demo notice when search features are selected on hosted demo
     var cloudNotice = $('cloudDemoNotice');
     if (cloudNotice) {
-      cloudNotice.style.display = (window.__CLOUD_DEMO__ && mode !== 'single') ? '' : 'none';
+      cloudNotice.style.display = (window.RPDA.cloudDemo && mode !== 'single') ? '' : 'none';
     }
     document.querySelectorAll('#modeToggle button').forEach(function(b) {
       b.classList.toggle('active', b.dataset.mode === mode);
@@ -3074,7 +3085,7 @@
   };
 
   window.runNeighborhoodSearch = async function() {
-    if (window.__CLOUD_DEMO__) { showSearchStatus('Search features are only available when running locally. Clone the repo and run python app.py.', true); return; }
+    if (window.RPDA.cloudDemo) { showSearchStatus('Search features are only available when running locally. Clone the repo and run python app.py.', true); return; }
     var location = $('searchLocation').value.trim();
     var targetRent = parseFloat($('searchTargetRent').value);
     if (!location) {
@@ -3416,7 +3427,7 @@
   var smartSortAsc = false;
 
   window.runSmartSearch = async function() {
-    if (window.__CLOUD_DEMO__) { showSmartStatus('Smart Deal Finder is only available when running locally. Clone the repo and run python app.py.', true); return; }
+    if (window.RPDA.cloudDemo) { showSmartStatus('Smart Deal Finder is only available when running locally. Clone the repo and run python app.py.', true); return; }
     var location = $('smartLocation').value.trim();
     if (!location) {
       showSmartStatus('Please enter a location (zip code or city).', true);
@@ -4006,7 +4017,7 @@
   var FHA_MIP_ANNUAL_HIGH = 0.0075;          // 0.75% annual, base loan > $726,200
   var FHA_BASELINE_LOAN_LIMIT = 726200;      // 2025 FHA conforming baseline
   var FHA_RENTAL_OFFSET = 0.75;              // 75% of non-owner-unit rents counts
-  window.__FHA__ = {
+  window.RPDA.fha = {
     get FHA_MIP_UPFRONT_RATE() { return FHA_MIP_UPFRONT_RATE; },
     get FHA_MIP_ANNUAL_STANDARD() { return FHA_MIP_ANNUAL_STANDARD; },
     get FHA_MIP_ANNUAL_HIGH() { return FHA_MIP_ANNUAL_HIGH; },
@@ -4017,8 +4028,8 @@
   function calculate() {
     // ADR-002 Phase B: ES module imports are async. If the user interacts
     // with a field before /calc.js resolves, defer until the module lands.
-    if (!window.__calcReady__) {
-      window.__onCalcReady__ = calculate;
+    if (!window.RPDA.calcReady) {
+      window.RPDA.onCalcReady = calculate;
       return;
     }
     var price = val($('purchasePrice'), 0);
@@ -4059,7 +4070,7 @@
     var expGrowthPct = val($('expenseGrowth'), 0, 50);
 
     // Loan
-    // ADR-002 Phase B: route loan/PITI math through window.__calc__ so the
+    // ADR-002 Phase B: route loan/PITI math through window.RPDA.calc so the
     // inline copy here no longer drifts from calc.js.
     var dpAmount = isCash ? price : price * dpPct / 100;
     var baseLoanAmount = isCash ? 0 : price - dpAmount;
@@ -4076,7 +4087,7 @@
       monthlyInsurance = insuranceYr / 12;
       piti = monthlyTaxes + monthlyInsurance;
     } else if (isFha) {
-      var fhaResult = window.__calc__.computeFhaPITI({
+      var fhaResult = window.RPDA.calc.computeFhaPITI({
         price: price,
         downPct: dpPct,
         annualRatePct: rate,
@@ -4087,7 +4098,7 @@
       });
       upfrontMip = fhaResult.upfrontMip;
       loanAmount = fhaResult.financedLoan;
-      annualMipRate = window.__calc__.fhaAnnualMipRate(fhaResult.baseLoan);
+      annualMipRate = window.RPDA.calc.fhaAnnualMipRate(fhaResult.baseLoan);
       monthlyMip = fhaResult.mipMonthly;
       monthlyPI = fhaResult.pi;
       monthlyTaxes = fhaResult.taxes;
@@ -4096,8 +4107,8 @@
     } else {
       // Conventional (or anything else non-FHA, non-cash).
       loanAmount = baseLoanAmount; // no upfront MIP financed
-      monthlyPI = window.__calc__.computeMonthlyPI(loanAmount, rate, termYears);
-      var convPiti = window.__calc__.computePITI({
+      monthlyPI = window.RPDA.calc.computeMonthlyPI(loanAmount, rate, termYears);
+      var convPiti = window.RPDA.calc.computePITI({
         loanAmount: loanAmount,
         annualRatePct: rate,
         termYears: termYears,
@@ -4110,7 +4121,7 @@
     }
 
     // Monthly operating expenses (route through calc.js computeOpex).
-    var opexResult = window.__calc__.computeOpex({
+    var opexResult = window.RPDA.calc.computeOpex({
       totalMonthlyIncome: totalMonthlyIncome,
       annualTaxes: taxesYr,
       annualInsurance: insuranceYr,
@@ -4129,7 +4140,7 @@
     var totalOpex = opexResult.total;
 
     // Cash flow (via calc.js).
-    var cfResult = window.__calc__.computeCashFlow({
+    var cfResult = window.RPDA.calc.computeCashFlow({
       totalMonthlyIncome: totalMonthlyIncome,
       totalOpex: totalOpex,
       monthlyPI: monthlyPI,
@@ -4138,7 +4149,7 @@
     var annualCF = cfResult.annualCF;
 
     // NOI (via calc.js).
-    var noi = window.__calc__.computeNOI({
+    var noi = window.RPDA.calc.computeNOI({
       totalMonthlyIncome: totalMonthlyIncome,
       totalOpex: totalOpex,
     });
@@ -4148,21 +4159,21 @@
     var totalCashInvested = dpAmount + closingCostsVal + rehabVal + pointsCost;
 
     // Cash on Cash (via calc.js).
-    var coc = window.__calc__.computeCoC(annualCF, totalCashInvested);
+    var coc = window.RPDA.calc.computeCoC(annualCF, totalCashInvested);
 
     // Cap rate (via calc.js).
-    var capRate = window.__calc__.computeCapRate(noi, price);
+    var capRate = window.RPDA.calc.computeCapRate(noi, price);
 
     // GRM (via calc.js).
     var annualRent = totalMonthlyIncome * 12;
-    var grm = window.__calc__.computeGRM(price, annualRent);
+    var grm = window.RPDA.calc.computeGRM(price, annualRent);
 
     // Break-even occupancy (expenses excl vacancy + mortgage / rent)
     var expExVacancy = totalOpex - vacExp;
     var breakeven = totalMonthlyIncome > 0 ? ((expExVacancy + monthlyPI) / totalMonthlyIncome) * 100 : 0;
 
     // DSCR (via calc.js).
-    var dscr = window.__calc__.computeDSCR(noi, monthlyPI * 12);
+    var dscr = window.RPDA.calc.computeDSCR(noi, monthlyPI * 12);
 
     var totalCashClose = totalCashInvested;
 
@@ -4318,7 +4329,7 @@
     // multifamily and returns an index-0-is-owner array when ownerOcc=true.
     var perUnitRents = getPerUnitRents();
     var unitsForQI = perUnitRents.length;
-    var qualifyingIncome = window.__calc__.computeQualifyingIncome({
+    var qualifyingIncome = window.RPDA.calc.computeQualifyingIncome({
       w2Monthly: w2Monthly,
       units: unitsForQI,
       perUnitRents: perUnitRents,
@@ -4326,9 +4337,9 @@
     });
     // rentalOffsetContribution still needed for the Jose verdict (netPiti).
     var rentalOffsetContribution = qualifyingIncome - w2Monthly;
-    var maxPiti45 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 45, monthlyDebts: monthlyDebts });
-    var maxPiti50 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 50, monthlyDebts: monthlyDebts });
-    var maxPiti55 = window.__calc__.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 55, monthlyDebts: monthlyDebts });
+    var maxPiti45 = window.RPDA.calc.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 45, monthlyDebts: monthlyDebts });
+    var maxPiti50 = window.RPDA.calc.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 50, monthlyDebts: monthlyDebts });
+    var maxPiti55 = window.RPDA.calc.maxPitiAtDti({ qualifyingIncome: qualifyingIncome, dtiPct: 55, monthlyDebts: monthlyDebts });
 
     // Sprint 4: Jose verdict context.
     // Net PITI = PITI minus 75% rental offset dollars (rentalOffsetContribution).
@@ -5400,6 +5411,51 @@
   loadModels();
   loadSearchFilters();
   loadAlertPrefs();
+
+  // ======================================================================
+  // Sprint 10-6: backward-compat shims for the 14 window.__*__ globals.
+  // Remove after 2-3 sprints once devtools muscle memory catches up. Each
+  // access logs a one-time deprecation warning so any remaining caller
+  // notices before the shim disappears.
+  // ======================================================================
+  (function addCompatShims() {
+    var map = {
+      '__calc__':                'calc',
+      '__calcReady__':           'calcReady',
+      '__onCalcReady__':         'onCalcReady',
+      '__DEFAULTS__':            'defaults',
+      '__JOSE_THRESHOLDS__':     'joseThresholds',
+      '__FHA__':                 'fha',
+      '__PRESETS__':             'presets',
+      '__SPEC__':                'spec',
+      '__computeJoseVerdict__':  'computeJoseVerdict',
+      '__computeRehabTotals__':  'computeRehabTotals',
+      '__getZipTier__':          'getZipTier',
+      '__renderTierBanner__':    'renderTierBanner',
+      '__updateRehabMode__':     'updateRehabMode',
+      '__CLOUD_DEMO__':          'cloudDemo',
+    };
+    Object.keys(map).forEach(function(oldKey) {
+      var newKey = map[oldKey];
+      try {
+        Object.defineProperty(window, oldKey, {
+          configurable: true,
+          get: function() {
+            console.warn('window.' + oldKey + ' is deprecated — use window.RPDA.' + newKey);
+            return window.RPDA[newKey];
+          },
+          set: function(v) {
+            console.warn('window.' + oldKey + ' is deprecated — use window.RPDA.' + newKey);
+            window.RPDA[newKey] = v;
+          },
+        });
+      } catch (e) {
+        // Property may already be non-configurable (e.g. CLOUD_DEMO set
+        // via inline <script> in <head> before this IIFE runs). Swallow —
+        // the new-name path still works.
+      }
+    });
+  })();
 
 })();
 </script>
