@@ -2357,6 +2357,9 @@
     if (c.propertyType === 'sfh' && (c.units || 1) <= 1) {
       redReasons.push('SFR without legal ADU — no 75% rental offset possible');
     }
+    // Units-unknown hard-fail is appended LAST (below) so dominant fails show first.
+    // Flag captured here for parity with batch/verdict.py ordering.
+    var unitsUnknownFail = !!c.hardFailUnitsUnknown;
     // DTI hard fail
     if (c.qualifyingIncome > 0 && c.piti > 0) {
       var dtiPct = (c.piti / c.qualifyingIncome) * 100;
@@ -2413,6 +2416,12 @@
     // Roof age soft flag
     if (typeof c.roofAgeYears === 'number' && c.roofAgeYears > T.roofAgeYellow) {
       yellowReasons.push('Roof ' + c.roofAgeYears + ' yrs old — FHA appraisal risk');
+    }
+
+    // Units-unknown hard-fail — appended LAST so existing dominant fails surface first.
+    // Mirrors batch/verdict.py ordering (parity). See ADR-002.
+    if (unitsUnknownFail) {
+      redReasons.push('Unit count not detected — re-scrape or enter manually');
     }
 
     var verdict;
@@ -4289,6 +4298,18 @@
     var zipTier = getZipTier(zipStr, zipAddr);
     var roofAgeInput = $('roofAgeYears');
     var roofAgeVal = (roofAgeInput && roofAgeInput.value !== '') ? parseFloat(roofAgeInput.value) : null;
+    // Sprint 7B-1: units-unknown hard-fail parity with batch/verdict.py.
+    // Trip whenever a scrape ran (scrapedData set) and returned no usable unit
+    // count, regardless of propertyType. Python uses the same broad signal —
+    // a mis-classified SFR that's actually a duplex must also hard-fail rather
+    // than silently compute on an assumption. Manual entry never trips this
+    // (no scrapedData → condition is false).
+    var scrapedUnitsRaw = (window.scrapedData && window.scrapedData.units);
+    var scrapedUnitsNum = Number(scrapedUnitsRaw);
+    var hardFailUnitsUnknown = (
+      !!window.scrapedData
+      && (scrapedUnitsRaw === undefined || scrapedUnitsRaw === null || !Number.isFinite(scrapedUnitsNum) || scrapedUnitsNum < 1)
+    );
     var joseContext = {
       price: price,
       effectiveRehab: rehabVal,
@@ -4305,6 +4326,7 @@
       hasFlatRoof: !!($('hasFlatRoof') && $('hasFlatRoof').checked),
       hasUnpermittedAdu: !!($('hasUnpermittedAdu') && $('hasUnpermittedAdu').checked),
       isPre1978WithGalvanized: !!($('isPre1978WithGalvanized') && $('isPre1978WithGalvanized').checked),
+      hardFailUnitsUnknown: hardFailUnitsUnknown,
     };
     var joseVerdict = computeJoseVerdict(joseContext);
 

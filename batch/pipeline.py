@@ -39,23 +39,38 @@ from .db import (
 from .insurance import compute_insurance
 from .verdict import classify_zip_tier, compute_jose_verdict
 
+# ADR-002 / Sprint 7B-3: DEFAULTS reads from spec/constants.json.
+# Callers use legacy key names (interestRatePct, termYears, baselineInsuranceAnnual)
+# — we build a view over spec.defaults with those aliases so no call site breaks.
+# Any new caller should prefer the spec key names (interestRate, loanTerm, insuranceAnnual).
+from spec import constants as _spec
+
 logger = logging.getLogger(__name__)
 
-# Jose-ish defaults mirroring USER_PROFILE.md §10 / Sprint 2 DEFAULTS.
-DEFAULTS = {
-    "buyerMonthlyIncomeW2": 4506,
-    "downPaymentPct": 3.5,
-    "interestRatePct": 6.5,
-    "termYears": 30,
-    "fhaUpfrontMipPct": 1.75,
-    "fhaAnnualMipPct": 0.55,
-    "propertyTaxRatePct": 1.1,
-    "baselineInsuranceAnnual": 1800,
-    "vacancyPct": 5.0,
-    "maintenancePct": 5.0,
-    "closingCostsPct": 3.0,
-    "rentalOffsetPct": 75.0,
-    "maxCashToClose": 45000,
+_SPEC_DEFAULTS = _spec.defaults
+DEFAULTS: dict[str, Any] = {
+    # Direct spec reads (names match exactly).
+    "buyerMonthlyIncomeW2": _SPEC_DEFAULTS["buyerMonthlyIncomeW2"],
+    "downPaymentPct": _SPEC_DEFAULTS["downPaymentPct"],
+    "fhaUpfrontMipPct": _SPEC_DEFAULTS["fhaUpfrontMipPct"],
+    "fhaAnnualMipPct": _SPEC_DEFAULTS["fhaAnnualMipPct"],
+    "propertyTaxRatePct": _SPEC_DEFAULTS["propertyTaxRatePct"],
+    "vacancyPct": float(_SPEC_DEFAULTS["vacancyPct"]),
+    "maintenancePct": float(_SPEC_DEFAULTS["maintenancePct"]),
+    "closingCostsPct": float(_SPEC_DEFAULTS["closingCostsPct"]),
+    "rentalOffsetPct": float(_SPEC_DEFAULTS["rentalOffsetPct"]),
+    "maxCashToClose": _SPEC_DEFAULTS["maxCashToClose"],
+    # Aliases — keep legacy names that callers in this module use.
+    "interestRatePct": _SPEC_DEFAULTS["interestRate"],
+    "termYears": _SPEC_DEFAULTS["loanTerm"],
+    "baselineInsuranceAnnual": _SPEC_DEFAULTS["insuranceAnnual"],
+}
+
+# Rehab self-perform multipliers — single source of truth in spec.rehabCategories.
+# Built once at import; any spec change takes effect on next process boot.
+_REHAB_SELF_PERFORM_MULT: dict[str, float] = {
+    cat["key"]: float(cat["selfPerformMultiplier"])
+    for cat in _spec.rehab_categories
 }
 
 # Rough per-unit market rent by Tier (USER_PROFILE §9). Used only when rent
@@ -96,18 +111,15 @@ def _fha_loan(price: float, down_pct: float) -> dict[str, float]:
 def _effective_rehab(rehab_band: dict[str, Any]) -> tuple[float, float]:
     """Return (effective_rehab, contractor_edge_savings).
 
-    C-39 roofing at 0.60x retail (Jose). Cosmetic at 0.80x (partial DIY).
-    Everything else at 1.0x.
+    Multipliers from spec.rehabCategories, not inline. Keys that aren't listed
+    in the spec fall back to 1.0x (no self-perform edge).
     """
     retail = 0.0
     effective = 0.0
     for cat, band in (rehab_band or {}).items():
         mid = float((band or {}).get("mid") or 0.0)
         retail += mid
-        mult = {
-            "roof": 0.60,
-            "cosmetic": 0.80,
-        }.get(cat, 1.0)
+        mult = _REHAB_SELF_PERFORM_MULT.get(cat, 1.0)
         effective += mid * mult
     return effective, max(0.0, retail - effective)
 
@@ -119,16 +131,21 @@ def _extract_zip(address: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+_EXCLUDED_CITY_NEEDLES: tuple[str, ...] = tuple(
+    c.lower() for c in _spec.zip_tiers.get("excludedCities") or []
+)
+
+
 def _looks_excluded(address: str | None) -> bool:
-    """Cheap substring check against USER_PROFILE §7 exclusion list."""
+    """Cheap substring check against spec.zipTiers.excludedCities (§7).
+
+    Case-insensitive substring match, loaded once from spec at import time.
+    """
     if not address:
         return False
     a = address.lower()
-    for needle in (
-        "benicia", "glen cove", "hiddenbrooke", "mare island",
-        "oakland", "berkeley", "point richmond",
-    ):
-        if needle in a:
+    for needle in _EXCLUDED_CITY_NEEDLES:
+        if needle and needle in a:
             return True
     return False
 
