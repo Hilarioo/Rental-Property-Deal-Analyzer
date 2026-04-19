@@ -576,6 +576,13 @@ def _build_response_rankings(ranked_rows: list[dict[str, Any]]) -> list[dict[str
             "address": row.get("address"),
             "zip_code": row.get("zip_code"),
             "price": row.get("price"),
+            # Sprint 14.5: scraped shape for the unified results table.
+            "beds": row.get("beds"),
+            "baths": row.get("baths"),
+            "sqft": row.get("sqft"),
+            "year_built": row.get("year_built"),
+            "units": row.get("units"),
+            "dom": row.get("dom"),
             "topsis_score": row.get("topsis_score", 0.0),
             "pareto_efficient": bool(row.get("pareto_efficient")),
             "verdict": row.get("verdict", "red"),
