@@ -1246,11 +1246,28 @@
 
   <!-- Scenario Save/Load Toolbar -->
   <div class="scenario-toolbar" id="scenarioToolbar">
+    <!-- Sprint 10B-6: status filter. Default "all" preserves pre-10B behavior. -->
+    <select id="scenarioStatusFilter" onchange="refreshScenarioList()" title="Filter saved scenarios by status" style="max-width:130px;flex:0 0 auto;">
+      <option value="all">All statuses</option>
+      <option value="shortlist">Shortlist</option>
+      <option value="showed">Showed</option>
+      <option value="offered">Offered</option>
+      <option value="dead">Dead</option>
+      <option value="archived">Archived</option>
+    </select>
     <select id="scenarioSelect"><option value="">— Saved Scenarios —</option></select>
+    <select id="scenarioStatus" title="Status for the scenario you're about to save" style="max-width:120px;flex:0 0 auto;">
+      <option value="shortlist">Shortlist</option>
+      <option value="showed">Showed</option>
+      <option value="offered">Offered</option>
+      <option value="dead">Dead</option>
+      <option value="archived">Archived</option>
+    </select>
     <button class="btn btn-small" type="button" onclick="loadScenario()">Load</button>
     <button class="btn btn-small" type="button" onclick="saveScenario()">Save Current</button>
     <button class="btn btn-small btn-danger" type="button" onclick="deleteScenario()">Delete</button>
     <span class="scenario-count" id="scenarioCount"></span>
+    <textarea id="scenarioNotes" placeholder="Notes for this scenario (500 chars max — e.g. agent contact, showing feedback, offer terms)" maxlength="500" rows="2" style="flex:1 0 100%;margin-top:8px;padding:6px 10px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;font-family:inherit;resize:vertical;"></textarea>
   </div>
 
   <!-- ============ STEP 1: Property URL & Purchase ============ -->
@@ -5090,6 +5107,11 @@
   // Scenario Save/Load (localStorage)
   // ======================================================================
   var SCENARIO_KEY = 'rpda_scenarios';
+  // Sprint 10B-6: schema v2 adds `status` + `notes` per scenario. We store the
+  // envelope under a sibling key so the existing per-scenario map stays a flat
+  // {name: data} dict (compare mode + older code still reads it unchanged).
+  var SCENARIO_META_KEY = 'rpda_scenarios_meta';
+  var SCENARIO_STATUSES = ['shortlist', 'showed', 'offered', 'dead', 'archived'];
 
   var SAVE_FIELDS = [
     'propName','purchasePrice','arv','closingCosts','rehabBudget','valueGrowth',
@@ -5107,25 +5129,93 @@
     catch(e) { return {}; }
   }
 
+  // Sprint 10B-6: migrate any pre-v2 scenario dict to the new shape. Runs
+  // once per page load, idempotent. Old scenarios get status='shortlist'
+  // + empty notes so they sort as normal actionable deals.
+  function migrateScenariosToV2() {
+    try {
+      var raw = localStorage.getItem(SCENARIO_META_KEY);
+      var meta = raw ? JSON.parse(raw) : null;
+      if (meta && meta._schemaVersion >= 2) return; // already migrated
+      var scenarios = getSavedScenarios();
+      var newMeta = { _schemaVersion: 2, items: {} };
+      Object.keys(scenarios).forEach(function(k) {
+        newMeta.items[k] = { status: 'shortlist', notes: '' };
+      });
+      localStorage.setItem(SCENARIO_META_KEY, JSON.stringify(newMeta));
+    } catch (_) { /* localStorage quota / parse — keep going with defaults */ }
+  }
+
+  function getScenarioMeta() {
+    try {
+      var raw = localStorage.getItem(SCENARIO_META_KEY);
+      var meta = raw ? JSON.parse(raw) : null;
+      if (!meta || meta._schemaVersion !== 2) return { _schemaVersion: 2, items: {} };
+      if (!meta.items) meta.items = {};
+      return meta;
+    } catch(e) { return { _schemaVersion: 2, items: {} }; }
+  }
+
+  function setScenarioMeta(name, patch) {
+    var meta = getScenarioMeta();
+    var cur = meta.items[name] || { status: 'shortlist', notes: '' };
+    meta.items[name] = Object.assign({}, cur, patch);
+    try { localStorage.setItem(SCENARIO_META_KEY, JSON.stringify(meta)); } catch (_) {}
+  }
+
+  function getScenarioStatus(name) {
+    var meta = getScenarioMeta();
+    return (meta.items[name] && meta.items[name].status) || 'shortlist';
+  }
+
+  function getScenarioNotes(name) {
+    var meta = getScenarioMeta();
+    return (meta.items[name] && meta.items[name].notes) || '';
+  }
+
+  function statusBadge(status) {
+    // Human-readable labels — per UX Architect Sprint 10B review.
+    // `<option>` doesn't render HTML, so we use plaintext. Drops the
+    // jargon abbreviations (`[SHORT]` etc.) that required mental
+    // translation on every dropdown open.
+    var labels = {
+      shortlist: 'Saved',
+      showed: 'Toured',
+      offered: 'Offer Made',
+      dead: 'Passed',
+      archived: 'Archived',
+    };
+    return labels[status] || 'Saved';
+  }
+
   function refreshScenarioList() {
     var scenarios = getSavedScenarios();
-    var keys = Object.keys(scenarios).sort();
+    var filterEl = $('scenarioStatusFilter');
+    var activeFilter = filterEl ? filterEl.value : 'all';
+    var allKeys = Object.keys(scenarios).sort();
+    var keys = activeFilter === 'all'
+      ? allKeys
+      : allKeys.filter(function(k) { return getScenarioStatus(k) === activeFilter; });
     var sel = $('scenarioSelect');
-    sel.innerHTML = '<option value="">— Saved Scenarios (' + keys.length + ') —</option>';
+    sel.innerHTML = '<option value="">— Saved Scenarios (' + keys.length + (activeFilter !== 'all' ? '/' + allKeys.length : '') + ') —</option>';
     keys.forEach(function(k) {
       var opt = document.createElement('option');
       opt.value = k;
-      opt.textContent = k;
+      // Sprint 10B-6: inline status next to each scenario name so Jose
+      // doesn't have to open each one to know what state it's in.
+      opt.textContent = statusBadge(getScenarioStatus(k)) + ' · ' + k;
       sel.appendChild(opt);
     });
-    $('scenarioCount').textContent = keys.length > 0 ? keys.length + ' saved' : '';
-    // Also update compare selects
+    $('scenarioCount').textContent = allKeys.length > 0 ? allKeys.length + ' saved' : '';
+    // Also update compare selects. Use `allKeys` (unfiltered) here —
+    // a status filter on the main dropdown should NOT hide scenarios
+    // from the compare pickers. Code Review Sprint 10B regression fix.
     ['compareA','compareB','compareC'].forEach(function(id) {
       var csel = $(id);
       if (!csel) return;
       var cur = csel.value;
       csel.innerHTML = '<option value="">— Select —</option>';
-      keys.forEach(function(k) {
+      allKeys.forEach(function(k) {
         var opt = document.createElement('option');
         opt.value = k; opt.textContent = k;
         if (k === cur) opt.selected = true;
@@ -5177,6 +5267,13 @@
       }
       throw e;
     }
+    // Sprint 10B-6: persist status + notes alongside the scenario.
+    var statusEl = $('scenarioStatus');
+    var notesEl = $('scenarioNotes');
+    setScenarioMeta(name, {
+      status: statusEl && SCENARIO_STATUSES.indexOf(statusEl.value) !== -1 ? statusEl.value : 'shortlist',
+      notes: notesEl ? (notesEl.value || '').slice(0, 500) : '',
+    });
     refreshScenarioList();
     $('scenarioSelect').value = name;
   };
@@ -5199,6 +5296,12 @@
       $('cashPurchase').checked = data.cashPurchase;
       toggleCashPurchase();
     }
+    // Sprint 10B-6: restore status + notes into the form so Save Current
+    // round-trips the full picture if the user re-saves after tweaking.
+    var statusEl = $('scenarioStatus');
+    var notesEl = $('scenarioNotes');
+    if (statusEl) statusEl.value = getScenarioStatus(name);
+    if (notesEl) notesEl.value = getScenarioNotes(name);
     calculate();
     updateDpHelper();
     goToStep(1);
@@ -5211,6 +5314,13 @@
     var scenarios = getSavedScenarios();
     delete scenarios[name];
     localStorage.setItem(SCENARIO_KEY, JSON.stringify(scenarios));
+    // Sprint 10B-6: also drop the status/notes record so we don't leak
+    // meta rows indefinitely. Safe if the entry never existed.
+    var meta = getScenarioMeta();
+    if (meta.items && meta.items[name]) {
+      delete meta.items[name];
+      try { localStorage.setItem(SCENARIO_META_KEY, JSON.stringify(meta)); } catch (_) {}
+    }
     refreshScenarioList();
   };
 
@@ -5396,6 +5506,7 @@
   // Initial setup
   updateDpHelper();
   calculate();
+  migrateScenariosToV2(); // Sprint 10B-6: run before first refreshScenarioList
   refreshScenarioList();
   loadModels();
   loadSearchFilters();
@@ -5460,55 +5571,164 @@
     return '$' + Math.round(Number(n)).toLocaleString();
   }
 
+  // Sprint 10B-4: Jose-facing copy for the cache source badge. Implementation
+  // details (token counts, raw reason codes) live in the tooltip for debugging.
+  function cacheBadgeCopy(cacheStaleReason, analyzedAt) {
+    if (!cacheStaleReason) {
+      // Cache hit — show freshness of the cached analysis.
+      return {
+        label: 'Using cached analysis' + (analyzedAt ? ' · updated ' + relativeTime(analyzedAt) : ''),
+        tooltip: 'LLM cache hit (0 tokens). analyzed_at=' + (analyzedAt || 'unknown'),
+      };
+    }
+    var reasonCopy = {
+      new_url: 'Fresh analysis (first time seen)',
+      price_changed: 'Fresh analysis (price changed)',
+      dom_increased: 'Fresh analysis (on market longer)',
+      cache_age_exceeded: 'Fresh analysis (cache expired)',
+    };
+    return {
+      label: reasonCopy[cacheStaleReason] || ('Fresh analysis (' + cacheStaleReason + ')'),
+      tooltip: 'LLM re-ran: ' + cacheStaleReason,
+    };
+  }
+
+  // Sprint 10B-3 + 10B-5: "3 days ago" style formatter for cache/submission
+  // timestamps. Keeps the UI honest about freshness without burning a dep.
+  function relativeTime(iso) {
+    if (!iso) return '';
+    var then;
+    try { then = new Date(iso).getTime(); } catch (_) { return ''; }
+    if (!then || isNaN(then)) return '';
+    var ms = Date.now() - then;
+    if (ms < 0) return 'just now';
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return 'just now';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + (m % 60) + 'm ago';
+    var d = Math.floor(h / 24);
+    if (d < 7) return d + 'd ago';
+    var w = Math.floor(d / 7);
+    if (w < 5) return w + 'w ago';
+    var mo = Math.floor(d / 30);
+    return mo + 'mo ago';
+  }
+
+  // Sprint 10B-2: plain-English legend that anchors the TOPSIS number,
+  // the ★ Pareto marker, and the verdict colors. Collapsed by default so
+  // it doesn't push the results table below the fold.
+  function scoreLegendHtml() {
+    var html = '';
+    html += '<details style="margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;">';
+    html += '<summary style="cursor:pointer;font-weight:600;font-size:0.88rem;">What do these scores mean?</summary>';
+    html += '<div style="margin-top:8px;font-size:0.82rem;line-height:1.55;color:var(--text-muted);">';
+    html += '<p style="margin:0 0 6px;"><strong style="color:var(--text);">Deal Score (0-1):</strong> one number combining price, cash flow, payment headroom, rehab cost, and neighborhood fit. Higher is better — use it to rank, not to pass/fail. <span title="TOPSIS — Technique for Order Preference by Similarity to Ideal Solution, Hwang & Yoon 1981" style="color:var(--text-muted);cursor:help;">(methodology)</span></p>';
+    html += '<p style="margin:0 0 6px;"><strong style="color:var(--text);">★ Pareto-efficient:</strong> no other property in this batch is better on every dimension. A ★ row is never strictly dominated — always worth a second look.</p>';
+    html += '<p style="margin:0 0 6px;"><strong style="color:var(--text);">Verdict colors:</strong> ';
+    html += '<span style="color:#16a34a;font-weight:600;">Green = pursue</span>, ';
+    html += '<span style="color:#ca8a04;font-weight:600;">Yellow = investigate</span>, ';
+    html += '<span style="color:#dc2626;font-weight:600;">Red = skip</span> (the Why column lists the triggering reasons).</p>';
+    html += '<p style="margin:0;font-size:0.78rem;">Note: failed URLs (unreachable listings, rate-limited scrapes, unsupported sites) appear in the Failed URLs section below with a one-click Retry.</p>';
+    html += '</div></details>';
+    return html;
+  }
+
+  // Sprint 10B-1: render the failures section with per-URL Retry button.
+  function renderFailuresSection(failures) {
+    if (!failures || !failures.length) return '';
+    var html = '';
+    html += '<div style="margin-top:16px;padding:12px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.3);border-radius:8px;">';
+    html += '<strong style="color:#dc2626;">Failed URLs (' + failures.length + ')</strong>';
+    html += '<div style="font-size:0.78rem;color:var(--text-muted);margin:4px 0 10px;">These URLs never produced a ranking — click Retry to re-queue them.</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+    failures.forEach(function (f) {
+      var url = f.url || f.canonicalUrl || '';
+      var shortUrl = url.length > 72 ? url.slice(0, 70) + '…' : url;
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 10px;background:var(--card);border-radius:6px;flex-wrap:wrap;">';
+      html += '<div style="flex:1;min-width:200px;">';
+      html += '<span style="display:inline-block;background:rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4);padding:1px 8px;border-radius:10px;font-size:0.68rem;font-weight:700;text-transform:uppercase;margin-right:8px;">' + escapeHtml(f.reason || 'Failed') + '</span>';
+      html += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;font-size:0.82rem;" title="' + escapeHtml(url) + '">' + escapeHtml(shortUrl) + '</a>';
+      if (f.errorCode) {
+        html += '<span style="margin-left:8px;font-size:0.7rem;color:var(--text-muted);" title="Raw error code">[' + escapeHtml(f.errorCode) + ']</span>';
+      }
+      html += '</div>';
+      html += '<button class="btn btn-small btn-secondary" type="button" onclick="window.__retryFailedUrl(' + JSON.stringify(url).replace(/"/g, '&quot;') + ')">Retry</button>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
   function renderResults(envelope) {
     var root = $('batch-results');
     if (!root) return;
     var rows = envelope.rankings || [];
-    if (!rows.length) {
+    var failures = envelope.failures || [];
+    if (!rows.length && !failures.length) {
       root.innerHTML = '<p style="color:var(--text-muted);">No rankings returned.</p>';
       root.style.display = 'block';
       return;
     }
     var html = '';
+    html += scoreLegendHtml(); // Sprint 10B-2
     html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">';
-    html += '<strong>Batch ' + escapeHtml(envelope.batch_id.slice(0, 8)) + '</strong>';
-    html += '<span style="font-size:0.78rem;color:var(--text-muted);">' + rows.length + ' ranked · ' + (envelope.duplicates_removed || 0) + ' dupes removed</span>';
+    html += '<strong>Batch ' + escapeHtml((envelope.batch_id || '').slice(0, 8)) + '</strong>';
+    var metaLine = rows.length + ' ranked · ' + (envelope.duplicates_removed || 0) + ' dupes removed';
+    if (failures.length) metaLine += ' · ' + failures.length + ' failed';
+    html += '<span style="font-size:0.78rem;color:var(--text-muted);">' + metaLine + '</span>';
     html += '</div>';
-    html += '<div style="overflow-x:auto;">';
-    html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
-    html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
-    ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', ''].forEach(function (h) {
-      html += '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">' + h + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-    rows.forEach(function (r) {
-      var verdictBg = r.verdict === 'green' ? 'rgba(22,163,74,0.18);color:#16a34a;border:1px solid rgba(22,163,74,0.4)'
-        : r.verdict === 'yellow' ? 'rgba(202,138,4,0.18);color:#ca8a04;border:1px solid rgba(202,138,4,0.4)'
-        : 'rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4)';
-      var star = r.pareto_efficient ? ' ★' : '';
-      var addr = r.address ? (r.address.length > 48 ? r.address.slice(0, 46) + '…' : r.address) : '(no address)';
-      var reasons = (r.reasons || []).slice(0, 2).join(' · ');
-      if (reasons.length > 110) reasons = reasons.slice(0, 108) + '…';
-      html += '<tr style="border-bottom:1px solid var(--border);">';
-      html += '<td style="padding:6px 8px;white-space:nowrap;">' + r.rank + star + '</td>';
-      html += '<td style="padding:6px 8px;">' + escapeHtml(addr) + '</td>';
-      html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtUsd(r.price) + '</td>';
-      html += '<td style="padding:6px 8px;"><span style="background:' + verdictBg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">' + escapeHtml(r.verdict) + '</span></td>';
-      html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
-      html += '<td style="padding:6px 8px;color:var(--text-muted);">' + escapeHtml(reasons) + '</td>';
-      html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + JSON.stringify(r.canonical_url).replace(/"/g, '&quot;') + ')">Open</button></td>';
-      html += '</tr>';
-      // Cache-reason badge row (optional).
-      if (r.cache_stale_reason) {
-        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">LLM re-ran: ' + escapeHtml(r.cache_stale_reason) + '</td></tr>';
-      } else {
-        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);">LLM cache hit (0 tokens)</td></tr>';
-      }
-    });
-    html += '</tbody></table></div>';
+    if (rows.length) {
+      html += '<div style="overflow-x:auto;">';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
+      html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
+      ['#', 'Address', 'Price', 'Verdict', 'TOPSIS', 'Why', ''].forEach(function (h) {
+        html += '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">' + h + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      rows.forEach(function (r) {
+        var verdictBg = r.verdict === 'green' ? 'rgba(22,163,74,0.18);color:#16a34a;border:1px solid rgba(22,163,74,0.4)'
+          : r.verdict === 'yellow' ? 'rgba(202,138,4,0.18);color:#ca8a04;border:1px solid rgba(202,138,4,0.4)'
+          : 'rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4)';
+        var star = r.pareto_efficient ? ' ★' : '';
+        var addr = r.address ? (r.address.length > 48 ? r.address.slice(0, 46) + '…' : r.address) : '(no address)';
+        var reasons = (r.reasons || []).slice(0, 2).join(' · ');
+        if (reasons.length > 110) reasons = reasons.slice(0, 108) + '…';
+        html += '<tr style="border-bottom:1px solid var(--border);">';
+        html += '<td style="padding:6px 8px;white-space:nowrap;">' + r.rank + star + '</td>';
+        html += '<td style="padding:6px 8px;">' + escapeHtml(addr) + '</td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtUsd(r.price) + '</td>';
+        html += '<td style="padding:6px 8px;"><span style="background:' + verdictBg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">' + escapeHtml(r.verdict) + '</span></td>';
+        html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
+        html += '<td style="padding:6px 8px;color:var(--text-muted);">' + escapeHtml(reasons) + '</td>';
+        html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + JSON.stringify(r.canonical_url).replace(/"/g, '&quot;') + ')">Open</button></td>';
+        html += '</tr>';
+        // Sprint 10B-4: Jose-facing cache-source badge (title attr keeps
+        // raw debug info on hover).
+        var badge = cacheBadgeCopy(r.cache_stale_reason, (r.llm_analysis && r.llm_analysis._analyzed_at) || r.analyzed_at);
+        html += '<tr><td colspan="7" style="padding:0 8px 8px;font-size:0.72rem;color:var(--text-muted);" title="' + escapeHtml(badge.tooltip) + '">' + escapeHtml(badge.label) + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    html += renderFailuresSection(failures); // Sprint 10B-1
     root.innerHTML = html;
     root.style.display = 'block';
   }
+
+  // Sprint 10B-1: copy a failed URL back into the textarea and re-submit.
+  // Pushes the URL to the top so it's visible at a glance. De-dupes against
+  // any URLs already queued.
+  window.__retryFailedUrl = function (url) {
+    var ta = $('batch-urls');
+    if (!ta) return;
+    var existing = urlLines(ta.value);
+    if (existing.indexOf(url) === -1) existing.unshift(url);
+    ta.value = existing.join('\n');
+    updateCount();
+    ta.focus();
+    if (typeof window.runBatchAnalyze === 'function') window.runBatchAnalyze();
+  };
 
   window.__openBatchRow = function (url) {
     var input = $('zillowUrl');
@@ -5528,6 +5748,31 @@
     catch (_) { return ''; }
   }
 
+  // Sprint 10B-5: produce the "Submitted 1h 23m ago" + ETA line for the
+  // pending card. Yellow/red escalation tracks Anthropic's published 24h SLA.
+  function pendingEtaLine(pending) {
+    if (!pending || !pending.submittedAt) return '';
+    var then = new Date(pending.submittedAt).getTime();
+    if (!then || isNaN(then)) return '';
+    var elapsedMs = Date.now() - then;
+    var totalMin = Math.max(0, Math.floor(elapsedMs / 60000));
+    var h = Math.floor(totalMin / 60);
+    var m = totalMin % 60;
+    var submitted = (h > 0 ? h + 'h ' : '') + m + 'm ago';
+    var eta;
+    var tone = 'var(--text-muted)';
+    if (elapsedMs < 4 * 3600 * 1000) {
+      eta = 'Most batches finish within an hour. Max wait is 24 hours.';
+    } else if (elapsedMs < 20 * 3600 * 1000) {
+      eta = 'Approaching the 24-hour wait cap — results still coming.';
+      tone = '#ca8a04';
+    } else {
+      eta = "This batch has been running 20+ hours — unusual. Click Dismiss and resubmit, or wait for the 24-hour timeout.";
+      tone = '#dc2626';
+    }
+    return '<div style="margin-top:6px;font-size:0.78rem;color:' + tone + ';">Submitted ' + escapeHtml(submitted) + ' · ' + escapeHtml(eta) + '</div>';
+  }
+
   function renderPending(pending) {
     var root = $('batch-pending');
     if (!root) return;
@@ -5538,8 +5783,12 @@
     html += '<div><strong>Pending async batch</strong> <span style="color:var(--text-muted);font-size:0.78rem;">' + escapeHtml((pending.batchId || '').slice(0, 8)) + '</span></div>';
     html += '<div style="color:var(--text-muted);font-size:0.78rem;">Input: ' + (pending.inputCount || 0) + ' · Cache hits: ' + (pending.cacheHitCount || 0) + ' · Last checked ' + escapeHtml(checkedAt) + '</div>';
     html += '</div>';
+    html += pendingEtaLine(pending); // Sprint 10B-5
     html += '<div style="margin-top:8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__checkBatchStatus()">Check status</button>';
-    html += ' <button class="btn btn-small btn-secondary" type="button" style="margin-left:8px;" onclick="window.__dismissPending()">Dismiss</button></div>';
+    html += ' <button class="btn btn-small btn-secondary" type="button" style="margin-left:8px;" onclick="window.__dismissPending()">Dismiss</button>';
+    // Sprint 10B-3: live indicator so the user knows we're polling without clicks.
+    html += '<span id="batch-poll-indicator" style="margin-left:12px;font-size:0.75rem;color:var(--text-muted);">Auto-polling every ~30s</span>';
+    html += '</div>';
     root.innerHTML = html;
     root.style.display = 'block';
   }
@@ -5578,6 +5827,7 @@
       }
       // All-cache-hit short-circuit: server returns 200 with rankings.
       if (envelope.status === 'complete' && envelope.rankings) {
+        stopAutoPoll(); // Sprint 10B-3: nothing to poll for.
         clearPending();
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
         renderResults(envelope);
@@ -5595,10 +5845,16 @@
         externalBatchId: envelope.external_batch_id || null,
         inputCount: envelope.input_count || urls.length,
         cacheHitCount: envelope.cache_hit_count || 0,
+        // Sprint 10B-5: remember when the user submitted, so the pending card
+        // can show "Submitted 1h 23m ago" + an SLA-aware ETA on each tick.
+        submittedAt: envelope.created_at || new Date().toISOString(),
         lastCheckedAt: new Date().toISOString(),
       };
       savePending(pending);
       renderPending(pending);
+      // Sprint 10B-3: start the auto-poll loop so the user doesn't have to
+      // click "Check status" manually after reload or initial submit.
+      startAutoPoll();
     } catch (e) {
       if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
     } finally {
@@ -5606,6 +5862,79 @@
       if (load) load.style.display = 'none';
     }
   }
+
+  // Sprint 10B-3: auto-poll loop for pending async batches. Replaces the
+  // pre-10B "auto-poll once on reload" behavior that forced Jose to click
+  // "Check status" every time he came back to the tab.
+  //
+  // Backoff schedule (cumulative): 30s → 60s → 2m → 5m → 5m → ... up to
+  // the 30-min session cap. Pauses when the tab is hidden (visibilitychange)
+  // to save battery and respect the server. On resume, we kick off one
+  // immediate poll so the user doesn't stare at a stale card.
+  var _autoPollTimer = null;
+  var _autoPollStartedAt = null;
+  var _AUTO_POLL_DELAYS_MS = [30000, 60000, 120000, 300000, 300000];
+  var _AUTO_POLL_MAX_SESSION_MS = 30 * 60 * 1000;
+
+  function _nextAutoPollDelay() {
+    // Advance through the schedule based on how many ticks have fired.
+    var elapsed = _autoPollStartedAt ? (Date.now() - _autoPollStartedAt) : 0;
+    var cumulative = 0;
+    for (var i = 0; i < _AUTO_POLL_DELAYS_MS.length; i++) {
+      cumulative += _AUTO_POLL_DELAYS_MS[i];
+      if (elapsed < cumulative) return _AUTO_POLL_DELAYS_MS[i];
+    }
+    return _AUTO_POLL_DELAYS_MS[_AUTO_POLL_DELAYS_MS.length - 1];
+  }
+
+  function stopAutoPoll() {
+    if (_autoPollTimer) { clearTimeout(_autoPollTimer); _autoPollTimer = null; }
+  }
+
+  function startAutoPoll() {
+    stopAutoPoll();
+    _autoPollStartedAt = Date.now();
+    _scheduleNextPoll();
+  }
+
+  function _scheduleNextPoll() {
+    var pending = loadPending();
+    if (!pending || !pending.batchId) return;
+    if (_autoPollStartedAt && Date.now() - _autoPollStartedAt > _AUTO_POLL_MAX_SESSION_MS) {
+      // Session cap. Leave the pending card + manual "Check status" for Jose.
+      var ind = $('batch-poll-indicator');
+      if (ind) ind.textContent = 'Auto-poll paused (30m cap). Click Check status.';
+      return;
+    }
+    if (document.hidden) {
+      // Pause while the tab isn't visible — visibilitychange handler will
+      // resume us on tab focus.
+      return;
+    }
+    var delay = _nextAutoPollDelay();
+    _autoPollTimer = setTimeout(async function () {
+      // Re-render pending to tick the "Submitted Xh Ym ago" line.
+      var cur = loadPending();
+      if (cur) renderPending(cur);
+      if (typeof window.__checkBatchStatus === 'function') {
+        await window.__checkBatchStatus();
+      }
+      // If still pending after the check, queue the next tick.
+      if (loadPending()) _scheduleNextPoll();
+    }, delay);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      stopAutoPoll();
+    } else {
+      // Resume — immediate tick, then normal cadence.
+      if (loadPending()) {
+        if (typeof window.__checkBatchStatus === 'function') window.__checkBatchStatus();
+        _scheduleNextPoll();
+      }
+    }
+  });
 
   window.__checkBatchStatus = async function () {
     var pending = loadPending();
@@ -5619,6 +5948,7 @@
         // 404 means the server no longer has this batch (deleted/expired).
         // Drop the stale pending card so it doesn't linger forever.
         if (resp.status === 404) {
+          stopAutoPoll(); // Sprint 10B-3: terminal, batch gone from server.
           clearPending();
           if (err) {
             err.textContent = 'Batch no longer exists on the server.';
@@ -5633,10 +5963,12 @@
       pending.lastCheckedAt = new Date().toISOString();
       savePending(pending);
       if (envelope.status === 'complete' && envelope.rankings) {
+        stopAutoPoll(); // Sprint 10B-3: terminal state, drop the timer.
         clearPending();
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
         renderResults(envelope);
       } else if (envelope.status === 'failed') {
+        stopAutoPoll(); // Sprint 10B-3: terminal state.
         clearPending();
         if (err) {
           err.textContent = 'Batch failed: ' + (envelope.error_reason || 'unknown');
@@ -5650,7 +5982,7 @@
     }
   };
 
-  window.__dismissPending = function () { clearPending(); };
+  window.__dismissPending = function () { stopAutoPoll(); clearPending(); };
 
   window.runBatchAnalyze = async function () {
     var ta = $('batch-urls');
@@ -5712,10 +6044,14 @@
     var pending = loadPending();
     if (pending && pending.batchId) {
       renderPending(pending);
-      // Auto-refresh status once on load.
+      // Sprint 10B-3: kick off the auto-poll loop. The first tick checks
+      // status immediately (replacing the pre-10B one-shot behavior); the
+      // loop then takes over the 30s / 60s / 2m / 5m cadence with visibility
+      // pause. Jose can reload mid-batch without getting a stale pending card.
       if (typeof window.__checkBatchStatus === 'function') {
         window.__checkBatchStatus();
       }
+      startAutoPoll();
     }
     updateCount();
   });

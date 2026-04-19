@@ -61,6 +61,7 @@ from .pipeline import (
     _update_analysis_cache,
     _upsert_enrichment,
     _upsert_property_row,
+    build_failures_envelope,
     compute_property_metrics,
 )
 from .verdict import classify_zip_tier
@@ -577,6 +578,9 @@ def _build_response_rankings(ranked_rows: list[dict[str, Any]]) -> list[dict[str
             "metrics": row.get("metrics") or {},
             "derived_metrics": row.get("derived_metrics") or {},
             "cache_stale_reason": row.get("cache_stale_reason"),
+            # Emitted so the frontend cache-source badge (Sprint 10B-4) can
+            # render "updated Xd ago" on cache-hit rows.
+            "analyzed_at": row.get("analyzed_at"),
             "insurance_breakdown": row.get("insurance_breakdown") or {},
             "llm_analysis": row.get("llm_analysis"),
             "enrichment": row.get("enrichment"),
@@ -698,6 +702,9 @@ async def submit_async_batch(
             "cache_hit_count": len(cache_hits),
             "status": "complete",
             "rankings": _build_response_rankings(ranked),
+            # Sprint 10B-1: surface per-URL failures so the UI can render a
+            # retry row for each one instead of silently dropping them.
+            "failures": build_failures_envelope(ranked),
             "note": "all_cache_hits" if cache_hits else None,
         }
 
@@ -1217,9 +1224,63 @@ def _build_poll_response(
     if status == "complete":
         if ranked_override is not None:
             resp["rankings"] = _build_response_rankings(ranked_override)
+            # Sprint 10B-1: propagate failures the same way rankings go.
+            resp["failures"] = build_failures_envelope(ranked_override)
         else:
             resp["rankings"] = _load_rankings_for_response(db_path, batch_row["batch_id"])
+            resp["failures"] = _load_failures_for_response(db_path, batch_row["batch_id"])
     return resp
+
+
+def _load_failures_for_response(db_path: str, batch_id: str) -> list[dict[str, Any]]:
+    """Sprint 10B-1: rebuild the failures envelope for a completed async batch.
+
+    Joins rankings (which is the authoritative per-batch membership list) with
+    the latest scrape_snapshot for each url_hash so we can recover the error
+    code. Ordering: submission position, so retry UX matches paste order.
+    """
+    from .pipeline import _human_readable_reason
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT p.canonical_url,
+                      COALESCE(s.error_reason, 'unknown') AS error_reason,
+                      COALESCE(s.scrape_ok, 1) AS scrape_ok,
+                      bh.position AS position
+                 FROM rankings r
+                 JOIN properties p ON p.url_hash = r.url_hash
+            LEFT JOIN batch_url_hashes bh
+                   ON bh.batch_id = r.batch_id AND bh.url_hash = r.url_hash
+            LEFT JOIN scrape_snapshots s
+                   ON s.url_hash = r.url_hash
+                  AND s.scraped_at = (
+                      SELECT MAX(scraped_at)
+                        FROM scrape_snapshots
+                       WHERE url_hash = r.url_hash
+                  )
+                WHERE r.batch_id = ?
+                  AND r.hard_fail = 1
+                ORDER BY COALESCE(bh.position, r.rank) ASC""",
+            (batch_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        # Only count rows that truly never scraped — if scrape_ok is 1 the
+        # row is a pure verdict failure (DTI blew up, etc.), which should
+        # stay in rankings and NOT be surfaced as a retry row.
+        if r["scrape_ok"]:
+            continue
+        code = r["error_reason"] or "unknown"
+        out.append({
+            "url": r["canonical_url"],
+            "canonicalUrl": r["canonical_url"],
+            "reason": _human_readable_reason(code),
+            "errorCode": code,
+        })
+    return out
 
 
 def _load_rankings_for_response(db_path: str, batch_id: str) -> list[dict[str, Any]]:
