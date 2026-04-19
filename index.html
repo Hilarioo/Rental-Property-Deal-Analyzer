@@ -1381,12 +1381,19 @@
         <summary style="cursor:pointer;font-weight:600;color:var(--text);list-style:revert;">Batch Analyze Multiple URLs</summary>
         <p style="color:var(--text-muted);font-size:0.82rem;margin:10px 0 6px;">Paste Redfin URLs (one per line). Batch runs the Jose G/Y/R gates + TOPSIS ranking across all of them and returns a ranked table. Up to 30 URLs per sync batch.</p>
         <textarea id="batch-urls" rows="6" placeholder="https://www.redfin.com/CA/Vallejo/..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;"></textarea>
+        <fieldset id="batch-mode-fieldset" style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
+          <legend style="padding:0 6px;">Mode</legend>
+          <label style="margin-right:14px;"><input type="radio" name="batch-mode" value="sync" checked> Quick sync (&le;30 URLs)</label>
+          <label><input type="radio" name="batch-mode" value="async"> Overnight batch (unlimited, 50% cost, up to 24h)</label>
+          <div id="batch-mode-note" style="display:none;margin-top:4px;color:var(--text);"></div>
+        </fieldset>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
           <span id="batch-url-count" style="font-size:0.82rem;color:var(--text-muted);">0 URLs</span>
           <button id="batch-submit" class="btn btn-small" type="button" onclick="runBatchAnalyze()">Analyze batch</button>
         </div>
         <div id="batch-loading" style="display:none;margin-top:10px;color:var(--text-muted);font-size:0.85rem;">Analyzing... this can take 30-90s for 3 URLs (scrape + FEMA + Cal Fire + OSM Overpass + LLM per property).</div>
         <div id="batch-error" style="display:none;margin-top:10px;color:#f87171;font-size:0.85rem;"></div>
+        <div id="batch-pending" style="display:none;margin-top:14px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(99,102,241,0.06);font-size:0.85rem;"></div>
         <div id="batch-results" style="display:none;margin-top:14px;"></div>
       </details>
 
@@ -5151,6 +5158,8 @@
 (function() {
   'use strict';
   var BATCH_STORAGE_KEY = 'batchanalyzer.lastBatch';
+  var PENDING_STORAGE_KEY = 'batchanalyzer.pendingBatchId';
+  var SYNC_MAX = 30;
 
   function $(id) { return document.getElementById(id); }
 
@@ -5159,11 +5168,34 @@
       .filter(function (s) { return s.length > 0 && /^https?:\/\//i.test(s); });
   }
 
+  function currentMode() {
+    var el = document.querySelector('input[name="batch-mode"]:checked');
+    return el ? el.value : 'sync';
+  }
+
+  function setMode(mode) {
+    var el = document.querySelector('input[name="batch-mode"][value="' + mode + '"]');
+    if (el) el.checked = true;
+  }
+
   function updateCount() {
     var ta = $('batch-urls');
     var n = urlLines(ta && ta.value).length;
     var el = $('batch-url-count');
     if (el) el.textContent = n + ' URL' + (n === 1 ? '' : 's');
+    var note = $('batch-mode-note');
+    if (n > SYNC_MAX) {
+      if (currentMode() === 'sync') {
+        setMode('async');
+        if (note) {
+          note.style.display = 'block';
+          note.textContent = 'Switched to Overnight Batch — ' + n + ' URLs exceeds sync cap.';
+        }
+      }
+    } else if (note) {
+      note.style.display = 'none';
+      note.textContent = '';
+    }
   }
 
   function escapeHtml(s) {
@@ -5240,6 +5272,135 @@
     }
   };
 
+  function fmtTime(d) {
+    try { return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    catch (_) { return ''; }
+  }
+
+  function renderPending(pending) {
+    var root = $('batch-pending');
+    if (!root) return;
+    if (!pending) { root.style.display = 'none'; root.innerHTML = ''; return; }
+    var checkedAt = pending.lastCheckedAt ? fmtTime(new Date(pending.lastCheckedAt)) : '—';
+    var html = '';
+    html += '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;">';
+    html += '<div><strong>Pending async batch</strong> <span style="color:var(--text-muted);font-size:0.78rem;">' + escapeHtml((pending.batchId || '').slice(0, 8)) + '</span></div>';
+    html += '<div style="color:var(--text-muted);font-size:0.78rem;">Input: ' + (pending.inputCount || 0) + ' · Cache hits: ' + (pending.cacheHitCount || 0) + ' · Last checked ' + escapeHtml(checkedAt) + '</div>';
+    html += '</div>';
+    html += '<div style="margin-top:8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__checkBatchStatus()">Check status</button>';
+    html += ' <button class="btn btn-small btn-secondary" type="button" style="margin-left:8px;" onclick="window.__dismissPending()">Dismiss</button></div>';
+    root.innerHTML = html;
+    root.style.display = 'block';
+  }
+
+  function savePending(p) {
+    try { localStorage.setItem(PENDING_STORAGE_KEY, JSON.stringify(p)); } catch (_) {}
+  }
+  function loadPending() {
+    try {
+      var raw = localStorage.getItem(PENDING_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  }
+  function clearPending() {
+    try { localStorage.removeItem(PENDING_STORAGE_KEY); } catch (_) {}
+    renderPending(null);
+  }
+
+  async function submitAsyncBatch(urls) {
+    var err = $('batch-error');
+    var btn = $('batch-submit'); if (btn) btn.disabled = true;
+    var load = $('batch-loading'); if (load) load.style.display = 'block';
+    if (err) err.style.display = 'none';
+    try {
+      var resp = await fetch('/api/batch-submit-async', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: urls }),
+      });
+      var envelope = await resp.json();
+      if (!resp.ok && resp.status !== 202) {
+        var msg = (envelope.error && envelope.error.message) || 'Async submit failed.';
+        var rid = (envelope.error && envelope.error.request_id) ? ' (request ' + envelope.error.request_id.slice(0, 8) + ')' : '';
+        if (err) { err.textContent = msg + rid; err.style.display = 'block'; }
+        return;
+      }
+      // All-cache-hit short-circuit: server returns 200 with rankings.
+      if (envelope.status === 'complete' && envelope.rankings) {
+        clearPending();
+        try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
+        renderResults(envelope);
+        return;
+      }
+      if (envelope.status === 'failed') {
+        if (err) {
+          err.textContent = 'Provider rejected the batch: ' + (envelope.error_reason || 'unknown');
+          err.style.display = 'block';
+        }
+        return;
+      }
+      var pending = {
+        batchId: envelope.batch_id,
+        externalBatchId: envelope.external_batch_id || null,
+        inputCount: envelope.input_count || urls.length,
+        cacheHitCount: envelope.cache_hit_count || 0,
+        lastCheckedAt: new Date().toISOString(),
+      };
+      savePending(pending);
+      renderPending(pending);
+    } catch (e) {
+      if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
+    } finally {
+      if (btn) btn.disabled = false;
+      if (load) load.style.display = 'none';
+    }
+  }
+
+  window.__checkBatchStatus = async function () {
+    var pending = loadPending();
+    if (!pending || !pending.batchId) return;
+    var err = $('batch-error');
+    if (err) err.style.display = 'none';
+    try {
+      var resp = await fetch('/api/batch-status/' + encodeURIComponent(pending.batchId));
+      var envelope = await resp.json();
+      if (!resp.ok) {
+        // 404 means the server no longer has this batch (deleted/expired).
+        // Drop the stale pending card so it doesn't linger forever.
+        if (resp.status === 404) {
+          clearPending();
+          if (err) {
+            err.textContent = 'Batch no longer exists on the server.';
+            err.style.display = 'block';
+          }
+          return;
+        }
+        var msg = (envelope.error && envelope.error.message) || 'Status check failed.';
+        if (err) { err.textContent = msg; err.style.display = 'block'; }
+        return;
+      }
+      pending.lastCheckedAt = new Date().toISOString();
+      savePending(pending);
+      if (envelope.status === 'complete' && envelope.rankings) {
+        clearPending();
+        try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
+        renderResults(envelope);
+      } else if (envelope.status === 'failed') {
+        clearPending();
+        if (err) {
+          err.textContent = 'Batch failed: ' + (envelope.error_reason || 'unknown');
+          err.style.display = 'block';
+        }
+      } else {
+        renderPending(pending);
+      }
+    } catch (e) {
+      if (err) { err.textContent = 'Network error checking status.'; err.style.display = 'block'; }
+    }
+  };
+
+  window.__dismissPending = function () { clearPending(); };
+
   window.runBatchAnalyze = async function () {
     var ta = $('batch-urls');
     var urls = urlLines(ta && ta.value);
@@ -5247,6 +5408,9 @@
       var err = $('batch-error');
       if (err) { err.textContent = 'Paste at least one Redfin URL.'; err.style.display = 'block'; }
       return;
+    }
+    if (currentMode() === 'async' || urls.length > SYNC_MAX) {
+      return submitAsyncBatch(urls);
     }
     var btn = $('batch-submit'); if (btn) btn.disabled = true;
     var load = $('batch-loading'); if (load) load.style.display = 'block';
@@ -5276,10 +5440,17 @@
     }
   };
 
-  // Wire events + restore last-run results on reload.
+  // Wire events + restore last-run results / pending batch on reload.
   document.addEventListener('DOMContentLoaded', function () {
     var ta = $('batch-urls');
     if (ta) ta.addEventListener('input', updateCount);
+    var radios = document.querySelectorAll('input[name="batch-mode"]');
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].addEventListener('change', function () {
+        var note = $('batch-mode-note');
+        if (note) { note.style.display = 'none'; note.textContent = ''; }
+      });
+    }
     try {
       var raw = localStorage.getItem(BATCH_STORAGE_KEY);
       if (raw) {
@@ -5287,6 +5458,14 @@
         if (env && env.rankings) renderResults(env);
       }
     } catch (_) {}
+    var pending = loadPending();
+    if (pending && pending.batchId) {
+      renderPending(pending);
+      // Auto-refresh status once on load.
+      if (typeof window.__checkBatchStatus === 'function') {
+        window.__checkBatchStatus();
+      }
+    }
     updateCount();
   });
 })();

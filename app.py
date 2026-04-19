@@ -2153,11 +2153,19 @@ from batch.pipeline import run_sync_batch as _run_sync_batch  # noqa: E402
 from batch.pipeline import _process_url as _batch_process_url  # noqa: E402
 from batch.llm import extract_property as _llm_extract_property  # noqa: E402
 from batch.llm import is_cache_stale as _llm_is_cache_stale  # noqa: E402
+from batch.async_pipeline import (  # noqa: E402
+    submit_async_batch as _submit_async_batch,
+    poll_async_batch as _poll_async_batch,
+    reconcile_pending_batches_on_startup as _reconcile_async_batches,
+)
 from scripts.init_db import DEFAULT_DB_PATH as _BATCH_DB_PATH  # noqa: E402
 
 
 _BATCH_MAX_URLS_SYNC = 30
 _BATCH_HARD_CAP = 50
+# Anthropic Message Batches hard limit is 10_000 requests per submission.
+_BATCH_ASYNC_MAX_URLS = 10_000
+_BATCH_ASYNC_WARN_URLS = 1_000
 
 _URL_HASH_RE = re.compile(r"[a-f0-9]{64}")
 
@@ -2246,6 +2254,185 @@ async def batch_analyze(request: Request):
             _error_envelope("INTERNAL_ERROR", "Batch processing failed.", request_id),
             status_code=500,
         )
+
+
+_BATCH_ASYNC_MAX_URL_LEN = 2000                  # matches /api/scrape guard
+_BATCH_ASYNC_MAX_BODY_BYTES = 8 * 1024 * 1024    # 8 MB total request body
+
+
+@app.post("/api/batch-submit-async")
+async def batch_submit_async(request: Request):
+    """Async batch submit — BATCH_DESIGN §B.2. Delegates the LLM extraction
+    step to Anthropic Message Batches so we can ship arbitrarily large batches
+    at 50% of the standard per-token rate with a 24h SLA."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"batch:{client_ip}", 3):
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many batch requests.", request_id),
+            status_code=429,
+        )
+
+    # Early Content-Length check — reject obvious oversize uploads before
+    # reading the body into memory. We still verify the post-read length
+    # below for chunked encodings that don't advertise Content-Length.
+    content_length_hdr = request.headers.get("content-length")
+    if content_length_hdr:
+        try:
+            declared = int(content_length_hdr)
+        except ValueError:
+            declared = 0
+        if declared > _BATCH_ASYNC_MAX_BODY_BYTES:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("VALIDATION_ERROR", "Payload too large.", request_id),
+                status_code=413,
+            )
+
+    raw_body = await request.body()
+    if len(raw_body) > _BATCH_ASYNC_MAX_BODY_BYTES:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Payload too large.", request_id),
+            status_code=413,
+        )
+    try:
+        body = json.loads(raw_body) if raw_body else {}
+    except Exception:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
+            status_code=400,
+        )
+
+    urls = body.get("urls") or []
+    preset_name = body.get("preset_name")
+    if not isinstance(urls, list) or not urls:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "`urls` must be a non-empty array.", request_id),
+            status_code=400,
+        )
+    if len(urls) > _BATCH_ASYNC_MAX_URLS:
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope(
+                "VALIDATION_ERROR",
+                f"Too many URLs. Async cap is {_BATCH_ASYNC_MAX_URLS} (Anthropic batch hard limit).",
+                request_id,
+            ),
+            status_code=400,
+        )
+
+    # Per-URL length + hostname validation. Reject the whole batch if any
+    # URL is bad (defense-in-depth; sync path does the same inside _scrape_url).
+    for raw_u in urls:
+        if not isinstance(raw_u, str):
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("VALIDATION_ERROR", "Each URL must be a string.", request_id),
+                status_code=400,
+            )
+        u = raw_u.strip()
+        if not u:
+            continue
+        if len(u) > _BATCH_ASYNC_MAX_URL_LEN:
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope("VALIDATION_ERROR", "URL too long.", request_id),
+                status_code=400,
+            )
+        try:
+            parsed_u = urlparse(u)
+        except Exception:
+            parsed_u = None
+        if (
+            parsed_u is None
+            or parsed_u.scheme not in ("http", "https")
+            or _detect_source(parsed_u.hostname) == "unknown"
+        ):
+            request_id = uuid.uuid4().hex
+            return JSONResponse(
+                _error_envelope(
+                    "VALIDATION_ERROR",
+                    "Unsupported URL. Paste Zillow or Redfin listing URLs.",
+                    request_id,
+                ),
+                status_code=400,
+            )
+    if len(urls) > _BATCH_ASYNC_WARN_URLS:
+        logger.warning(
+            "Large async batch submitted (%d URLs, client=%s) — provider cap is %d",
+            len(urls), client_ip, _BATCH_ASYNC_MAX_URLS,
+        )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    try:
+        result = await _submit_async_batch(
+            urls,
+            db_path=str(_BATCH_DB_PATH),
+            client_ip=client_ip,
+            api_key=api_key,
+            preset_name=preset_name,
+        )
+    except Exception:
+        request_id = uuid.uuid4().hex
+        logger.exception("batch-submit-async failed (request_id=%s)", request_id)
+        return JSONResponse(
+            _error_envelope("INTERNAL_ERROR", "Async batch submission failed.", request_id),
+            status_code=500,
+        )
+
+    status = result.get("status")
+    if status == "complete":
+        return JSONResponse(result)
+    if status == "failed":
+        return JSONResponse(result, status_code=502)
+    # pending — provider accepted the batch.
+    return JSONResponse(result, status_code=202)
+
+
+_BATCH_ID_RE = re.compile(r"[a-f0-9]{32}")
+
+
+@app.get("/api/batch-status/{batch_id}")
+async def batch_status(batch_id: str):
+    """Poll the status of an async batch — BATCH_DESIGN §B.3."""
+    if not _BATCH_ID_RE.fullmatch(batch_id or ""):
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("VALIDATION_ERROR", "Invalid batch_id format.", request_id),
+            status_code=400,
+        )
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    try:
+        result = await _poll_async_batch(
+            batch_id, db_path=str(_BATCH_DB_PATH), api_key=api_key,
+        )
+    except Exception:
+        request_id = uuid.uuid4().hex
+        logger.exception("batch-status failed (request_id=%s)", request_id)
+        return JSONResponse(
+            _error_envelope("INTERNAL_ERROR", "Status poll failed.", request_id),
+            status_code=500,
+        )
+
+    if result.get("status") == "unknown":
+        request_id = uuid.uuid4().hex
+        return JSONResponse(
+            _error_envelope("BATCH_NOT_FOUND", "Unknown batch_id.", request_id),
+            status_code=404,
+        )
+    return JSONResponse(result)
+
+
+@app.on_event("startup")
+async def _on_startup_reconcile_async_batches():
+    """Fire-and-forget: poll any async batches left pending on last boot."""
+    try:
+        asyncio.create_task(_reconcile_async_batches(str(_BATCH_DB_PATH)))
+    except Exception:  # pragma: no cover - startup diagnostic
+        logger.exception("Failed to schedule async batch reconcile")
 
 
 @app.post("/api/property/extract")
@@ -2435,6 +2622,7 @@ async def list_batches(limit: int = 20, offset: int = 0):
         rows = conn.execute(
             """SELECT b.batch_id, b.created_at, b.completed_at, b.mode,
                       b.input_count, b.status, b.preset_name,
+                      b.external_batch_id,
                       (SELECT p.address FROM rankings r
                          JOIN properties p ON p.url_hash = r.url_hash
                         WHERE r.batch_id = b.batch_id

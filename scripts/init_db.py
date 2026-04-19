@@ -82,6 +82,20 @@ CREATE TABLE IF NOT EXISTS batches (
 CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status);
 
+-- 3a) batch_url_hashes — tracks which URLs were submitted in each batch so
+-- overlapping concurrent batches don't cross-contaminate each other's
+-- reconstructed input lists at poll time. One row per URL (including
+-- skipped/cache-hit rows) with its position in the original submission.
+CREATE TABLE IF NOT EXISTS batch_url_hashes (
+    batch_id  TEXT NOT NULL,
+    url_hash  TEXT NOT NULL,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (batch_id, url_hash),
+    FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE,
+    FOREIGN KEY (url_hash) REFERENCES properties(url_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_batch_url_hashes_batch ON batch_url_hashes(batch_id);
+
 -- 4) rankings
 CREATE TABLE IF NOT EXISTS rankings (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,9 +185,26 @@ TABLE_NAMES = (
     "property_enrichment",
     "rent_comps_cache",
     "batches",
+    "batch_url_hashes",
     "rankings",
     "claude_runs",
 )
+
+
+# Additive ALTER migrations. Wrapped in try/except because SQLite errors on
+# duplicate-column ALTER, which is our idempotency signal.
+_ADDITIVE_MIGRATIONS = (
+    ("batches", "scraped_count", "INTEGER"),
+)
+
+
+def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, coltype in _ADDITIVE_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        except sqlite3.OperationalError:
+            # Column already exists — idempotent no-op.
+            pass
 
 
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> Path:
@@ -184,6 +215,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> Path:
     try:
         _apply_pragmas(conn)
         conn.executescript(SCHEMA_SQL)
+        _apply_additive_migrations(conn)
         conn.commit()
     finally:
         conn.close()
