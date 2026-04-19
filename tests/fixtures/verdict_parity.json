@@ -1,5 +1,33 @@
 [
   {
+    "name": "Sprint 12-6: rehab red + viable 203(k) stretch → still red, stretch surfaces as yellow reason",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 120000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false,
+      "stretchScenario": {
+        "viable": true, "piti": 4821.83, "cash_to_close": 32500,
+        "effective_rehab": 120000, "self_perform_share": 0.40, "loan_type": "FHA-203k"
+      }
+    },
+    "expected_verdict": "red"
+  },
+  {
+    "name": "Sprint 12-6: rehab red + no stretch scenario → red, no stretch reason",
+    "ctx": {
+      "price": 500000, "effectiveRehab": 120000, "cashToClose": 40000,
+      "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
+      "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
+      "units": 2, "propertyType": "multi", "roofAgeYears": 8,
+      "hasFlatRoof": false, "hasUnpermittedAdu": false,
+      "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
+    },
+    "expected_verdict": "red"
+  },
+  {
     "name": "Sprint 12-2: Sacramento listing outside 35mi commute radius → red",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
