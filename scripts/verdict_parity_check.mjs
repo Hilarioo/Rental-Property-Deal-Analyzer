@@ -59,7 +59,18 @@ function computeJoseVerdict(ctx) {
     redReasons.push('Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier');
   }
   if (c.propertyType === 'sfh' && (c.units || 1) <= 1) {
-    redReasons.push('SFR without legal ADU — no 75% rental offset possible');
+    // Sprint 12 hotfix mirror — keep JS / Python / parity-harness copy in lockstep.
+    var ptRaw = (c.propertyTypeRaw || '').toLowerCase();
+    var usrc = c.unitsSource || '';
+    if (ptRaw.indexOf('condo') !== -1) {
+      redReasons.push('Single condo unit — no other units to rent, 75% FHA offset unavailable');
+    } else if (ptRaw.indexOf('townhouse') !== -1 || ptRaw.indexOf('townhome') !== -1) {
+      redReasons.push('Single townhouse unit — no other units to rent, 75% FHA offset unavailable');
+    } else if (usrc === 'address_suffix' || usrc === 'address_hash_suffix' || usrc === 'url_slug') {
+      redReasons.push('Address suffix (APT/UNIT/#) indicates one unit of a larger building — no 75% FHA rental offset possible');
+    } else {
+      redReasons.push('SFR without legal ADU — no 75% rental offset possible');
+    }
   }
   var unitsUnknownFail = !!c.hardFailUnitsUnknown;
   if (c.qualifyingIncome > 0 && c.piti > 0) {
@@ -157,7 +168,7 @@ function computeJoseVerdict(ctx) {
   }
 
   if (unitsUnknownFail) {
-    redReasons.push('Unit count not detected — re-scrape or enter manually');
+    redReasons.push('Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard');
   }
 
   var verdict;

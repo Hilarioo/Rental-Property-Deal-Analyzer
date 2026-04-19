@@ -158,7 +158,22 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
         red_reasons.append("Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier")
     units = c.get("units") or 1
     if c.get("propertyType") == "sfh" and units <= 1:
-        red_reasons.append("SFR without legal ADU — no 75% rental offset possible")
+        # Sprint 12 hotfix 2026-04-19: differentiate condo / townhouse /
+        # single-family so the RED reason tells Jose what kind of listing
+        # this is, not just "SFR without legal ADU" for every single-unit
+        # scrape. `propertyTypeRaw` is what the scraper saw (e.g. CONDO,
+        # TOWNHOUSE, SINGLE_FAMILY); `unitsSource` traces the inference
+        # path (e.g. address_suffix when the URL said /APT-3/).
+        pt_raw = (c.get("propertyTypeRaw") or "").lower()
+        usrc = c.get("unitsSource") or ""
+        if "condo" in pt_raw:
+            red_reasons.append("Single condo unit — no other units to rent, 75% FHA offset unavailable")
+        elif "townhouse" in pt_raw or "townhome" in pt_raw:
+            red_reasons.append("Single townhouse unit — no other units to rent, 75% FHA offset unavailable")
+        elif usrc in ("address_suffix", "address_hash_suffix", "url_slug"):
+            red_reasons.append("Address suffix (APT/UNIT/#) indicates one unit of a larger building — no 75% FHA rental offset possible")
+        else:
+            red_reasons.append("SFR without legal ADU — no 75% rental offset possible")
     # Sprint 12-2: geospatial hard-fail (commute radius + conditional cities).
     # Only fires when lat/lng are present AND a homeBase is configured;
     # otherwise no-ops (preserves parity for pre-12-2 fixtures).
@@ -245,7 +260,7 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
 
     # Append units-unknown hard-fail LAST so existing dominant fails surface first.
     if units_unknown_fail:
-        red_reasons.append("Unit count not detected — re-scrape or enter manually")
+        red_reasons.append("Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard")
 
     if red_reasons:
         verdict = "red"
