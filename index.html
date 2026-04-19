@@ -1461,58 +1461,69 @@
         <div id="scan-zips-summary" style="display:none;margin-top:12px;font-size:0.85rem;"></div>
       </details>
 
-      <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px;">Search for listings in a zip code, city, or neighborhood. Results are scored using your target rent to find the best deals.</p>
+      <!-- Sprint 14-1: collapse the single-ZIP / city search form into its
+           own accordion to match the Batch + Scan ZIPs panels above. Results
+           live below this block (line ~1518) so collapsing the form keeps
+           the result table visible at the bottom of the mode panel. -->
+      <details id="single-search-panel" open style="margin-bottom:20px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;background:rgba(99,102,241,0.04);">
+        <summary style="cursor:pointer;font-weight:600;color:var(--text);list-style:revert;">Search a single ZIP or city</summary>
+        <p style="color:var(--text-muted);font-size:0.85rem;margin:10px 0 12px;">Search for listings in a zip code, city, or neighborhood. Results are scored using your target rent to find the best deals.</p>
 
-      <div class="search-filters">
-        <div class="input-group">
-          <label for="searchLocation">Location (zip/city) *</label>
-          <input type="text" id="searchLocation" placeholder="e.g. 78701 or Austin, TX">
+        <div class="search-filters">
+          <div class="input-group">
+            <label for="searchLocation">Location (zip/city) *</label>
+            <input type="text" id="searchLocation" placeholder="e.g. 78701 or Austin, TX">
+          </div>
+          <div class="input-group">
+            <label for="searchMinPrice">Min Price ($)</label>
+            <input type="number" id="searchMinPrice" min="0" step="10000" placeholder="No minimum">
+          </div>
+          <div class="input-group">
+            <label for="searchMaxPrice">Max Price ($)</label>
+            <input type="number" id="searchMaxPrice" min="0" step="10000" placeholder="No maximum">
+          </div>
+          <div class="input-group">
+            <label for="searchMinBeds">Min Beds</label>
+            <select id="searchMinBeds">
+              <option value="0">Any</option>
+              <option value="1">1+</option>
+              <option value="2">2+</option>
+              <option value="3">3+</option>
+              <option value="4">4+</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label for="searchPropType">Property Type</label>
+            <select id="searchPropType">
+              <option value="">Any</option>
+              <option value="house">House</option>
+              <option value="condo">Condo / Townhouse</option>
+              <option value="multi-family">Multi-family</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label for="searchTargetRent">Target Monthly Rent ($) *</label>
+            <input type="number" id="searchTargetRent" min="0" step="50" placeholder="Your rent estimate">
+          </div>
+          <div class="input-group">
+            <label for="searchMaxResults">Max Results</label>
+            <select id="searchMaxResults">
+              <option value="10">10</option>
+              <option value="15">15</option>
+              <option value="20" selected>20</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+              <option value="500">500</option>
+            </select>
+          </div>
         </div>
-        <div class="input-group">
-          <label for="searchMinPrice">Min Price ($)</label>
-          <input type="number" id="searchMinPrice" min="0" step="10000" placeholder="No minimum">
-        </div>
-        <div class="input-group">
-          <label for="searchMaxPrice">Max Price ($)</label>
-          <input type="number" id="searchMaxPrice" min="0" step="10000" placeholder="No maximum">
-        </div>
-        <div class="input-group">
-          <label for="searchMinBeds">Min Beds</label>
-          <select id="searchMinBeds">
-            <option value="0">Any</option>
-            <option value="1">1+</option>
-            <option value="2">2+</option>
-            <option value="3">3+</option>
-            <option value="4">4+</option>
-          </select>
-        </div>
-        <div class="input-group">
-          <label for="searchPropType">Property Type</label>
-          <select id="searchPropType">
-            <option value="">Any</option>
-            <option value="house">House</option>
-            <option value="condo">Condo / Townhouse</option>
-            <option value="multi-family">Multi-family</option>
-          </select>
-        </div>
-        <div class="input-group">
-          <label for="searchTargetRent">Target Monthly Rent ($) *</label>
-          <input type="number" id="searchTargetRent" min="0" step="50" placeholder="Your rent estimate">
-        </div>
-        <div class="input-group">
-          <label for="searchMaxResults">Max Results</label>
-          <select id="searchMaxResults">
-            <option value="10">10</option>
-            <option value="15">15</option>
-            <option value="20" selected>20</option>
-            <option value="25">25</option>
-          </select>
-        </div>
-      </div>
 
-      <button class="btn btn-large" id="searchBtn" type="button" onclick="runNeighborhoodSearch()">
-        <span id="searchBtnText">Search Listings</span>
-      </button>
+        <button class="btn btn-large" id="searchBtn" type="button" onclick="runNeighborhoodSearch()" style="margin-top:12px;">
+          <span id="searchBtnText">Search Listings</span>
+        </button>
+      </details>
 
       <div id="searchStatus" class="search-status" style="display:none"></div>
       <div id="searchResultsContainer" style="display:none;margin-top:20px;">
@@ -6031,6 +6042,83 @@
     if (root) { root.innerHTML = ''; root.style.display = 'none'; }
   };
 
+  // Sprint 14-4: desktop notification + tab-title cue on async completion.
+  // The user walks away during a long scan; without these signals, a
+  // completed batch sits unnoticed until they tab back in.
+  var __ORIGINAL_TITLE__ = document.title;
+  var __TITLE_FLASH_TIMER__ = null;
+
+  function __ensureNotificationPermission__() {
+    try {
+      if (typeof Notification === 'undefined') return;
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().catch(function () {});
+      }
+    } catch (_) { /* private-mode browsers may throw */ }
+  }
+
+  function __notifyCompletion__(envelope, sourceLabel) {
+    var count = (envelope && envelope.rankings) ? envelope.rankings.length : 0;
+    var label = sourceLabel || (envelope && envelope.source === 'scan_zips' ? 'Scan ZIPs' : 'Batch');
+    var title = '✔ ' + label + ' done — ' + count + ' ranked';
+
+    // Tab-title flash. Keep the flashed title until the user switches back
+    // to the tab; visibilitychange handler below restores the original.
+    try {
+      document.title = title;
+      // Clear any stale flash timer from a prior completion.
+      if (__TITLE_FLASH_TIMER__) { clearInterval(__TITLE_FLASH_TIMER__); __TITLE_FLASH_TIMER__ = null; }
+      var alt = false;
+      __TITLE_FLASH_TIMER__ = setInterval(function () {
+        if (document.visibilityState === 'visible') { __resetTabTitle__(); return; }
+        document.title = alt ? __ORIGINAL_TITLE__ : title;
+        alt = !alt;
+      }, 1500);
+    } catch (_) {}
+
+    // Desktop notification (opt-in). Only fires when the tab is hidden —
+    // no point pinging the OS if the user is already looking at the page.
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted'
+          && document.visibilityState !== 'visible') {
+        var body = envelope && envelope.scan_summary
+          ? ('From ' + envelope.scan_summary.zips_scanned + '/' + envelope.scan_summary.zip_count + ' ZIPs · ' + count + ' ranked')
+          : (count + ' URLs ranked — click to view');
+        var n = new Notification(title, { body: body, tag: 'rpda-batch-complete' });
+        n.onclick = function () { try { window.focus(); n.close(); } catch (_) {} };
+      }
+    } catch (_) {}
+
+    // Audio beep — short, subtle, only when tab is hidden. Opt-out via the
+    // BATCH_BEEP_SILENCE localStorage flag if the user hates it.
+    try {
+      if (document.visibilityState !== 'visible'
+          && localStorage.getItem('BATCH_BEEP_SILENCE') !== '1'
+          && typeof AudioContext !== 'undefined') {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        var ctx = new AC();
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.frequency.value = 880;
+        osc.connect(gain); gain.connect(ctx.destination);
+        gain.gain.setValueAtTime(0.06, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+        osc.start(); osc.stop(ctx.currentTime + 0.3);
+      }
+    } catch (_) {}
+  }
+
+  function __resetTabTitle__() {
+    try {
+      if (__TITLE_FLASH_TIMER__) { clearInterval(__TITLE_FLASH_TIMER__); __TITLE_FLASH_TIMER__ = null; }
+      document.title = __ORIGINAL_TITLE__;
+    } catch (_) {}
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') __resetTabTitle__();
+  });
+
   function renderResults(envelope) {
     var root = $('batch-results');
     if (!root) return;
@@ -6219,6 +6307,7 @@
         clearPending();
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
         renderResults(envelope);
+        __notifyCompletion__(envelope); // Sprint 14-4: cache-hit was instant, still cue it.
         return;
       }
       if (envelope.status === 'failed') {
@@ -6243,6 +6332,11 @@
       // Sprint 10B-3: start the auto-poll loop so the user doesn't have to
       // click "Check status" manually after reload or initial submit.
       startAutoPoll();
+      // Sprint 14-4: proactively ask for Notification permission at submit
+      // time so the OS-level alert can actually fire when the async batch
+      // completes hours later. User-initiated gesture satisfies browser
+      // policy requiring permission requests from a click handler.
+      __ensureNotificationPermission__();
     } catch (e) {
       if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
     } finally {
@@ -6362,6 +6456,7 @@
         }
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
         renderResults(envelope);
+        __notifyCompletion__(envelope); // Sprint 14-4: tab-title + desktop notif.
       } else if (envelope.status === 'failed') {
         stopAutoPoll(); // Sprint 10B-3: terminal state.
         clearPending();
@@ -6412,6 +6507,7 @@
       envelope.source = 'batch_paste';
       try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
       renderResults(envelope);
+      __notifyCompletion__(envelope); // Sprint 14-4: sync path cue too.
     } catch (e) {
       if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
     } finally {
@@ -6574,6 +6670,7 @@
         data.envelope.scan_summary = data.summary;
         try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(data.envelope)); } catch (_) {}
         renderResults(data.envelope);
+        __notifyCompletion__(data.envelope); // Sprint 14-4: scan-zips sync cue.
         var resultsEl = $('batch-results');
         if (resultsEl && resultsEl.scrollIntoView) {
           resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -6596,6 +6693,9 @@
           savePending(pending);
           renderPending(pending);
           if (typeof startAutoPoll === 'function') startAutoPoll();
+          // Sprint 14-4: request Notification permission on scan-submit so
+          // the completion alert can fire when the async run finishes.
+          if (typeof __ensureNotificationPermission__ === 'function') __ensureNotificationPermission__();
           var pendingEl = $('batch-pending');
           if (pendingEl && pendingEl.scrollIntoView) {
             pendingEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
