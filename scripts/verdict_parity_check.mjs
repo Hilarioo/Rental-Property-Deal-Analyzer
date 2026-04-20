@@ -119,6 +119,10 @@ function computeJoseVerdict(ctx) {
     if (typeof home.lat !== 'number' || typeof home.lng !== 'number') return null;
     if (home.lat === 0 && home.lng === 0) return null;
     var miles = haversineMiles(c.lat, c.lng, home.lat, home.lng);
+    // Sprint 14.5 parity mirror: flag governs BOTH gates (hard radius +
+    // conditional-city distance). Default true preserves Sprint 12-2.
+    var enforceHard = (loc.enforceMaxMilesAsHardFail !== false);
+    if (!enforceHard) return null;
     if (typeof loc.maxMilesHard === 'number' && miles > loc.maxMilesHard) {
       return 'Outside commute radius — ' + Math.round(miles) + ' mi from home base exceeds ' + loc.maxMilesHard + ' mi hard cap';
     }

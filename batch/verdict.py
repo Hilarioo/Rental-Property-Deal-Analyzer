@@ -54,12 +54,17 @@ def _geospatial_fail(ctx: dict[str, Any]) -> str | None:
 
     Two gates, in order:
       1. Hard commute radius — `profile.location.maxMilesHard`.
-         If listing's distance from `homeBase` exceeds it, RED.
+         Default behavior: listings beyond the radius → RED.
       2. Conditional cities — `zipTiers.conditionalCities[<city>]`.
          If the listing's address contains a conditional city name AND
-         its distance exceeds that city's threshold, RED. (If inside the
-         threshold, the listing is implicitly *allowed* to proceed even
-         though the name would otherwise fail `_looks_excluded` checks.)
+         its distance exceeds that city's threshold, RED.
+
+    Sprint 14.5: both gates are governed by `profile.location.
+    enforceMaxMilesAsHardFail` (default true). When false, BOTH the hard
+    commute radius AND the conditional-city distance check are skipped —
+    geography becomes informational only, not a verdict factor. Jose's
+    ask: "update so my commute radius doesn't play a factor in 'Outside
+    commute radius' and affects whether it's a good purchase or not."
 
     If lat/lng or homeBase is missing (e.g. single-property analyzer with
     no geocode), both gates no-op. This preserves JS↔Py parity for the
@@ -78,6 +83,16 @@ def _geospatial_fail(ctx: dict[str, Any]) -> str | None:
         return None  # redacted example profile — skip.
 
     miles = _haversine_miles(float(lat), float(lng), float(home_lat), float(home_lng))
+
+    # Sprint 14.5: one flag governs BOTH gates. Default true preserves the
+    # Sprint 12-2 behavior; false demotes commute distance AND conditional-
+    # city distance checks to informational-only (still computable from
+    # ctx.lat/lng, but no verdict impact). Excluded-city list
+    # (`zipTiers.excludedCities`) is a separate static check and is
+    # unaffected by this flag.
+    enforce_hard = _PROFILE_LOCATION.get("enforceMaxMilesAsHardFail", True)
+    if not enforce_hard:
+        return None
 
     max_hard = _PROFILE_LOCATION.get("maxMilesHard")
     if isinstance(max_hard, (int, float)) and miles > max_hard:
