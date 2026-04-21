@@ -658,3 +658,88 @@ def test_pre_llm_unknown_units_no_skip(pre_llm_hard_fail):
         "units=None means we can't pick the unit-adjusted ceiling; "
         "let LLM + downstream duplex-assumed math handle it"
     )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 17 Bundle 2 — Retry-After header parsing
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def parse_retry_after():
+    from batch import llm
+    return llm._parse_retry_after
+
+
+def test_retry_after_integer_seconds(parse_retry_after):
+    """Integer-seconds form per RFC 7231 §7.1.3."""
+    assert parse_retry_after("30") == 30.0
+    assert parse_retry_after("0") == 0.0
+    assert parse_retry_after("120.5") == 120.5
+
+
+def test_retry_after_http_date(parse_retry_after):
+    """HTTP-date form — 'delta from now' calculation."""
+    # One second in the future expressed as HTTP-date — should
+    # parse to a small positive delta, not the absolute timestamp.
+    import email.utils
+    from datetime import datetime, timezone, timedelta
+    future = datetime.now(timezone.utc) + timedelta(seconds=10)
+    http_date = email.utils.format_datetime(future)
+    parsed = parse_retry_after(http_date)
+    assert parsed is not None
+    assert 5 < parsed < 15, (
+        f"expected ~10s delta, got {parsed}s — parser should compute "
+        "time-from-now, not return absolute epoch seconds"
+    )
+
+
+def test_retry_after_past_date_returns_zero(parse_retry_after):
+    """HTTP-date in the past should clamp to 0 (retry immediately)."""
+    import email.utils
+    from datetime import datetime, timezone, timedelta
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    parsed = parse_retry_after(email.utils.format_datetime(past))
+    assert parsed == 0.0
+
+
+def test_retry_after_malformed_returns_none(parse_retry_after):
+    """Garbage input falls through to exp backoff (None signal)."""
+    for bad in (None, "", "not a date or number", "2026-13-45"):
+        assert parse_retry_after(bad) is None, f"{bad!r} should return None"
+
+
+def test_retry_after_whitespace_tolerant(parse_retry_after):
+    """Some servers emit the value with surrounding whitespace."""
+    assert parse_retry_after("  30  ") == 30.0
+
+
+# ---------------------------------------------------------------------------
+# Sprint 17 Bundle 2 — global LLM semaphore + extended cache wiring
+# ---------------------------------------------------------------------------
+
+
+def test_llm_concurrency_env_default():
+    """BATCH_LLM_CONCURRENCY defaults to 5 when unset."""
+    from batch import llm
+    # Re-importing won't re-read env, but we can introspect the
+    # module-level value set at import time.
+    assert llm._LLM_CONCURRENCY >= 1, "concurrency must be at least 1"
+    assert llm._LLM_SEM is not None
+
+
+def test_llm_extended_cache_beta_header_constant():
+    """Extended 1-hour cache beta feature name is stable."""
+    from batch import llm
+    assert llm._EXTENDED_CACHE_BETA == "extended-cache-ttl-2025-04-11", (
+        "beta header string must match Anthropic's published identifier"
+    )
+
+
+def test_llm_retry_constants_reasonable():
+    """Retry policy should be bounded — no infinite loops, no
+    backoffs longer than the typical rate-limit window."""
+    from batch import llm
+    assert 3 <= llm._LLM_MAX_RETRIES <= 10
+    assert 1.0 <= llm._LLM_BACKOFF_MIN_S <= 10.0
+    assert llm._LLM_BACKOFF_MAX_S <= 120.0

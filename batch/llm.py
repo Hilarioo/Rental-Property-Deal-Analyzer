@@ -13,9 +13,12 @@ No exception escapes to the batch pipeline; the property still ranks.
 """
 from __future__ import annotations
 
+import asyncio
+import email.utils
 import json
 import logging
 import os
+import random
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -56,6 +59,63 @@ def _image_url_allowed(url: str) -> bool:
 LLM_MODEL = os.getenv("BATCH_LLM_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 LLM_TIMEOUT_S = 60.0
+
+# Sprint 17 Bundle 2: global LLM concurrency gate.
+# When scan-zips fans out 100+ per-ZIP sub-batches, each sub-batch's
+# own _prepare_url Semaphore(4) isn't enough to prevent all 100
+# sub-batches simultaneously firing LLM calls and blowing through
+# Anthropic's per-minute rate limits (Tier 2: 1000 RPM / 80K OTPM).
+#
+# This module-level semaphore caps CONCURRENT in-flight LLM POSTs
+# across all tasks in the process. Default 5 is conservative for
+# Tier 2; env-override via BATCH_LLM_CONCURRENCY for users on
+# higher tiers (Tier 4 can safely push 20+).
+_LLM_CONCURRENCY = int(os.getenv("BATCH_LLM_CONCURRENCY", "5"))
+_LLM_SEM = asyncio.Semaphore(_LLM_CONCURRENCY)
+
+# 429/529 retry policy. Exponential backoff capped at 60s; max 5
+# attempts. Honors the server's Retry-After header when present
+# (integer seconds OR RFC-1123 date per RFC 7231 §7.1.3).
+_LLM_MAX_RETRIES = 5
+_LLM_BACKOFF_MIN_S = 2.0
+_LLM_BACKOFF_MAX_S = 60.0
+
+# Extended prompt-caching: 1-hour TTL instead of the default 5-min.
+# Write cost is ~2x base input ($6/M on Sonnet) but read cost stays
+# at $0.30/M, so the break-even is ~1 extra read beyond the 5-min
+# window. Scan-zips runs of 100+ URLs against the same system prompt
+# easily exceed that. The beta header enables the extended-ttl
+# cache_control field; falling back to 5-min (no beta) is safe if
+# Anthropic ever revokes it.
+_EXTENDED_CACHE_BETA = "extended-cache-ttl-2025-04-11"
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """Parse a `Retry-After` header value into seconds from now.
+
+    Anthropic can emit either an integer count (seconds) or an
+    HTTP-date per RFC 7231 §7.1.3. Returns None on any parse
+    failure so the caller falls through to exponential backoff.
+    """
+    if not raw:
+        return None
+    raw = raw.strip()
+    # Integer-seconds form.
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form.
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        delta = (when - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, delta)
+    except (TypeError, ValueError):
+        return None
 
 _SYSTEM_PROMPT = """You are a real-estate listing extractor for an FHA owner-occupied 2-4 unit house-hack buyer in the Vallejo / East Bay / Richmond Bay Area market.
 
@@ -456,39 +516,101 @@ async def extract_property(
             {
                 "type": "text",
                 "text": _SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
+                # Sprint 17 Bundle 2: extended 1-hour TTL. Break-even
+                # vs the 5-min default is ~1 extra read; long scans
+                # easily clear that. See _EXTENDED_CACHE_BETA comment.
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }
         ],
         "messages": [{"role": "user", "content": content_blocks}],
     }
 
-    try:
-        resp = await client.post(
-            ANTHROPIC_MESSAGES_URL,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "prompt-caching-2024-07-31",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=LLM_TIMEOUT_S,
-        )
-    except httpx.HTTPError as exc:
-        return {
-            "analysis": default_llm_analysis(failed=True),
-            "tokens": {"input": 0, "cached_input_read": 0, "output": 0},
-            "ok": False,
-            "error": f"http:{type(exc).__name__}",
-        }
+    # Sprint 17 Bundle 2: request under the global concurrency gate
+    # with 429/529 retry and Retry-After awareness. Concurrency cap
+    # prevents 100+ parallel scan-zips sub-batches from simultaneously
+    # blowing through Anthropic's per-minute rate limits. Retry loop
+    # keeps work flowing when we do bump into a 429, rather than
+    # burning the whole request on one transient throttle.
+    resp = None
+    last_error = None
+    for attempt in range(_LLM_MAX_RETRIES):
+        async with _LLM_SEM:
+            try:
+                resp = await client.post(
+                    ANTHROPIC_MESSAGES_URL,
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        # Both beta features stacked: prompt caching
+                        # itself + the 1-hour TTL override.
+                        "anthropic-beta": f"prompt-caching-2024-07-31,{_EXTENDED_CACHE_BETA}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=LLM_TIMEOUT_S,
+                )
+            except httpx.HTTPError as exc:
+                last_error = f"http:{type(exc).__name__}"
+                resp = None
 
-    if resp.status_code != 200:
-        logger.warning("LLM HTTP %s", resp.status_code)
+        # Retryable transport error — backoff without holding the sem.
+        if resp is None:
+            if attempt == _LLM_MAX_RETRIES - 1:
+                return {
+                    "analysis": default_llm_analysis(failed=True),
+                    "tokens": {"input": 0, "cached_input_read": 0, "output": 0},
+                    "ok": False,
+                    "error": last_error or "http_error",
+                }
+            backoff = min(_LLM_BACKOFF_MAX_S, _LLM_BACKOFF_MIN_S * (2 ** attempt))
+            # Jitter ±25% to avoid thundering-herd when a whole wave
+            # of workers backs off in sync.
+            backoff *= 0.75 + random.random() * 0.5
+            logger.warning(
+                "LLM transport error (attempt %d/%d): %s — sleeping %.1fs",
+                attempt + 1, _LLM_MAX_RETRIES, last_error, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
+
+        # 429 (rate limit) + 529 (overloaded) are retryable.
+        if resp.status_code in (429, 529):
+            if attempt == _LLM_MAX_RETRIES - 1:
+                logger.warning(
+                    "LLM HTTP %s after %d retries — giving up",
+                    resp.status_code, _LLM_MAX_RETRIES,
+                )
+                return {
+                    "analysis": default_llm_analysis(failed=True),
+                    "tokens": {"input": 0, "cached_input_read": 0, "output": 0},
+                    "ok": False,
+                    "error": f"http_{resp.status_code}_retries_exhausted",
+                }
+            retry_after = _parse_retry_after(resp.headers.get("retry-after"))
+            if retry_after is not None:
+                backoff = min(_LLM_BACKOFF_MAX_S, retry_after)
+            else:
+                backoff = min(_LLM_BACKOFF_MAX_S, _LLM_BACKOFF_MIN_S * (2 ** attempt))
+            backoff *= 0.75 + random.random() * 0.5
+            logger.warning(
+                "LLM HTTP %s (attempt %d/%d) — sleeping %.1fs",
+                resp.status_code, attempt + 1, _LLM_MAX_RETRIES, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
+
+        # Any other status code — handled below (success path or
+        # terminal failure).
+        break
+
+    if resp is None or resp.status_code != 200:
+        status = resp.status_code if resp is not None else "none"
+        logger.warning("LLM HTTP %s", status)
         return {
             "analysis": default_llm_analysis(failed=True),
             "tokens": {"input": 0, "cached_input_read": 0, "output": 0},
             "ok": False,
-            "error": f"http_{resp.status_code}",
+            "error": f"http_{status}",
         }
 
     data = resp.json()
