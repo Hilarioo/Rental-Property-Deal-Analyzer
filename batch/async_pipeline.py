@@ -418,6 +418,19 @@ async def _finalize_row(prepared: dict[str, Any], *, db_path: str) -> dict[str, 
         "address": scrape.get("address"),
         "zip_code": zip_code,
         "price": scrape.get("price"),
+        # Sprint 16.5: lift the scraped listing fundamentals to the top
+        # level of the finalized row. `_build_response_rankings` reads
+        # `row.get("beds")` etc. at top level; without this promotion
+        # those fields stayed buried inside `row["scrape"]` and the API
+        # response always emitted null → the UI table showed "— / —"
+        # even when the snapshot had real data. This was the root cause
+        # of the "batch vs single-ZIP" discrepancy the user kept hitting.
+        "beds": scrape.get("beds"),
+        "baths": scrape.get("baths"),
+        "sqft": scrape.get("sqft"),
+        "year_built": scrape.get("year_built"),
+        "units": scrape.get("units"),
+        "dom": scrape.get("dom"),
         "hard_fail": computed["hard_fail"],
         "criteria": criteria,
         "metrics": computed["metrics"],
@@ -1298,6 +1311,14 @@ def _load_failures_for_response(db_path: str, batch_id: str) -> list[dict[str, A
 
 
 def _load_rankings_for_response(db_path: str, batch_id: str) -> list[dict[str, Any]]:
+    # Sprint 16.5: LEFT JOIN the latest scrape_snapshots row per url_hash
+    # so beds/baths/sqft/year_built/units/dom make it into the response.
+    # Previously this function only SELECTed columns from `properties`
+    # (price + dom) and `rankings` (verdict + topsis), dropping the
+    # listing fundamentals on the floor. Result: polling a completed
+    # batch always returned rows with beds=baths=null no matter what was
+    # actually scraped. Root cause of the "batch shows — but single-ZIP
+    # search shows correct values" discrepancy the user kept reporting.
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
@@ -1306,9 +1327,18 @@ def _load_rankings_for_response(db_path: str, batch_id: str) -> list[dict[str, A
                       r.derived_metrics_json, r.claude_narrative,
                       p.canonical_url, p.address, p.zip_code,
                       p.last_price, p.llm_analysis,
-                      p.cached_insurance_breakdown
+                      p.cached_insurance_breakdown,
+                      s.beds AS s_beds, s.baths AS s_baths, s.sqft AS s_sqft,
+                      s.year_built AS s_year_built, s.units AS s_units, s.dom AS s_dom
                  FROM rankings r
                  JOIN properties p ON p.url_hash = r.url_hash
+                 LEFT JOIN scrape_snapshots s
+                        ON s.url_hash = r.url_hash
+                       AND s.scraped_at = (
+                           SELECT MAX(ss.scraped_at) FROM scrape_snapshots ss
+                            WHERE ss.url_hash = r.url_hash
+                              AND ss.scrape_ok = 1
+                       )
                 WHERE r.batch_id = ?
                 ORDER BY r.rank ASC""",
             (batch_id,),
@@ -1331,6 +1361,13 @@ def _load_rankings_for_response(db_path: str, batch_id: str) -> list[dict[str, A
             "address": r["address"],
             "zip_code": r["zip_code"],
             "price": r["last_price"],
+            # Sprint 16.5: listing fundamentals from scrape_snapshots JOIN.
+            "beds": r["s_beds"],
+            "baths": r["s_baths"],
+            "sqft": r["s_sqft"],
+            "year_built": r["s_year_built"],
+            "units": r["s_units"],
+            "dom": r["s_dom"],
             "topsis_score": float(r["topsis_score"] or 0.0),
             "pareto_efficient": bool(r["pareto_efficient"]),
             "verdict": r["verdict"],
