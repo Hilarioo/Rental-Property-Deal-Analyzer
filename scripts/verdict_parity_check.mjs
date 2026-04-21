@@ -181,8 +181,13 @@ function computeJoseVerdict(ctx) {
     }
   }
 
+  // Sprint 15.5 parity mirror: enforceZipTierAsHardFail toggle.
   if (c.zipTier === 'outside') {
-    redReasons.push('ZIP outside all target market tiers');
+    if (T.enforceZipTierAsHardFail) {
+      redReasons.push('ZIP outside all target market tiers');
+    } else {
+      yellowReasons.push('ZIP outside known target tiers — add to a preset if this is a real market');
+    }
   } else if (c.zipTier === 'tier3') {
     yellowReasons.push('Tier 3 ZIP — Richmond motivated sellers, underwrite conservatively');
   }

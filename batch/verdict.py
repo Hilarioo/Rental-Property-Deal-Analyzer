@@ -302,9 +302,24 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
                     f"(self-perform {share_pct}%)"
                 )
 
+    # Sprint 15.5: `jose.enforceZipTierAsHardFail` governs whether a ZIP
+    # not in tier1/tier2/tier3 hard-fails. Default false — you keep
+    # discovering new target markets (Pittsburg, Concord, Antioch, Bay
+    # Point, Tracy, Stockton) that aren't in the Sprint 3 tier lists,
+    # and auto-REDing them hides deals you'd actually consider. When
+    # false, unknown ZIPs surface as a YELLOW "outside known tiers —
+    # add to a preset if this is a real target" hint. Excluded ZIPs
+    # (static excludedZips / excludedCities list) still RED regardless —
+    # those are explicit non-markets, not just missing-from-list.
     zip_tier = c.get("zipTier")
+    enforce_zip_tier = JOSE_THRESHOLDS.get("enforceZipTierAsHardFail")
     if zip_tier == "outside":
-        red_reasons.append("ZIP outside all target market tiers")
+        if enforce_zip_tier:
+            red_reasons.append("ZIP outside all target market tiers")
+        else:
+            yellow_reasons.append(
+                "ZIP outside known target tiers — add to a preset if this is a real market"
+            )
     elif zip_tier == "tier3":
         yellow_reasons.append("Tier 3 ZIP — Richmond motivated sellers, underwrite conservatively")
 
