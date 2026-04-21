@@ -837,6 +837,14 @@ def _extract_redfin(soup) -> dict | None:
             if not _type_matches(item_type, LISTING_TYPES):
                 continue
 
+            # Sprint 15.5 fix #1: capture ld+json @type as propertyType.
+            # Redfin's top-level ld+json often says "Apartment",
+            # "Condominium", "SingleFamilyResidence", etc. — the old
+            # code read this but never stored it, leaving propertyType
+            # null and breaking the PR #29 multi-family filter.
+            if not result["propertyType"] and item_type:
+                result["propertyType"] = item_type if isinstance(item_type, str) else (item_type[0] if item_type else None)
+
             # Extract top-level data (address, image, description, price)
             if not result["address"]:
                 result["address"] = _extract_address(item)
@@ -872,6 +880,13 @@ def _extract_redfin(soup) -> dict | None:
             if isinstance(main_entity, dict):
                 me_type = main_entity.get("@type", "")
                 if _type_matches(me_type, RESIDENTIAL_TYPES) or main_entity.get("numberOfBedrooms"):
+                    # Sprint 15.5 fix #1: mainEntity @type is often more
+                    # specific than the top-level listing type — prefer it
+                    # when available.
+                    if me_type and isinstance(me_type, str):
+                        result["propertyType"] = me_type
+                    elif me_type and isinstance(me_type, list) and me_type:
+                        result["propertyType"] = me_type[0]
                     if not result["address"]:
                         result["address"] = _extract_address(main_entity)
                     result["beds"] = result["beds"] or main_entity.get("numberOfBedrooms") or main_entity.get("numberOfRooms")
@@ -911,22 +926,47 @@ def _extract_redfin(soup) -> dict | None:
                 except ValueError:
                     pass
 
+        # Sprint 15.5 fix #2: match both plain integers (`"beds": 3`) AND
+        # object-wrapped values (`"beds": {"value": 3}` / `{"amount": 3}`).
+        # Redfin uses both forms depending on the listing variant; the
+        # old plain-integer regex silently missed the wrapped form.
         if not result["beds"]:
-            m = re.search(r'"beds"\s*:\s*(\d+)', text)
+            m = re.search(r'"beds"\s*:\s*(?:\{[^}]*"(?:value|amount)"\s*:\s*)?(\d+)', text)
             if m:
                 result["beds"] = int(m.group(1))
 
         if not result["baths"]:
-            m = re.search(r'"baths"\s*:\s*([\d.]+)', text)
+            m = re.search(r'"baths"\s*:\s*(?:\{[^}]*"(?:value|amount)"\s*:\s*)?(\d+(?:\.\d+)?)', text)
             if m:
                 result["baths"] = float(m.group(1))
 
+        # Sprint 15.5 fix #3: consolidate sqft patterns — try wrapped
+        # first (most common), then plain-integer fallback. Case-insensitive
+        # because Redfin uses both "sqFt" (camelCase) and "sqftInfo"
+        # (lowercase) depending on the listing variant.
         if not result["sqft"]:
-            m = re.search(r'"sqFt"\s*:\s*\{[^}]*"value"\s*:\s*(\d+)', text)
+            m = re.search(
+                r'"sqft(?:info)?"\s*:\s*\{[^}]*"(?:value|amount)"\s*:\s*(\d+)',
+                text, re.IGNORECASE,
+            )
             if not m:
-                m = re.search(r'"sqftInfo"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
+                m = re.search(
+                    r'"sqft(?:info)?"\s*:\s*(\d+)', text, re.IGNORECASE,
+                )
             if m:
                 result["sqft"] = int(m.group(1))
+
+        # Sprint 15.5 fix #4: regex fallback for propertyType when
+        # ld+json was missing/malformed. Redfin's JS blob often carries
+        # "propertyType" or "homeType" as a plain string. Multi keyword
+        # variants we've seen: "Duplex", "Triplex", "Multi-Family",
+        # "2-Unit", "3-Unit", "4-Unit".
+        if not result["propertyType"]:
+            m = re.search(r'"propertyType"\s*:\s*"([^"]+)"', text)
+            if not m:
+                m = re.search(r'"homeType"\s*:\s*"([^"]+)"', text)
+            if m:
+                result["propertyType"] = m.group(1)
 
         if not result["yearBuilt"]:
             m = re.search(r'"yearBuilt"\s*:\s*\{[^}]*"value"\s*:\s*(\d{4})', text)
