@@ -27,7 +27,8 @@
   "location": {
     "homeBase": { "name": "", "lat": 0, "lng": 0 },
     "maxMilesHard": 35,
-    "_doc": "Haversine radius from homeBase gates eligibility. Sprint 12-2 consumes this."
+    "enforceMaxMilesAsHardFail": true,
+    "_doc": "Haversine radius from homeBase. Sprint 12-2 gates verdict on it; Sprint 14.5 added `enforceMaxMilesAsHardFail` — set false to make ALL geography checks informational-only (both `maxMilesHard` AND `zipTiers.conditionalCities` distance thresholds). `zipTiers.excludedCities` is a separate static check and stays on."
   },
 
   "rentalStrategy": {

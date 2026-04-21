@@ -2465,6 +2465,11 @@
     if (typeof hLat !== 'number' || typeof hLng !== 'number') return null;
     if (hLat === 0 && hLng === 0) return null;
     var miles = _haversineMiles(lat, lng, hLat, hLng);
+    // Sprint 14.5: one flag governs BOTH gates. When false, commute
+    // distance AND conditional-city distance checks are all informational-
+    // only — no verdict impact. excludedCities is a separate static check.
+    var enforceHard = (loc.enforceMaxMilesAsHardFail !== false);
+    if (!enforceHard) return null;
     var maxHard = loc.maxMilesHard;
     if (typeof maxHard === 'number' && miles > maxHard) {
       return 'Outside commute radius — ' + Math.round(miles) + ' mi from home base exceeds ' + maxHard + ' mi hard cap';
