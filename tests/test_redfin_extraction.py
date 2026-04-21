@@ -608,8 +608,8 @@ def test_pre_llm_price_ceiling_over(pre_llm_hard_fail):
     """Gate 3: price > duplex ceiling by >10% fires `price_ceiling`
     gate. Uses _classify_overage's RED boundary — YELLOW band still
     reaches the LLM."""
-    # Jose's priceCeilingDuplex = $525K per profile. 10% overage = $577.5K.
-    # $600K is above that RED boundary.
+    # Jose's priceCeilingDuplex = $525K per profile. 10% overage
+    # boundary = $577.5K. $700K sits comfortably above the RED gate.
     result = pre_llm_hard_fail(
         scrape={
             "address": "1 Main St, Vallejo, CA 94590",
