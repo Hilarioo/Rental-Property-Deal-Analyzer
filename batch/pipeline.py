@@ -1273,6 +1273,18 @@ async def process_url(
         "address": scrape.get("address"),
         "zip_code": zip_code,
         "price": scrape.get("price"),
+        # Sprint 16.5: promote listing fundamentals to the top level.
+        # The response builder at line ~1560 reads `row.get("beds")` at
+        # top level — without this promotion the fields stayed nested
+        # inside `row["scrape"]` and the API emitted null → UI showed
+        # "— / —". This is THE root cause of the batch vs single-ZIP
+        # discrepancy the user kept hitting. Paralleled in async_pipeline.
+        "beds": scrape.get("beds"),
+        "baths": scrape.get("baths"),
+        "sqft": scrape.get("sqft"),
+        "year_built": scrape.get("year_built"),
+        "units": scrape.get("units"),
+        "dom": scrape.get("dom"),
         "hard_fail": computed["hard_fail"],
         "criteria": criteria,
         "metrics": computed["metrics"],
