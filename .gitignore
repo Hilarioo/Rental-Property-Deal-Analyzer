@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# symlink variants (Claude Code worktrees symlink venv back to the main
+# project's env; trailing-slash patterns above match directories only).
+venv
+.venv
 CLAUDE.md
 .claude/
 docs/plans
