@@ -183,12 +183,12 @@ function computeJoseVerdict(ctx) {
     }
   }
 
-  // Sprint 15.5 parity mirror: enforceZipTierAsHardFail toggle.
+  // Sprint 16.4: when enforceZipTierAsHardFail is off the ZIP-outside
+  // signal is silent (no reason emitted). Parity with batch/verdict.py
+  // and index.html _classifyOverage-adjacent block.
   if (c.zipTier === 'outside') {
     if (T.enforceZipTierAsHardFail) {
       redReasons.push('ZIP outside all target market tiers');
-    } else {
-      yellowReasons.push('ZIP outside known target tiers — add to a preset if this is a real market');
     }
   } else if (c.zipTier === 'tier3') {
     yellowReasons.push('Tier 3 ZIP — Richmond motivated sellers, underwrite conservatively');

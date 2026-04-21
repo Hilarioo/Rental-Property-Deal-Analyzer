@@ -322,10 +322,15 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
     if zip_tier == "outside":
         if enforce_zip_tier:
             red_reasons.append("ZIP outside all target market tiers")
-        else:
-            yellow_reasons.append(
-                "ZIP outside known target tiers — add to a preset if this is a real market"
-            )
+        # Sprint 16.4: when the toggle is off the ZIP-outside signal is
+        # NOT a factor. Previously we downgraded to a yellow reason that
+        # still cluttered every Stockton/Sacramento row with "ZIP outside
+        # known target tiers — add to a preset if this is a real market".
+        # User feedback: "this should not be a factor anymore" — the
+        # excludedZips / excludedCities / geospatial hard-fail already
+        # cover the hard no-go markets, and when the user has opted into
+        # a broader search by flipping enforceZipTierAsHardFail off they
+        # don't want every row nagging them about tier coverage.
     elif zip_tier == "tier3":
         yellow_reasons.append("Tier 3 ZIP — Richmond motivated sellers, underwrite conservatively")
 
