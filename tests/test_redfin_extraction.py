@@ -370,37 +370,24 @@ def test_no_numberOfUnits_stays_null(extract_redfin):
 ])
 def test_unit_keyword_detection(description, expected_units):
     """Bundle 1B: the keyword list should catch real multi-family phrasings
-    and reject the false-positive patterns the review flagged."""
-    # Re-use the keyword sets inline to avoid coupling to private symbols.
-    # Mirror is maintained manually — if batch/pipeline.py keywords change,
-    # update here too (intentional — the test acts as a spec).
-    _FOURPLEX_KWS = (
-        "fourplex", "four-plex", "4-plex", "four plex",
-        "4 unit", "four unit", "4-unit", "four-unit",
-        "quadplex", "quad-plex", "4 family", "four family",
-    )
-    _TRIPLEX_KWS = (
-        "triplex", "tri-plex", "3-plex", "three plex",
-        "3 unit", "three unit", "3-unit", "three-unit",
-        "3 family", "three family",
-    )
-    _DUPLEX_KWS = (
-        "duplex", "du-plex", "2-plex", "two plex",
-        "2 unit", "two unit", "2-unit", "two-unit",
-        "2 family", "two family",
-        "live in one rent", "rent out the other",
-        "front and back house", "front/back house",
-        "main house and cottage", "main + cottage",
-        "2 on a lot", "two on a lot",
-        "2 on one lot", "two houses on one",
-        "2 separate dwellings", "two separate dwellings",
+    and reject the false-positive patterns the review flagged.
+
+    Imports the canonical tuples from batch.pipeline so a keyword added
+    to production automatically extends the test's coverage — prevents
+    the silent-drift risk the review flagged on iteration 1 (where the
+    test re-declared tuples inline and could have quietly stopped
+    validating a real keyword if production diverged)."""
+    from batch.pipeline import (
+        UNIT_KEYWORDS_FOURPLEX,
+        UNIT_KEYWORDS_TRIPLEX,
+        UNIT_KEYWORDS_DUPLEX,
     )
     haystack = description.lower()
-    if any(k in haystack for k in _FOURPLEX_KWS):
+    if any(k in haystack for k in UNIT_KEYWORDS_FOURPLEX):
         got = 4
-    elif any(k in haystack for k in _TRIPLEX_KWS):
+    elif any(k in haystack for k in UNIT_KEYWORDS_TRIPLEX):
         got = 3
-    elif any(k in haystack for k in _DUPLEX_KWS):
+    elif any(k in haystack for k in UNIT_KEYWORDS_DUPLEX):
         got = 2
     else:
         got = None

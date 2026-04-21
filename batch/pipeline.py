@@ -233,6 +233,42 @@ TIER_DEFAULT_RENT_2BR = {
     "outside": 2000,
 }
 
+# Sprint 16.6 Bundle 1B: multi-family keyword tuples used by _scrape_url's
+# unit-detection fallback. Module-level so tests/test_redfin_extraction.py
+# can import the canonical list and assert against it — avoids the silent-
+# drift risk that would come from duplicating the tuples in both prod and
+# test code (PR #41 review P2 follow-up).
+UNIT_KEYWORDS_FOURPLEX: tuple[str, ...] = (
+    "fourplex", "four-plex", "4-plex", "four plex",
+    "4 unit", "four unit", "4-unit", "four-unit",
+    "quadplex", "quad-plex", "4 family", "four family",
+)
+UNIT_KEYWORDS_TRIPLEX: tuple[str, ...] = (
+    "triplex", "tri-plex", "3-plex", "three plex",
+    "3 unit", "three unit", "3-unit", "three-unit",
+    "3 family", "three family",
+)
+UNIT_KEYWORDS_DUPLEX: tuple[str, ...] = (
+    "duplex", "du-plex", "2-plex", "two plex",
+    "2 unit", "two unit", "2-unit", "two-unit",
+    "2 family", "two family",
+    # Narrative signals — listings that explicitly describe a live-in +
+    # rent-out config. Phrasing chosen to minimize false positives:
+    # "rent out the other" (not "rent the other" which could match
+    # "than rent the other comparable unit"); "2 separate dwellings"
+    # (not "2 dwellings" which matched "within 2 dwellings of the
+    # park"). PR #41 review feedback.
+    "live in one rent", "rent out the other",
+    "front and back house", "front/back house",
+    "main house and cottage", "main + cottage",
+    "2 on a lot", "two on a lot",
+    "2 on one lot", "two houses on one",
+    "2 separate dwellings", "two separate dwellings",
+)
+UNIT_KEYWORDS_MULTI_GENERIC: tuple[str, ...] = (
+    "multi-family", "multifamily", "multi family", "income property",
+)
+
 # Sprint 8-4: skip the live scrape if the property was fetched within this
 # window. Tight threshold (15m) is the "user pasted the same batch twice in
 # a row" optimization — long enough to avoid round-trip duplication in a
@@ -548,46 +584,19 @@ async def _scrape_url(url: str) -> dict[str, Any]:
     # + "unit" separately (would hit "four bedrooms ... on unit-ready lot").
     if not units:
         haystack = (extract.get("description") or "").lower() + " " + (extract.get("propertyType") or "").lower()
-        _FOURPLEX_KWS = (
-            "fourplex", "four-plex", "4-plex", "four plex",
-            "4 unit", "four unit", "4-unit", "four-unit",
-            "quadplex", "quad-plex", "4 family", "four family",
-        )
-        _TRIPLEX_KWS = (
-            "triplex", "tri-plex", "3-plex", "three plex",
-            "3 unit", "three unit", "3-unit", "three-unit",
-            "3 family", "three family",
-        )
-        _DUPLEX_KWS = (
-            "duplex", "du-plex", "2-plex", "two plex",
-            "2 unit", "two unit", "2-unit", "two-unit",
-            "2 family", "two family",
-            # Narrative signals — listings that explicitly describe a
-            # live-in + rent-out config. Phrasing chosen to minimize
-            # false positives: "rent out the other" (not "rent the
-            # other" which could match "than rent the other comparable
-            # unit"); "2 separate dwellings" (not "2 dwellings" which
-            # matched "within 2 dwellings of the park"); review feedback
-            # on PR #41 flagged both.
-            "live in one rent", "rent out the other",
-            "front and back house", "front/back house",
-            "main house and cottage", "main + cottage",
-            "2 on a lot", "two on a lot",
-            "2 on one lot", "two houses on one",
-            "2 separate dwellings", "two separate dwellings",
-        )
-        # Check highest-count keywords first so a "duplex + ADU" ($3-unit)
-        # listing doesn't stop at "duplex".
-        if any(k in haystack for k in _FOURPLEX_KWS):
+        # Check highest-count keywords first so a "duplex + ADU" (3-unit)
+        # listing doesn't stop at "duplex". Canonical tuples live at
+        # module scope so tests can import them (see UNIT_KEYWORDS_* above).
+        if any(k in haystack for k in UNIT_KEYWORDS_FOURPLEX):
             units = 4
             units_source = "keyword_fourplex"
-        elif any(k in haystack for k in _TRIPLEX_KWS):
+        elif any(k in haystack for k in UNIT_KEYWORDS_TRIPLEX):
             units = 3
             units_source = "keyword_triplex"
-        elif any(k in haystack for k in _DUPLEX_KWS):
+        elif any(k in haystack for k in UNIT_KEYWORDS_DUPLEX):
             units = 2
             units_source = "keyword_duplex"
-        elif any(k in haystack for k in ("multi-family", "multifamily", "multi family", "income property")):
+        elif any(k in haystack for k in UNIT_KEYWORDS_MULTI_GENERIC):
             # Generic multi-family / income-property flag with no explicit
             # count. We need corroborating evidence — beds >= 4 suggests
             # at least a duplex (2 beds per unit is typical minimum). Be
