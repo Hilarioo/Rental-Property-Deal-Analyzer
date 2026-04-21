@@ -56,7 +56,16 @@ function computeJoseVerdict(ctx) {
     redReasons.push('Unpermitted ADU / garage conversion — FHA disqualifier');
   }
   if (c.isPre1978WithGalvanized) {
-    redReasons.push('Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier');
+    // Sprint 14.5 parity mirror — enforceOldHouseGates toggle.
+    var galEv = (c.galvanizedEvidence || '').toString().trim();
+    var knobEv = (c.knobAndTubeEvidence || '').toString().trim();
+    var evidenceBits = [galEv, knobEv].filter(function (e) { return e; });
+    var evidenceTail = evidenceBits.length ? (' — ' + evidenceBits.join('; ')) : '';
+    if (T.enforceOldHouseGates) {
+      redReasons.push('Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier' + evidenceTail);
+    } else {
+      yellowReasons.push('LLM inferred pre-1978 galvanized + K&T — verify in inspection' + evidenceTail);
+    }
   }
   if (c.propertyType === 'sfh' && (c.units || 1) <= 1) {
     // Sprint 12 hotfix mirror — keep JS / Python / parity-harness copy in lockstep.

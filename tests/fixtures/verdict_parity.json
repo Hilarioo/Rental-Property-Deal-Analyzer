@@ -138,16 +138,18 @@
     "expected_verdict": "red"
   },
   {
-    "name": "RED isPre1978WithGalvanized disqualifier",
+    "name": "Sprint 14.5: pre-1978 + galvanized + K&T — yellow by default (enforceOldHouseGates=false)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
       "zip": "94590", "zipTier": "tier1", "isExcludedByZipTier": false,
       "units": 2, "propertyType": "multi", "roofAgeYears": 8,
       "hasFlatRoof": false, "hasUnpermittedAdu": false,
-      "isPre1978WithGalvanized": true, "hardFailUnitsUnknown": false
+      "isPre1978WithGalvanized": true, "hardFailUnitsUnknown": false,
+      "galvanizedEvidence": "1952 build, no plumbing update mentioned",
+      "knobAndTubeEvidence": "pre-1950, no panel upgrade mention"
     },
-    "expected_verdict": "red"
+    "expected_verdict": "yellow"
   },
   {
     "name": "RED SFR units=1 no ADU (no 75% offset)",
