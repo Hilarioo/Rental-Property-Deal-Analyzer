@@ -2457,6 +2457,11 @@
     var explicitYellowOk = (yellow !== null && yellow !== undefined) && value <= yellow;
     return (explicitYellowOk || tenPctOk) ? 'yellow' : 'red';
   }
+  // Sprint 16.7 Bundle 2: bridge to IIFE #2. The verdict-breakdown
+  // accordion's "gate comparison" section reads this for three-state pills
+  // (green/yellow/red) instead of a binary pass/fail. Same pattern used
+  // for computeQuickScore in PR #40.
+  window._classifyOverage = _classifyOverage;
 
   // Sprint 12-2: haversine great-circle distance in statute miles. Mirrors
   // batch/verdict.py `_haversine_miles`. Pure fn, no spec reads.
@@ -6368,15 +6373,20 @@
 
     // --- Section 1: Income & qualifying ---
     // rental_offset derivation: metrics.qualifying_income - w2. If that's
-    // negative (shouldn't happen) fall back to 0. Note the 75% FHA rule is
-    // applied BEFORE this subtraction — offset is already the 75%-credited
-    // value.
+    // negative (shouldn't happen) fall back to 0. Note the FHA rental-offset
+    // rate is applied BEFORE this subtraction — offset is already the
+    // rate-credited value. Read rate from DEFAULTS so it tracks the profile
+    // (review P1 on PR #42 caught the hardcoded 0.75 drift risk).
+    var rentalOffsetPctNum = Number(D.rentalOffsetPct || 75);
+    var rentalOffsetFrac = rentalOffsetPctNum / 100;
     var qualifyingIncome = Number(m.qualifying_income || 0);
     var rentalOffset = Math.max(0, qualifyingIncome - w2Monthly);
-    var grossRentRented = rentalOffset > 0 ? rentalOffset / 0.75 : 0;
+    var grossRentRented = (rentalOffset > 0 && rentalOffsetFrac > 0)
+      ? rentalOffset / rentalOffsetFrac : 0;
     var incomeBody =
         _kv('W-2 monthly gross', _fmt$(w2Monthly))
-      + _kv('Rental offset (75% FHA)', '+' + _fmt$(rentalOffset), grossRentRented > 0 ? 'from ' + _fmt$(grossRentRented) + '/mo rented gross' : '')
+      + _kv('Rental offset (' + rentalOffsetPctNum + '% FHA)', '+' + _fmt$(rentalOffset),
+            grossRentRented > 0 ? 'from ' + _fmt$(grossRentRented) + '/mo rented gross' : '')
       + _kv('Qualifying income', _fmt$(qualifyingIncome));
 
     // --- Section 2: PITI breakdown ---
@@ -6389,19 +6399,24 @@
     var taxRatePct = Number(m.applied_tax_pct || 0);
     var price = Number(r.price || 0);
     var taxMonthly = (price * (taxRatePct / 100)) / 12;
+    // MIP reverse-estimate. Review P1 on PR #42 caught that the old
+    // formula `base = price × (1 - dpPct)` ignored UFMIP (~1.75% rolled
+    // into the financed balance), making the MIP line ~1.75% low and
+    // P+I correspondingly high. FHA actually finances price × (1 - dp)
+    // × (1 + ufmipRate) — approximate that here.
     var mipMonthly = 0;
     if (D.fhaAnnualMipPct && price > 0) {
-      // Rough reverse-estimate of MIP — base = price × (1 - downPaymentPct) ≈.
       var dpPct = Number(D.downPaymentPct || 3.5);
-      var base = price * (1 - dpPct / 100);
+      var ufmipPct = Number(D.fhaUpfrontMipPct || 1.75);
+      var base = price * (1 - dpPct / 100) * (1 + ufmipPct / 100);
       mipMonthly = base * (Number(D.fhaAnnualMipPct || 0.55) / 100) / 12;
     }
     var piApprox = Math.max(0, piti - taxMonthly - insMonthly - mipMonthly);
     var pitiBody =
-        _kv('Principal + interest', _fmt$(piApprox), 'approx')
+        _kv('Principal + interest', _fmt$(piApprox), 'approx (PITI − tax − ins − MIP)')
       + _kv('Property tax', _fmt$(taxMonthly), _fmtPct(taxRatePct, 2) + ' annual')
       + _kv('Insurance', _fmt$(insMonthly), _fmt$(insAnnual) + '/yr')
-      + _kv('FHA MIP (annual)', _fmt$(mipMonthly))
+      + _kv('FHA MIP (annual)', _fmt$(mipMonthly), 'incl. UFMIP in financed base')
       + _kv('Total PITI', _fmt$(piti))
       + _kv('Net PITI (after rental offset)', _fmt$(Number(m.net_piti || 0)));
 
@@ -6430,9 +6445,10 @@
         return band && (band.mid || band.high);
       }).map(function(c) {
         var b = rb[c];
+        // Confidence shown as percentage (review P2 nit — cleaner than 0.85).
         return _kv(c.charAt(0).toUpperCase() + c.slice(1),
           _fmt$(b.low || 0) + ' – ' + _fmt$(b.mid || 0) + ' – ' + _fmt$(b.high || 0),
-          'conf ' + Number(b.confidence || 0).toFixed(2));
+          'conf ' + _fmtPct(Number(b.confidence || 0) * 100, 0));
       }).join('');
       rehabHtml += _kv('Effective (self-perform)', _fmt$(Number(m.effective_rehab || 0)))
         + _kv('Contractor edge (C-39 saves)', _fmt$(Number(m.contractor_edge || 0)));
@@ -6478,12 +6494,16 @@
     var rentSource = m.rent_source || '(unknown)';
     var rentSamples = Number(m.rent_comps_sample_size || 0);
     var units = Number(r.units || m.units || (m.units_assumed ? 2 : 0));
-    var beds = Number(r.beds || 0);
-    var baths = Number(r.baths || 0);
-    var perUnitBeds = units > 0 && beds > 0 ? Math.max(1, Math.round(beds / units)) : beds;
-    var perUnitBaths = units > 0 && baths > 0 ? (baths / units).toFixed(1) : baths;
+    var bedsN = Number(r.beds || 0);
+    var bathsN = Number(r.baths || 0);
+    var perUnitBeds = units > 0 && bedsN > 0 ? Math.max(1, Math.round(bedsN / units)) : bedsN;
+    // Integer-display when divides cleanly (2 baths / 2 units = "1", not "1.0"). Review P2 nit.
+    var perUnitBathsRaw = units > 0 && bathsN > 0 ? bathsN / units : bathsN;
+    var perUnitBaths = Number.isInteger(perUnitBathsRaw) ? String(perUnitBathsRaw) : perUnitBathsRaw.toFixed(1);
     rentHtml =
-        _kv('Source', rentSource, rentSource === 'fallback' ? 'tier default — no live comps' : '')
+        // rentSource is a backend-controlled string — escape explicitly
+        // (the `value` arg to _kv is interpolated raw; review P1 XSS).
+        _kv('Source', escapeHtml(rentSource), rentSource === 'fallback' ? 'tier default — no live comps' : '')
       + _kv('Sample size', String(rentSamples), rentSamples < 5 && rentSource !== 'fallback' ? 'low — sanity check' : '')
       + _kv('Per-unit profile', perUnitBeds + 'BR / ' + perUnitBaths + 'BA',
             m.units_assumed ? 'units assumed duplex — may be wrong' : '')
@@ -6491,9 +6511,14 @@
       + _kv('Gross monthly (all units)', _fmt$(Number(m.gross_rent_monthly_all || 0)));
 
     // --- Section 7: Per-gate threshold comparison ---
+    // Review P1 on PR #42: old pass/fail binary hid the yellow band —
+    // a net PITI in yellow territory showed "✗ fail" with a misleading
+    // "green / red" threshold string. Now uses three states (green /
+    // yellow / red) via _classifyOverage, the same function that drives
+    // the verdict pills at the row level.
     var gateHtml = '';
     var gateRows = [];
-    // DTI gate
+    // DTI gate (no yellow band — either under or over the profile cap).
     if (piti > 0 && qualifyingIncome > 0) {
       var dtiPct = (piti / qualifyingIncome) * 100;
       var dtiMax = Number(T.maxDtiPct || 50);
@@ -6501,51 +6526,68 @@
         label: 'DTI (PITI / qualifying)',
         actual: _fmtPct(dtiPct),
         threshold: '≤ ' + _fmtPct(dtiMax, 0),
-        pass: dtiPct <= dtiMax,
+        state: dtiPct <= dtiMax ? 'green' : 'red',
       });
     }
     if (T.netPitiGreen && m.net_piti != null) {
+      var npiti = Number(m.net_piti);
       gateRows.push({
         label: 'Net PITI',
-        actual: _fmt$(Number(m.net_piti)),
-        threshold: '≤ ' + _fmt$(T.netPitiGreen) + ' green / ' + _fmt$(T.netPitiRed) + ' red',
-        pass: Number(m.net_piti) <= T.netPitiGreen,
+        actual: _fmt$(npiti),
+        threshold: _fmt$(T.netPitiGreen) + ' / ' + _fmt$(T.netPitiYellow || T.netPitiRed) + ' / ' + _fmt$(T.netPitiRed),
+        state: (typeof window._classifyOverage === 'function'
+          ? window._classifyOverage(npiti, T.netPitiGreen, T.netPitiYellow, T.netPitiRed)
+          : (npiti <= T.netPitiGreen ? 'green' : npiti > T.netPitiRed ? 'red' : 'yellow')),
       });
     }
     if (T.cashCloseGreen && m.cash_to_close != null) {
+      var ctc = Number(m.cash_to_close);
       gateRows.push({
         label: 'Cash to close',
-        actual: _fmt$(Number(m.cash_to_close)),
-        threshold: '≤ ' + _fmt$(T.cashCloseGreen) + ' green / ' + _fmt$(T.cashCloseRed) + ' red',
-        pass: Number(m.cash_to_close) <= T.cashCloseGreen,
+        actual: _fmt$(ctc),
+        threshold: _fmt$(T.cashCloseGreen) + ' / ' + _fmt$(T.cashCloseRed),
+        state: (typeof window._classifyOverage === 'function'
+          ? window._classifyOverage(ctc, T.cashCloseGreen, T.cashCloseYellow, T.cashCloseRed)
+          : (ctc <= T.cashCloseGreen ? 'green' : ctc > T.cashCloseRed ? 'red' : 'yellow')),
       });
     }
     if (T.rehabGreen && m.effective_rehab != null) {
+      var reh = Number(m.effective_rehab);
       gateRows.push({
         label: 'Effective rehab',
-        actual: _fmt$(Number(m.effective_rehab)),
-        threshold: '≤ ' + _fmt$(T.rehabGreen) + ' green / ' + _fmt$(T.rehabRed) + ' red',
-        pass: Number(m.effective_rehab) <= T.rehabGreen,
+        actual: _fmt$(reh),
+        threshold: _fmt$(T.rehabGreen) + ' / ' + _fmt$(T.rehabYellow || T.rehabRed) + ' / ' + _fmt$(T.rehabRed),
+        state: (typeof window._classifyOverage === 'function'
+          ? window._classifyOverage(reh, T.rehabGreen, T.rehabYellow, T.rehabRed)
+          : (reh <= T.rehabGreen ? 'green' : reh > T.rehabRed ? 'red' : 'yellow')),
       });
     }
     if (T.roofAgeYellow && m.roof_age != null) {
+      var ra = Number(m.roof_age);
       gateRows.push({
         label: 'Roof age',
-        actual: Number(m.roof_age).toFixed(0) + ' yrs',
-        threshold: '≤ ' + T.roofAgeYellow + ' yrs yellow',
-        pass: Number(m.roof_age) <= T.roofAgeYellow,
+        actual: ra.toFixed(0) + ' yrs',
+        threshold: '≤ ' + T.roofAgeYellow + ' yrs',
+        state: ra <= T.roofAgeYellow ? 'green' : 'yellow',
       });
     }
     gateHtml = gateRows.map(function(g) {
-      var pillColor = g.pass
-        ? 'background:rgba(22,163,74,0.15);color:#16a34a;'
-        : 'background:rgba(220,38,38,0.15);color:#dc2626;';
-      var pillText = g.pass ? '✓ pass' : '✗ fail';
+      var pillStyle, pillText;
+      if (g.state === 'green') {
+        pillStyle = 'background:rgba(22,163,74,0.15);color:#16a34a;';
+        pillText = '✓ green';
+      } else if (g.state === 'yellow') {
+        pillStyle = 'background:rgba(202,138,4,0.18);color:#ca8a04;';
+        pillText = '⚠ yellow';
+      } else {
+        pillStyle = 'background:rgba(220,38,38,0.15);color:#dc2626;';
+        pillText = '✗ red';
+      }
       return '<div style="display:grid;grid-template-columns:1fr auto 1fr auto;gap:8px;padding:2px 0;align-items:center;">'
         + '<span style="color:var(--text-muted);">' + escapeHtml(g.label) + '</span>'
         + '<span style="font-variant-numeric:tabular-nums;font-weight:500;">' + g.actual + '</span>'
         + '<span style="color:var(--text-muted);font-size:0.72rem;">' + escapeHtml(g.threshold) + '</span>'
-        + '<span style="' + pillColor + 'padding:1px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;white-space:nowrap;">' + pillText + '</span>'
+        + '<span style="' + pillStyle + 'padding:1px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;white-space:nowrap;">' + pillText + '</span>'
         + '</div>';
     }).join('');
 
@@ -6720,9 +6762,13 @@
       }
       // Sprint 16.7 Bundle 2: chevron + click affordance on the Why cell
       // so the user can expand the full verdict breakdown inline.
+      // Review P2 on PR #42: added role/tabindex/aria-expanded for
+      // keyboard a11y, and wrapped the JSON.stringify in escapeHtml for
+      // belt-and-suspenders (even though keys are URLs, a pathological
+      // `<` or `>` would otherwise break the attribute).
       var isExpanded = EXPANDED_ROWS.has(r.key);
       var chevron = '<span style="display:inline-block;width:14px;color:var(--text-muted);font-size:0.7rem;transition:transform 0.15s;transform:' + (isExpanded ? 'rotate(90deg)' : 'rotate(0deg)') + ';">▶</span>';
-      var whyKeyJson = JSON.stringify(r.key).replace(/"/g, '&quot;');
+      var whyKeyJson = escapeHtml(JSON.stringify(r.key));
       html += '<tr style="border-bottom:1px solid var(--border);">';
       html += '<td style="padding:6px 8px;">' + _sourcePill(r.sources) + addrLink + paretoStar + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtDollar(r.price) + '</td>';
@@ -6731,7 +6777,12 @@
       html += '<td style="padding:6px 8px;letter-spacing:0.04em;">' + stars + '</td>';
       html += '<td style="padding:6px 8px;">' + _verdictPill(r.verdict) + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
-      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;word-break:break-word;max-width:40ch;cursor:pointer;" onclick="window.__toggleVerdictBreakdown(' + whyKeyJson + ')" title="Click to ' + (isExpanded ? 'collapse' : 'expand') + ' verdict math">' + chevron + ' ' + reasonsHtml + '</td>';
+      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;word-break:break-word;max-width:40ch;cursor:pointer;"'
+        + ' role="button" tabindex="0" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
+        + ' onclick="window.__toggleVerdictBreakdown(' + whyKeyJson + ')"'
+        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();window.__toggleVerdictBreakdown(' + whyKeyJson + ');}"'
+        + ' title="Click (or Enter/Space) to ' + (isExpanded ? 'collapse' : 'expand') + ' verdict math">'
+        + chevron + ' ' + reasonsHtml + '</td>';
       var openUrl = r.listingUrl ? JSON.stringify(r.listingUrl).replace(/"/g, '&quot;') : '""';
       html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + openUrl + ')">Analyze</button></td>';
       html += '<td style="padding:6px 4px;"><button type="button" title="Remove from list" aria-label="Remove" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="window.__unifiedDelete(' + JSON.stringify(r.key).replace(/"/g, '&quot;') + ')">×</button></td>';
