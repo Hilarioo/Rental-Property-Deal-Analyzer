@@ -105,7 +105,9 @@ function computeJoseVerdict(ctx) {
   function classifyOverage(value, green, yellow, red) {
     if (value <= green) return 'green';
     if (value > red) return 'red';
-    var tenPctOk = (value - green) / green <= 0.10;
+    // Guard against misconfigured green<=0 (redacted-template zeros) — would
+    // otherwise divide by zero. Parity with batch/verdict.py.
+    var tenPctOk = green > 0 ? ((value - green) / green <= 0.10) : false;
     var explicitYellowOk = (yellow !== null && yellow !== undefined) && value <= yellow;
     return (explicitYellowOk || tenPctOk) ? 'yellow' : 'red';
   }
