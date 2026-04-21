@@ -2543,8 +2543,8 @@ from scripts.init_db import DEFAULT_DB_PATH as _BATCH_DB_PATH  # noqa: E402
 from spec import constants as _spec_constants  # noqa: E402 — Sprint 11-4
 
 
-_BATCH_MAX_URLS_SYNC = 100
-_BATCH_HARD_CAP = 150
+_BATCH_MAX_URLS_SYNC = 1000
+_BATCH_HARD_CAP = 1500
 # Anthropic Message Batches hard limit is 10_000 requests per submission.
 _BATCH_ASYNC_MAX_URLS = 10_000
 _BATCH_ASYNC_WARN_URLS = 1_000
@@ -2625,23 +2625,81 @@ async def batch_analyze(request: Request):
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
 
+    # Sprint 15.5: convert batch-analyze to submit-and-poll. Previously
+    # this call blocked until `_run_sync_batch` finished, which worked fine
+    # at the 30-100 URL cap but times out everything above 150. Now we:
+    #   1. pre-write a `batches` row with status='pending' so status polls
+    #      can find it immediately,
+    #   2. fire the actual work via asyncio.create_task so it continues
+    #      after we return,
+    #   3. return 202 + {batch_id, status: 'pending'} right away so the
+    #      client can start its existing auto-poll machinery.
+    # The background task's final INSERT is now an UPSERT that flips the
+    # same row to status='complete' when it finishes.
+    from batch.db import get_connection as _get_conn, new_uuid_hex as _new_uuid, utc_now_iso as _now_iso  # noqa: PLC0415
+    batch_id = _new_uuid()
+    created_at = _now_iso()
     try:
-        envelope = await _run_sync_batch(
-            urls,
-            db_path=str(_BATCH_DB_PATH),
-            api_key=api_key,
-            preset_name=preset_name,
-            include_narrative=include_narrative,
-            client_ip=client_ip,
-        )
-        return JSONResponse(envelope)
+        conn = _get_conn(str(_BATCH_DB_PATH))
+        try:
+            conn.execute(
+                """INSERT INTO batches
+                   (batch_id, created_at, mode, input_count, status, preset_name)
+                   VALUES (?, ?, 'sync', ?, 'pending', ?)""",
+                (batch_id, created_at, len(urls), preset_name),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         request_id = uuid.uuid4().hex
-        logger.exception("batch-analyze failed (request_id=%s)", request_id)
+        logger.exception("batch-analyze pending-row insert failed (request_id=%s)", request_id)
         return JSONResponse(
-            _error_envelope("INTERNAL_ERROR", "Batch processing failed.", request_id),
+            _error_envelope("INTERNAL_ERROR", "Batch submit failed.", request_id),
             status_code=500,
         )
+
+    async def _bg_run() -> None:
+        try:
+            await _run_sync_batch(
+                urls,
+                db_path=str(_BATCH_DB_PATH),
+                api_key=api_key,
+                preset_name=preset_name,
+                include_narrative=include_narrative,
+                client_ip=client_ip,
+                batch_id=batch_id,
+                created_at=created_at,
+            )
+        except Exception:
+            logger.exception("batch-analyze background task failed for %s", batch_id)
+            # Best-effort flip the pending row to failed so the poll
+            # response doesn't leave the client spinning forever.
+            try:
+                conn2 = _get_conn(str(_BATCH_DB_PATH))
+                try:
+                    conn2.execute(
+                        "UPDATE batches SET status='failed', completed_at=?, error_reason=? WHERE batch_id=?",
+                        (_now_iso(), "worker_exception", batch_id),
+                    )
+                    conn2.commit()
+                finally:
+                    conn2.close()
+            except Exception:
+                logger.exception("failed to mark batch_id=%s as failed", batch_id)
+
+    asyncio.create_task(_bg_run())
+
+    return JSONResponse(
+        {
+            "batch_id": batch_id,
+            "mode": "sync",
+            "status": "pending",
+            "created_at": created_at,
+            "input_count": len(urls),
+        },
+        status_code=202,
+    )
 
 
 _BATCH_ASYNC_MAX_URL_LEN = 2000                  # matches /api/scrape guard
@@ -3175,13 +3233,30 @@ _BATCH_ID_RE = re.compile(r"[a-f0-9]{32}")
 
 @app.get("/api/batch-status/{batch_id}")
 async def batch_status(batch_id: str):
-    """Poll the status of an async batch — BATCH_DESIGN §B.3."""
+    """Poll the status of a batch — BATCH_DESIGN §B.3.
+
+    Sprint 15.5: mode='sync' batches (now async-local, polling-backed)
+    short-circuit Anthropic entirely — their status lives wholly in our
+    SQLite, so we just load the batch row and call the existing
+    `_build_poll_response` helper.
+    """
     if not _BATCH_ID_RE.fullmatch(batch_id or ""):
         request_id = uuid.uuid4().hex
         return JSONResponse(
             _error_envelope("VALIDATION_ERROR", "Invalid batch_id format.", request_id),
             status_code=400,
         )
+    # Sync-local fast path — check the row mode up front before burning a
+    # provider call on something we own locally.
+    try:
+        from batch.async_pipeline import _load_batch_row as _load_row, _build_poll_response as _build_resp  # noqa: PLC0415
+        batch_row = _load_row(str(_BATCH_DB_PATH), batch_id)
+        if batch_row and batch_row.get("mode") == "sync":
+            return JSONResponse(_build_resp(str(_BATCH_DB_PATH), batch_row))
+    except Exception:
+        logger.exception("batch-status sync-local fast-path failed for %s", batch_id)
+        # Fall through to the async path — safe default, just slower.
+
     api_key = os.getenv("ANTHROPIC_API_KEY")
     try:
         result = await _poll_async_batch(
