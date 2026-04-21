@@ -28,7 +28,7 @@
     "expected_verdict": "red"
   },
   {
-    "name": "Sprint 15.5: Sacramento 44mi + zipTier outside — both flags off → yellow",
+    "name": "Sprint 16.4: Sacramento 44mi + zipTier outside — both flags off → green (no nag reasons)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
@@ -38,7 +38,7 @@
       "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false,
       "lat": 38.5816, "lng": -121.4944, "address": "1234 J St, Sacramento, CA 95814"
     },
-    "expected_verdict": "yellow"
+    "expected_verdict": "green"
   },
   {
     "name": "Sprint 12-2: Vallejo listing inside 35mi commute radius → passes geo gate",
@@ -308,7 +308,7 @@
     "expected_verdict": "yellow"
   },
   {
-    "name": "Sprint 15.5: zipTier outside — yellow by default (enforceZipTierAsHardFail=false)",
+    "name": "Sprint 16.4: zipTier outside — silent by default (enforceZipTierAsHardFail=false, no nag reason)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
@@ -317,7 +317,7 @@
       "hasFlatRoof": false, "hasUnpermittedAdu": false,
       "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": false
     },
-    "expected_verdict": "yellow"
+    "expected_verdict": "green"
   },
   {
     "name": "netPiti $2800 — layered: 10% rule says red, Yellow-threshold rule says yellow; yellow wins (Sprint 12-1)",

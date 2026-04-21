@@ -425,6 +425,21 @@ def _reuse_warm_snapshot(
         return None
     if not isinstance(reused, dict) or not reused.get("ok"):
         return None
+    # Sprint 16.4: reject snapshots that are missing the listing
+    # fundamentals (beds AND baths AND sqft AND year_built all null).
+    # These came from pre-PR #30 scrapes where the Redfin extractor
+    # hadn't learned the ld+json mainEntity pattern yet. Without this
+    # guard, back-to-back scans within the 15-minute warm window
+    # reuse the degraded data forever and the user sees "— / —"
+    # in every table cell. Forcing a live re-scrape on these fixes
+    # them silently on next access.
+    if (
+        reused.get("beds") is None
+        and reused.get("baths") is None
+        and reused.get("sqft") is None
+        and reused.get("year_built") is None
+    ):
+        return None
     return reused
 
 
