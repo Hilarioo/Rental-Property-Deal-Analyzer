@@ -7707,6 +7707,192 @@
     root.style.display = 'block';
   }
 
+  // ============================================================
+  // Sprint 16.10 Bundle 2: per-ZIP streaming poller + status cards
+  //
+  // The new /api/scan-zips streaming response returns an array of
+  // {zip, batch_id, survivors, status} entries — one sub-batch per
+  // ZIP. Here we render a tiny status card per entry and poll each
+  // batch_id in parallel. As each batch completes we merge its
+  // rankings into the unified store so rows stream into the table
+  // in the order ZIPs finish.
+  //
+  // All pollers are independent: a slow ZIP doesn't block fast ones.
+  // ============================================================
+  var _scanZipsStreamContainerId = 'scan-zips-stream-cards';
+  var _scanZipsPollCadenceMs = 3000;    // 3s between polls per ZIP
+  // Sprint 16.10 (PR #45 review P2): bumped 10 → 15 min so legit
+  // batches that run a bit long get collected properly. Backend worker
+  // keeps going regardless — this is the CLIENT-side abandon point.
+  var _scanZipsPollTimeoutMs = 15 * 60 * 1000;
+  var _scanZipsPollStaggerMs = 300;     // stagger poller starts (see below)
+  var _scanZipsStreamGeneration = 0;    // invalidates in-flight pollers on reset
+
+  function _renderScanZipsCard(zipEntry) {
+    // Returns HTML for one ZIP's status card. Idempotent — same input
+    // produces same output so we can re-render in place.
+    var stateColor, stateLabel, stateIcon;
+    if (zipEntry.clientState === 'done') {
+      stateColor = '#16a34a'; stateLabel = 'done'; stateIcon = '✓';
+    } else if (zipEntry.clientState === 'failed') {
+      stateColor = '#dc2626'; stateLabel = 'failed'; stateIcon = '✗';
+    } else if (zipEntry.clientState === 'empty') {
+      stateColor = '#94a3b8'; stateLabel = '0 survivors'; stateIcon = '—';
+    } else {
+      stateColor = '#ca8a04'; stateLabel = 'analyzing'; stateIcon = '⏳';
+    }
+    var survivorsTxt = zipEntry.survivors != null ? zipEntry.survivors + ' URL' + (zipEntry.survivors === 1 ? '' : 's') : '—';
+    var detailTxt = zipEntry.clientState === 'done' && zipEntry.rankingsCount != null
+      ? zipEntry.rankingsCount + ' ranked'
+      : zipEntry.clientState === 'failed' && zipEntry.errorReason
+        ? 'error: ' + String(zipEntry.errorReason).slice(0, 40)
+        : '';
+    return ''
+      + '<div id="scan-zip-card-' + escapeHtml(String(zipEntry.zip)) + '" '
+      + 'style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;margin:2px;'
+      + 'background:rgba(100,116,139,0.08);border:1px solid var(--border);border-radius:20px;font-size:0.78rem;">'
+      + '<span style="color:' + stateColor + ';font-weight:700;">' + stateIcon + '</span>'
+      + '<span style="font-weight:600;">' + escapeHtml(String(zipEntry.zip)) + '</span>'
+      + '<span style="color:var(--text-muted);">' + escapeHtml(survivorsTxt) + '</span>'
+      + '<span style="color:' + stateColor + ';font-weight:500;">' + escapeHtml(stateLabel) + '</span>'
+      + (detailTxt ? '<span style="color:var(--text-muted);font-size:0.72rem;">' + escapeHtml(detailTxt) + '</span>' : '')
+      + '</div>';
+  }
+
+  function _renderScanZipsStreamCards(entries) {
+    var sumEl = document.getElementById('scan-zips-summary');
+    if (!sumEl) return;
+    var container = document.getElementById(_scanZipsStreamContainerId);
+    if (!container) {
+      container = document.createElement('div');
+      container.id = _scanZipsStreamContainerId;
+      container.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;gap:4px;';
+      sumEl.appendChild(container);
+    }
+    container.innerHTML = entries.map(_renderScanZipsCard).join('');
+  }
+
+  async function _pollScanZipBatch(entry, entries, onUpdate, generation) {
+    // Poll /api/batch-status until the per-ZIP batch finishes. On
+    // success merge its rankings into the unified store + mark the
+    // card as done; on failure mark it red. Times out after the
+    // global ceiling to avoid orphan pollers if something wedges.
+    // `generation` invalidates pollers left over from a prior
+    // __startScanZipsStreaming call — on generation mismatch we exit
+    // silently so a stale poller doesn't write stale state.
+    var startedAt = Date.now();
+    while (Date.now() - startedAt < _scanZipsPollTimeoutMs) {
+      if (generation !== _scanZipsStreamGeneration) return;
+      try {
+        var resp = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
+        var data = await resp.json();
+        // Sprint 16.10 (PR #45 iter 2 review): re-check generation
+        // AFTER the await returns — otherwise a fetch kicked off
+        // before the generation bump can still land a stale
+        // renderResults() + overwrite fresh state. The loop-top
+        // check only catches stale pollers between iterations.
+        if (generation !== _scanZipsStreamGeneration) return;
+        // /api/batch-status returns the envelope at the TOP level (not
+        // nested under `envelope`) — batch_id, status, rankings, failures
+        // are direct properties of `data`. See _build_poll_response in
+        // batch/async_pipeline.py.
+        if (data && data.status === 'complete') {
+          data.source = 'scan_zips';
+          renderResults(data);
+          entry.rankingsCount = (data.rankings || []).length;
+          entry.clientState = 'done';
+          onUpdate(entries);
+          return;
+        }
+        if (data && data.status === 'failed') {
+          entry.clientState = 'failed';
+          entry.errorReason = data.error_reason || 'unknown';
+          onUpdate(entries);
+          return;
+        }
+        // Still pending — re-render card (no state change) and wait.
+      } catch (e) {
+        // Transient network errors — keep polling, don't bail the whole thing.
+      }
+      await new Promise(function (r) { setTimeout(r, _scanZipsPollCadenceMs); });
+    }
+    // Hit the client-side timeout. The backend worker may still be
+    // running — surface that so the user doesn't assume data loss.
+    if (generation === _scanZipsStreamGeneration) {
+      entry.clientState = 'failed';
+      entry.errorReason = 'client timeout — batch may still finish, reload to pick up';
+      onUpdate(entries);
+    }
+  }
+
+  window.__startScanZipsStreaming = function (batches, summary) {
+    // Sprint 16.10 (PR #45 review P2): bump the generation counter so
+    // any pollers still running from a previous scan exit cleanly
+    // before new ones start. Without this, re-running Scan ZIPs
+    // quickly could leave zombie fetches racing with the new batch
+    // (and a stray stale update could overwrite a fresh card).
+    _scanZipsStreamGeneration += 1;
+    var generation = _scanZipsStreamGeneration;
+
+    // Normalize entries so _renderScanZipsCard's branches all have data
+    // and the poller can mutate freely.
+    var entries = (batches || []).map(function (b) {
+      return {
+        zip: b.zip,
+        batch_id: b.batch_id,
+        survivors: b.survivors,
+        status: b.status,
+        clientState: b.status === 'empty' ? 'empty' : (b.status === 'failed' ? 'failed' : 'pending'),
+        errorReason: b.error_reason,
+      };
+    });
+    _renderScanZipsStreamCards(entries);
+
+    // Auto-expand batch panel so the streaming rows land somewhere
+    // the user can see without scrolling.
+    var batchPanel = document.getElementById('batch-panel');
+    if (batchPanel && !batchPanel.open) batchPanel.open = true;
+
+    var onUpdate = function () {
+      // Gate on generation so a late-arriving response from a prior
+      // scan can't repaint the current scan's cards.
+      if (generation === _scanZipsStreamGeneration) _renderScanZipsStreamCards(entries);
+    };
+
+    // Stagger poller starts so we don't hit /api/batch-status with N
+    // simultaneous requests on t=0. At 300ms spacing, 20 ZIPs spread
+    // their initial polls across 6s — SQLite writer-lock contention
+    // from the backend workers has time to ease between reads.
+    var pollerIndex = 0;
+    entries.forEach(function (entry) {
+      if (entry.batch_id && entry.clientState === 'pending') {
+        var delay = pollerIndex * _scanZipsPollStaggerMs;
+        pollerIndex += 1;
+        setTimeout(function () {
+          _pollScanZipBatch(entry, entries, onUpdate, generation);
+        }, delay);
+      }
+    });
+
+    // Summary line. Use a stable ID so re-invocations overwrite in
+    // place instead of appending a second line.
+    var sumEl = document.getElementById('scan-zips-summary');
+    if (sumEl) {
+      var liveCount = entries.filter(function (e) { return !!e.batch_id; }).length;
+      var msgHtml = 'Streaming ' + liveCount + ' ZIP-level batch'
+        + (liveCount === 1 ? '' : 'es')
+        + ' — rows appear in the unified table as each completes.';
+      var existing = document.getElementById('scan-zips-streaming-hint');
+      if (existing) {
+        existing.innerHTML = msgHtml;
+      } else {
+        sumEl.insertAdjacentHTML('beforeend',
+          '<div id="scan-zips-streaming-hint" style="margin-top:8px;color:var(--text-muted);font-size:0.82rem;">'
+          + msgHtml + '</div>');
+      }
+    }
+  };
+
   window.runScanZips = async function () {
     var ta = $('scan-zips-list');
     var errEl = $('scan-zips-error');
@@ -7814,34 +8000,14 @@
           sumEl.insertAdjacentHTML('beforeend',
             '<div style="margin-top:8px;color:#22c55e;">✓ Ranked results rendered in the Batch panel above.</div>');
         }
-      } else if (data.mode === 'async' && data.batch) {
-        var pending = {
-          batchId: data.batch.batchId || data.batch.batch_id,
-          submittedAt: Date.now(),
-          urlCount: (data.summary && data.summary.survivors) || 0,
-          // Sprint 12 hotfix: origin + summary stick through the async poll
-          // so the eventual rankings card still shows the "Scan ZIPs" pill.
-          source: 'scan_zips',
-          scan_summary: data.summary || null,
-        };
-        if (pending.batchId) {
-          savePending(pending);
-          renderPending(pending);
-          if (typeof startAutoPoll === 'function') startAutoPoll();
-          // Sprint 14-4: request Notification permission on scan-submit so
-          // the completion alert can fire when the async run finishes.
-          if (typeof __ensureNotificationPermission__ === 'function') __ensureNotificationPermission__();
-          var pendingEl = $('batch-pending');
-          if (pendingEl && pendingEl.scrollIntoView) {
-            pendingEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-          if (sumEl) {
-            sumEl.insertAdjacentHTML('beforeend',
-              '<div style="margin-top:8px;color:#f7b500;">' +
-              '⏳ Submitted as async batch — auto-polling in progress. ' +
-              'Pending card is in the Batch panel above; results replace it on completion (up to 24h via Anthropic Message Batches, usually minutes).' +
-              '</div>');
-          }
+      } else if (data.mode === 'async-per-zip' && Array.isArray(data.batches)) {
+        // Sprint 16.10: per-ZIP streaming. Each ZIP's URLs are analyzed
+        // as its own background sub-batch. We spawn one poller per
+        // batch_id, render a status card per ZIP, and merge each
+        // envelope into the unifiedStore as its batch completes. Results
+        // stream into the table in the order ZIPs finish (fastest first).
+        if (typeof window.__startScanZipsStreaming === 'function') {
+          window.__startScanZipsStreaming(data.batches, data.summary);
         }
       }
     } catch (e) {

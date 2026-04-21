@@ -3228,12 +3228,19 @@ async def scan_zips(request: Request):
     async with _scan_zips_sem:
         results = await asyncio.gather(*[_one_search(z) for z in scan_zips_in])
 
+        # Sprint 16.10: track survivors per-ZIP (not just a flat combined
+        # list) so we can submit each ZIP as its own async sub-batch
+        # downstream. Enables per-ZIP streaming — user sees each ZIP's
+        # results as soon as that ZIP's analysis finishes, without waiting
+        # for the slowest ZIP.
         survivors: list[str] = []
+        survivors_by_zip: dict[str, list[str]] = {}
         seen_urls: set[str] = set()
         per_zip_summary: list = []
         rejected_city: list = []
         search_errors: list = []
         for zip_code, res in results:
+            survivors_by_zip.setdefault(zip_code, [])
             if res.get("error") and not res.get("listings"):
                 search_errors.append({"zip": zip_code, "reason": "search_failed"})
                 per_zip_summary.append({"zip": zip_code, "found": 0, "kept": 0})
@@ -3260,6 +3267,7 @@ async def scan_zips(request: Request):
                     continue
                 seen_urls.add(url)
                 survivors.append(url)
+                survivors_by_zip[zip_code].append(url)
                 kept_for_zip += 1
             per_zip_summary.append({
                 "zip": zip_code,
@@ -3307,16 +3315,19 @@ async def scan_zips(request: Request):
             )
         survivors = clean_urls
 
-        # Sprint 12 hotfix 2026-04-19: respect explicit user mode choice.
-        # Previously `mode == 'async' or len > cap` meant Force sync silently
-        # flipped to async whenever survivors exceeded _BATCH_MAX_URLS_SYNC —
-        # that was a bug, not a feature. Now:
-        #   mode="async" → always async (user asked for it)
-        #   mode="sync"  → always sync, up to _BATCH_HARD_CAP (reject above)
-        #   mode=""      → auto: sync if ≤ _BATCH_MAX_URLS_SYNC, else async
-        if mode == "async":
-            want_async = True
-        elif mode == "sync":
+        # Sprint 16.10: scan mode semantics
+        #   mode="sync"          → one combined sync batch, inline envelope
+        #                          (old behavior — escape hatch for tiny scans)
+        #   mode="async" | ""    → NEW per-ZIP streaming: each ZIP's URLs
+        #                          become their own background batch, all
+        #                          polled in parallel by the client. User
+        #                          sees results surface per-ZIP as each
+        #                          finishes (fastest-to-slowest order).
+        #
+        # Force-sync guardrail preserved from Sprint 12: reject above the
+        # hard cap since a single sync envelope of that size would timeout
+        # HTTP.
+        if mode == "sync":
             if len(survivors) > _BATCH_HARD_CAP:
                 return JSONResponse(
                     _error_envelope(
@@ -3326,42 +3337,139 @@ async def scan_zips(request: Request):
                     ),
                     status_code=400,
                 )
-            want_async = False
+            want_stream = False
         else:
-            want_async = len(survivors) > _BATCH_MAX_URLS_SYNC
+            want_stream = True
+
         api_key = os.getenv("ANTHROPIC_API_KEY")
 
-        if want_async:
-            try:
-                sub_result = await _submit_async_batch(
-                    survivors,
-                    db_path=str(_BATCH_DB_PATH),
-                    client_ip=client_ip,
-                    api_key=api_key,
-                    preset_name=preset_name,
-                )
-            except Exception:
-                logger.exception(
-                    "scan-zips async submit failed (request_id=%s)", request_id
-                )
-                return JSONResponse(
-                    _error_envelope(
-                        "INTERNAL_ERROR",
-                        "Async batch submission failed.",
-                        request_id,
-                    ),
-                    status_code=500,
-                )
+        if want_stream:
+            # Sprint 16.10: per-ZIP sub-batch fan-out. For each ZIP that
+            # produced >0 survivors, insert a pending `batches` row, spawn
+            # a background task that runs _run_sync_batch against just
+            # that ZIP's URLs, and collect the batch_id. Return all
+            # batch_ids in a single response — client polls each via the
+            # existing /api/batch-status endpoint and appends results to
+            # the unified store as each finishes.
+            #
+            # Uses the same create_task pattern as /api/batch-analyze's
+            # Sprint 15.5 submit-and-poll refactor — local execution, not
+            # the hours-long Anthropic Batches queue, so per-ZIP results
+            # surface in 30-90s each.
+            from batch.db import (  # noqa: PLC0415
+                get_connection as _get_conn,
+                new_uuid_hex as _new_uuid,
+                utc_now_iso as _now_iso,
+            )
+
+            per_zip_batches: list[dict[str, Any]] = []
+            # Iterate in the order the user submitted the ZIPs so the
+            # streaming UI's "first ZIP, then next" mental model matches.
+            for zip_code in scan_zips_in:
+                zip_survivors = survivors_by_zip.get(zip_code) or []
+                if not zip_survivors:
+                    # No URLs to analyze → immediate null-batch entry so
+                    # the UI can still render a "95205: 0 survivors" card.
+                    per_zip_batches.append({
+                        "zip": zip_code,
+                        "batch_id": None,
+                        "survivors": 0,
+                        "status": "empty",
+                    })
+                    continue
+
+                batch_id = _new_uuid()
+                created_at = _now_iso()
+                try:
+                    conn = _get_conn(str(_BATCH_DB_PATH))
+                    try:
+                        conn.execute(
+                            """INSERT INTO batches
+                               (batch_id, created_at, mode, input_count, status, preset_name)
+                               VALUES (?, ?, 'sync', ?, 'pending', ?)""",
+                            (batch_id, created_at, len(zip_survivors), preset_name),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    logger.exception(
+                        "scan-zips per-zip pending-row insert failed "
+                        "(request_id=%s zip=%s)", request_id, zip_code,
+                    )
+                    per_zip_batches.append({
+                        "zip": zip_code,
+                        "batch_id": None,
+                        "survivors": len(zip_survivors),
+                        "status": "failed",
+                        "error_reason": "pending_insert_failed",
+                    })
+                    continue
+
+                # Spawn background task. Closure captures zip_survivors
+                # and batch_id for THIS iteration (Python's default late-
+                # binding would be wrong in a loop — use default-arg
+                # trick to freeze both).
+                async def _bg_run_zip(
+                    _urls: list[str] = zip_survivors,
+                    _batch_id: str = batch_id,
+                    _created_at: str = created_at,
+                    _zip: str = zip_code,
+                ) -> None:
+                    try:
+                        await _run_sync_batch(
+                            _urls,
+                            db_path=str(_BATCH_DB_PATH),
+                            api_key=api_key,
+                            preset_name=preset_name,
+                            include_narrative=True,
+                            client_ip=client_ip,
+                            batch_id=_batch_id,
+                            created_at=_created_at,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "scan-zips per-zip background task failed "
+                            "(batch_id=%s zip=%s)", _batch_id, _zip,
+                        )
+                        try:
+                            conn2 = _get_conn(str(_BATCH_DB_PATH))
+                            try:
+                                conn2.execute(
+                                    "UPDATE batches SET status='failed', completed_at=?, error_reason=? WHERE batch_id=?",
+                                    (_now_iso(), "worker_exception", _batch_id),
+                                )
+                                conn2.commit()
+                            finally:
+                                conn2.close()
+                        except Exception:
+                            logger.exception(
+                                "failed to mark per-zip batch_id=%s as failed",
+                                _batch_id,
+                            )
+
+                asyncio.create_task(_bg_run_zip())
+
+                per_zip_batches.append({
+                    "zip": zip_code,
+                    "batch_id": batch_id,
+                    "survivors": len(zip_survivors),
+                    "status": "pending",
+                    "created_at": created_at,
+                })
+
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                "scan_zips zip_count=%d survivors=%d mode=async elapsed=%dms",
-                len(scan_zips_in), len(survivors), elapsed_ms,
+                "scan_zips zip_count=%d survivors=%d mode=stream batches=%d elapsed=%dms",
+                len(scan_zips_in), len(survivors),
+                sum(1 for b in per_zip_batches if b.get("batch_id")),
+                elapsed_ms,
             )
-            response = {
-                "status": sub_result.get("status", "pending"),
-                "mode": "async",
+            return JSONResponse({
+                "status": "streaming",
+                "mode": "async-per-zip",
                 "request_id": request_id,
-                "batch": sub_result,
+                "batches": per_zip_batches,
                 "summary": {
                     "zip_count": len(zips),
                     "zips_scanned": len(scan_zips_in),
@@ -3371,9 +3479,7 @@ async def scan_zips(request: Request):
                 },
                 "per_zip": per_zip_summary,
                 "rejected": rejected_block,
-            }
-            status_code = 202 if response["status"] == "pending" else 200
-            return JSONResponse(response, status_code=status_code)
+            }, status_code=202)
 
         try:
             envelope = await _run_sync_batch(
