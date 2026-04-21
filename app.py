@@ -3044,6 +3044,88 @@ _SCAN_ZIPS_MAX_ZIPS = 2000
 # would take long enough that queue latency is acceptable vs the
 # cost savings.
 _AUTO_BATCH_THRESHOLD = 1000
+
+# Sprint 17 Bundle 4: preflight cost estimate constants. Tuned from
+# the performance-benchmarker audit of the current codebase (Sonnet
+# 4.x pricing, ~98% cache hit rate on the stable system prompt,
+# Bundle 1 pre-LLM skip rate ~30% for Jose's strict-gate profile).
+#
+# Cost: per-URL steady-state cached Sonnet call ≈ $0.021 (see
+# batch/llm.py token accounting). Batches API halves this.
+# Skip rate: fraction of URLs that pre-LLM hard-fail on structural
+# gates (price ceiling / geo / excluded market / single-unit) and
+# never hit the LLM — see batch/pipeline.py:_pre_llm_hard_fail.
+# Wall-clock for stream mode: ~30-90s per ZIP's sub-batch under
+# global LLM semaphore; Redfin phase dominates above ~1000 URLs.
+_ESTIMATE_SONNET_COST_PER_CALL_USD = 0.021
+_ESTIMATE_PRE_LLM_SKIP_RATE = 0.30  # fraction of URLs skipped pre-LLM
+_ESTIMATE_BATCHES_DISCOUNT = 0.50   # Anthropic Batches 50% off
+
+
+def _project_scan_cost(survivors_count: int) -> dict:
+    """Estimate LLM calls + cost + wall-clock for a scan submission.
+
+    Called from the `estimate_only` preflight path so users can see
+    the shape of the work before committing to it. Returns a dict
+    the UI can render without any additional math.
+
+    Approximations are documented; the real number depends on cache
+    hit rate, pre-LLM skip specifics, and mode choice, but this
+    envelope gives a credible ballpark within ~15%.
+    """
+    # After pre-LLM hard-fail skip (Bundle 1), ~30% of URLs never
+    # hit the LLM. Remainder goes through the full call.
+    projected_llm_calls = max(1, int(round(
+        survivors_count * (1.0 - _ESTIMATE_PRE_LLM_SKIP_RATE)
+    )))
+    # Stream mode: full-rate Sonnet calls.
+    cost_stream_usd = round(projected_llm_calls * _ESTIMATE_SONNET_COST_PER_CALL_USD, 2)
+    # Batch mode: same calls via Anthropic Batches API → 50% off.
+    cost_batch_usd = round(cost_stream_usd * (1.0 - _ESTIMATE_BATCHES_DISCOUNT), 2)
+
+    # Wall-clock. Stream mode throughput is bounded by the global
+    # LLM semaphore × avg per-call latency:
+    #   throughput_URLs_per_min ≈ BATCH_LLM_CONCURRENCY × 60 / avg_latency_s
+    #   default: 5 × 60 / 7 ≈ 43 URLs/min
+    # Review P0 on PR #50: prior formula divided by 10 (~6 URL/min),
+    # undersold throughput by ~4x and pushed users to batch mode
+    # unnecessarily. Matching reality at ~40 URL/min now. Note this
+    # ignores Redfin-phase wall clock — scan-zips already elapsed
+    # that before calling this helper.
+    _AVG_URLS_PER_MIN = 40
+    wall_stream_min = max(1, int(round(projected_llm_calls / _AVG_URLS_PER_MIN)))
+
+    # Batch mode: Anthropic processes in 5-60min typical, up to 24hr.
+    # Present as a range, not a point.
+    wall_batch_str = "5-60 min (up to 24hr)"
+
+    # Recommended mode uses the same heuristic as the auto router.
+    recommended_mode = "batch" if survivors_count > _AUTO_BATCH_THRESHOLD else "stream"
+
+    return {
+        "total_urls": survivors_count,
+        "projected_llm_calls": projected_llm_calls,
+        "projected_pre_llm_skips": survivors_count - projected_llm_calls,
+        "projected_cost_usd": {
+            "stream": cost_stream_usd,
+            "batch": cost_batch_usd,
+        },
+        "projected_wall_clock": {
+            "stream_min": wall_stream_min,
+            "batch": wall_batch_str,
+        },
+        "recommended_mode": recommended_mode,
+        "assumptions": {
+            "per_call_cost_usd": _ESTIMATE_SONNET_COST_PER_CALL_USD,
+            "pre_llm_skip_rate": _ESTIMATE_PRE_LLM_SKIP_RATE,
+            "batches_discount": _ESTIMATE_BATCHES_DISCOUNT,
+            "note": (
+                "Estimates assume Jose's strict-gate profile (~30% pre-LLM "
+                "skip) and steady-state prompt cache hits. Real cost varies "
+                "±15% based on cache warmth and structural-gate outcomes."
+            ),
+        },
+    }
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
 # Sprint 16.9: cap raised 50 → 1000. Redfin's own lazy-load still caps
 # rendered cards per ZIP around 150-250, and `top_n` is applied AFTER
@@ -3079,11 +3161,44 @@ async def scan_zips(request: Request):
     """
     request_id = uuid.uuid4().hex
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"scan:{client_ip}", 10):  # Sprint 14.5: 2 → 10 submissions/min.
+
+    # Parse body FIRST so we know whether this is a cheap estimate
+    # request (separate rate bucket) vs a real scan (full `scan:`
+    # bucket). Review P0 on PR #50: estimate calls hitting the same
+    # bucket let a user burn through their scan budget tuning
+    # filters, locking out real scans for a minute.
+    try:
+        body = await request.json()
+    except Exception:
         return JSONResponse(
-            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
-            status_code=429,
+            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
+            status_code=400,
         )
+
+    # Sprint 17 Bundle 4: preflight `estimate_only` mode. Runs the
+    # Redfin search phase, tallies survivors, returns cost + wall-
+    # clock projection WITHOUT spawning any background work (no LLM
+    # calls, no DB writes beyond scrape_snapshots already written
+    # by the search itself).
+    estimate_only = bool(body.get("estimate_only"))
+
+    # Sprint 17 Bundle 4: split rate buckets. Estimates are cheap
+    # enough (Redfin phase only, no LLM) to allow more frequent
+    # usage — users will naturally tune filters and re-estimate.
+    # 30/min for estimates vs 10/min for real scans.
+    if estimate_only:
+        if not _check_rate_limit(f"estimate:{client_ip}", 30):
+            return JSONResponse(
+                _error_envelope("RATE_LIMIT_EXCEEDED", "Too many estimate requests.", request_id),
+                status_code=429,
+            )
+    else:
+        if not _check_rate_limit(f"scan:{client_ip}", 10):
+            return JSONResponse(
+                _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
+                status_code=429,
+            )
+
     if _scan_zips_sem.locked():
         return JSONResponse(
             _error_envelope(
@@ -3092,14 +3207,6 @@ async def scan_zips(request: Request):
                 request_id,
             ),
             status_code=429,
-        )
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse(
-            _error_envelope("VALIDATION_ERROR", "Invalid JSON body.", request_id),
-            status_code=400,
         )
 
     # --- Validate zips ---
@@ -3317,6 +3424,35 @@ async def scan_zips(request: Request):
                     "zip_count": len(zips),
                     "zips_scanned": len(scan_zips_in),
                     "survivors": 0,
+                    "top_n_per_zip": top_n,
+                    "elapsed_ms": elapsed_ms,
+                },
+                "per_zip": per_zip_summary,
+                "rejected": rejected_block,
+            })
+
+        # Sprint 17 Bundle 4: preflight estimate short-circuit. At
+        # this point Redfin has already run (needed to count
+        # survivors accurately), but we haven't touched the LLM or
+        # written any batches rows. Return the cost projection and
+        # bail — the user confirms and re-submits without the flag
+        # to actually run the scan.
+        if estimate_only:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            estimate = _project_scan_cost(len(survivors))
+            logger.info(
+                "scan_zips zip_count=%d survivors=%d mode=estimate elapsed=%dms",
+                len(scan_zips_in), len(survivors), elapsed_ms,
+            )
+            return JSONResponse({
+                "status": "estimate",
+                "mode": "estimate_only",
+                "request_id": request_id,
+                "estimate": estimate,
+                "summary": {
+                    "zip_count": len(zips),
+                    "zips_scanned": len(scan_zips_in),
+                    "survivors": len(survivors),
                     "top_n_per_zip": top_n,
                     "elapsed_ms": elapsed_ms,
                 },

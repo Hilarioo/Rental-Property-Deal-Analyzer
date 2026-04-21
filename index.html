@@ -1475,7 +1475,14 @@
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
           <span id="scan-zips-count" style="font-size:0.82rem;color:var(--text-muted);">0 ZIPs</span>
-          <button id="scan-zips-submit" class="btn btn-small" type="button" onclick="runScanZips()">Scan ZIPs</button>
+          <div style="display:flex;gap:6px;">
+            <!-- Sprint 17 Bundle 4: preflight Estimate button runs the
+                 Redfin search phase only and returns a projected
+                 cost + wall-clock — lets the user sanity-check a
+                 $70+ scan before committing. -->
+            <button id="scan-zips-estimate" class="btn btn-small btn-secondary" type="button" onclick="runScanZipsEstimate()" title="Preflight: project cost + time without actually running the analysis">Estimate</button>
+            <button id="scan-zips-submit" class="btn btn-small" type="button" onclick="runScanZips()">Scan ZIPs</button>
+          </div>
         </div>
         <div id="scan-zips-loading" style="display:none;margin-top:10px;color:var(--text-muted);font-size:0.85rem;">Scanning... each ZIP runs a Redfin search (~3-6s), then survivors go through the full pipeline. 5 ZIPs × 10 listings cold-cache ≈ 60-90s.</div>
         <div id="scan-zips-error" style="display:none;margin-top:10px;color:#f87171;font-size:0.85rem;"></div>
@@ -7895,6 +7902,118 @@
           '<div id="scan-zips-streaming-hint" style="margin-top:8px;color:var(--text-muted);font-size:0.82rem;">'
           + msgHtml + '</div>');
       }
+    }
+  };
+
+  // Sprint 17 Bundle 4: preflight estimate mode. Shares most of the
+  // request-building logic with runScanZips — factored into a helper
+  // so the two entry points stay in sync. estimate=true adds the
+  // estimate_only flag and renders a preview card on success instead
+  // of kicking off the full pipeline.
+  function _buildScanZipsBody(estimate) {
+    var ta = $('scan-zips-list');
+    var zips = parseZipInput(ta && ta.value);
+    if (!zips.length) return null;
+    var topNEl = $('scan-zips-top-n');
+    var topN = parseInt((topNEl || {}).value, 10);
+    if (!topN || topN < 1) topN = 10;
+    if (topN > 1000) topN = 1000;
+    var preset = ($('scan-zips-preset') || {}).value || undefined;
+    var mode = ($('scan-zips-mode') || {}).value || undefined;
+    var propertyTypeEl = $('scan-zips-property-type');
+    var propertyType = propertyTypeEl ? (propertyTypeEl.value || null) : 'multi-family';
+    var minPriceRaw = parseFloat(($('scan-zips-min-price') || {}).value);
+    var maxPriceRaw = parseFloat(($('scan-zips-max-price') || {}).value);
+    var minPrice = (isFinite(minPriceRaw) && minPriceRaw > 0) ? minPriceRaw : undefined;
+    var maxPrice = (isFinite(maxPriceRaw) && maxPriceRaw > 0) ? maxPriceRaw : undefined;
+    if (maxPrice === undefined && !preset && JOSE_THRESHOLDS && JOSE_THRESHOLDS.priceCeilingDuplex) {
+      maxPrice = JOSE_THRESHOLDS.priceCeilingDuplex;
+    }
+    return {
+      zips: zips, top_n_per_zip: topN, preset_name: preset, mode: mode,
+      min_price: minPrice, max_price: maxPrice, property_type: propertyType,
+      estimate_only: !!estimate,
+    };
+  }
+
+  function _renderEstimateCard(data) {
+    var sumEl = $('scan-zips-summary');
+    if (!sumEl) return;
+    var est = data.estimate || {};
+    var summary = data.summary || {};
+    var costs = est.projected_cost_usd || {};
+    var wall = est.projected_wall_clock || {};
+    var recMode = est.recommended_mode || 'stream';
+    var recBadge = recMode === 'batch'
+      ? '<span style="background:rgba(99,102,241,0.18);color:#6366f1;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:700;margin-left:6px;">Queue recommended (50% off)</span>'
+      : '<span style="background:rgba(22,163,74,0.18);color:#16a34a;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:700;margin-left:6px;">Streaming recommended</span>';
+    var html = ''
+      + '<div id="scan-zips-estimate-card" style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:6px;background:rgba(99,102,241,0.04);font-size:0.85rem;">'
+      + '<div style="font-weight:700;margin-bottom:8px;">Preflight estimate' + recBadge + '</div>'
+      + '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;">'
+      +   '<span style="color:var(--text-muted);">Survivors across ' + escapeHtml(String(summary.zips_scanned || 0)) + ' ZIPs</span>'
+      +   '<strong style="font-variant-numeric:tabular-nums;">' + escapeHtml(String(summary.survivors || 0)) + ' URLs</strong>'
+      +   '<span style="color:var(--text-muted);">LLM calls projected</span>'
+      +   '<strong style="font-variant-numeric:tabular-nums;">' + escapeHtml(String(est.projected_llm_calls || 0))
+      +     ' <span style="color:var(--text-muted);font-weight:normal;">(' + escapeHtml(String(est.projected_pre_llm_skips || 0)) + ' pre-LLM skipped)</span></strong>'
+      +   '<span style="color:var(--text-muted);">Projected cost</span>'
+      +   '<strong style="font-variant-numeric:tabular-nums;">'
+      +     'Stream <span style="color:#dc2626;">~$' + Number(costs.stream || 0).toFixed(2) + '</span>'
+      +     ' &middot; Queue <span style="color:#16a34a;">~$' + Number(costs.batch || 0).toFixed(2) + '</span>'
+      +   '</strong>'
+      +   '<span style="color:var(--text-muted);">Wall clock (after Redfin)</span>'
+      +   '<strong>Stream ~' + escapeHtml(String(wall.stream_min || 0)) + ' min &middot; Queue ' + escapeHtml(String(wall.batch || 'up to 24hr')) + '</strong>'
+      + '</div>'
+      + '<div style="margin-top:8px;font-size:0.75rem;color:var(--text-muted);">Estimates assume Jose\'s strict-gate profile (~30% pre-LLM skip) and steady-state cache hits. Real cost varies ±15%.</div>'
+      + '</div>';
+    // Replace in place so repeated estimates don't stack.
+    var existing = document.getElementById('scan-zips-estimate-card');
+    if (existing) { existing.outerHTML = html; }
+    else { sumEl.insertAdjacentHTML('beforeend', html); }
+    sumEl.style.display = '';
+  }
+
+  window.runScanZipsEstimate = async function () {
+    var errEl = $('scan-zips-error');
+    var loadEl = $('scan-zips-loading');
+    var sumEl = $('scan-zips-summary');
+    var btn = $('scan-zips-estimate');
+    var submitBtn = $('scan-zips-submit');
+    if (errEl) errEl.style.display = 'none';
+    var body = _buildScanZipsBody(true);
+    if (!body) {
+      if (errEl) { errEl.textContent = 'Paste at least one 5-digit ZIP.'; errEl.style.display = 'block'; }
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Estimating…'; }
+    if (submitBtn) submitBtn.disabled = true;
+    if (loadEl) { loadEl.style.display = 'block'; loadEl.textContent = 'Running Redfin search phase for estimate…'; }
+    try {
+      var resp = await fetch('/api/scan-zips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var data = await resp.json();
+      if (!resp.ok) {
+        var msg = (data.error && data.error.message) || 'Estimate failed.';
+        if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+        return;
+      }
+      // Review P2 on PR #50: swap order so empty scans don't render
+      // a stale summary shell before the error banner.
+      if (data.status === 'empty' || !data.estimate) {
+        if (errEl) { errEl.textContent = 'No survivors after filters — nothing to estimate.'; errEl.style.display = 'block'; }
+        return;
+      }
+      renderScanSummary(data.summary, data.per_zip, data.rejected, data.mode);
+      _renderEstimateCard(data);
+    } catch (e) {
+      if (errEl) { errEl.textContent = 'Network error. Try again.'; errEl.style.display = 'block'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Estimate'; }
+      if (submitBtn) submitBtn.disabled = false;
+      if (loadEl) loadEl.style.display = 'none';
     }
   };
 
