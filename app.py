@@ -791,6 +791,11 @@ def _extract_redfin(soup) -> dict | None:
         "sqft": None, "lotSize": None, "yearBuilt": None, "propertyType": None,
         "zestimate": None, "rentZestimate": None, "taxHistory": [],
         "annualTax": None, "hoaFee": 0, "description": None, "imageUrl": None,
+        # Sprint 16.6 Bundle 1A: capture numberOfUnits from ld+json so the
+        # batch pipeline stops defaulting to duplex math for listings that
+        # explicitly tag their unit count. Populated below from top-level +
+        # mainEntity ld+json blocks and a regex fallback over the JS blob.
+        "numberOfUnits": None,
     }
 
     # Helper to extract address from a schema.org object
@@ -868,6 +873,13 @@ def _extract_redfin(soup) -> dict | None:
             result["beds"] = result["beds"] or item.get("numberOfRooms") or item.get("numberOfBedrooms")
             result["baths"] = result["baths"] or item.get("numberOfBathroomsTotal") or item.get("numberOfFullBathrooms")
             result["yearBuilt"] = result["yearBuilt"] or item.get("yearBuilt")
+            # Sprint 16.6 Bundle 1A: numberOfUnits at listing top level.
+            if not result["numberOfUnits"]:
+                _nu = item.get("numberOfUnits")
+                if isinstance(_nu, (int, float)):
+                    result["numberOfUnits"] = int(_nu)
+                elif isinstance(_nu, str) and _nu.isdigit():
+                    result["numberOfUnits"] = int(_nu)
             floor_size = item.get("floorSize", {})
             if not result["sqft"]:
                 if isinstance(floor_size, dict):
@@ -892,6 +904,13 @@ def _extract_redfin(soup) -> dict | None:
                     result["beds"] = result["beds"] or main_entity.get("numberOfBedrooms") or main_entity.get("numberOfRooms")
                     result["baths"] = result["baths"] or main_entity.get("numberOfBathroomsTotal") or main_entity.get("numberOfFullBathrooms")
                     result["yearBuilt"] = result["yearBuilt"] or main_entity.get("yearBuilt")
+                    # Sprint 16.6 Bundle 1A: numberOfUnits at mainEntity level.
+                    if not result["numberOfUnits"]:
+                        _nu = main_entity.get("numberOfUnits")
+                        if isinstance(_nu, (int, float)):
+                            result["numberOfUnits"] = int(_nu)
+                        elif isinstance(_nu, str) and _nu.isdigit():
+                            result["numberOfUnits"] = int(_nu)
                     me_floor = main_entity.get("floorSize", {})
                     if not result["sqft"]:
                         if isinstance(me_floor, dict):
@@ -972,6 +991,24 @@ def _extract_redfin(soup) -> dict | None:
             m = re.search(r'"yearBuilt"\s*:\s*\{[^}]*"value"\s*:\s*(\d{4})', text)
             if m:
                 result["yearBuilt"] = int(m.group(1))
+
+        # Sprint 16.6 Bundle 1A: numberOfUnits regex fallback on the JS blob.
+        # Accepts both plain int (`"numberOfUnits": 3`) and object-wrapped
+        # (`"numberOfUnits": {"value": 3}` / `{"amount": 3}`) shapes — mirrors
+        # the pattern used for beds/baths in PR #30. Cap at 20 units to avoid
+        # spurious matches on unrelated counters.
+        if not result["numberOfUnits"]:
+            m = re.search(
+                r'"numberOfUnits"\s*:\s*(?:\{[^}]*"(?:value|amount)"\s*:\s*)?(\d+)',
+                text,
+            )
+            if m:
+                try:
+                    _nu = int(m.group(1))
+                    if 1 <= _nu <= 20:
+                        result["numberOfUnits"] = _nu
+                except ValueError:
+                    pass
 
         if not result["annualTax"]:
             m = re.search(r'"taxInfo"\s*:\s*\{[^}]*"amount"\s*:\s*(\d+)', text)
