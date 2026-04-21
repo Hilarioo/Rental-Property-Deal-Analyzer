@@ -774,13 +774,17 @@ def compute_property_metrics(
     # (default false). When off, the combo shows as YELLOW and does not
     # short-circuit TOPSIS ranking — the row remains eligible for batch
     # rank alongside cleaner listings.
+    # Sprint 16: same pattern for units-unknown via
+    # `jose.enforceUnitsKnownAsHardFail` (default false). Removes the #1
+    # source of blanket RED-hard-fail noise in Scan ZIPs results.
     enforce_old_gates = bool((_spec.jose or {}).get("enforceOldHouseGates"))
+    enforce_units_known = bool((_spec.jose or {}).get("enforceUnitsKnownAsHardFail"))
     hard_fail_reasons = [
         is_excluded, has_flat_roof, has_unpermitted_adu,
         (is_pre1978_gal and enforce_old_gates),
         u <= 1,  # SFR without legal ADU
         (qualifying_income > 0 and (piti / qualifying_income) > 0.55),
-        bool(hard_fail_units_unknown),
+        (bool(hard_fail_units_unknown) and enforce_units_known),
         geospatial_hard_fail,
     ]
     hard_fail = any(hard_fail_reasons)

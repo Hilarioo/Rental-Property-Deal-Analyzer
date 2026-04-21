@@ -20,6 +20,7 @@
     "roofAgeYellow": 15,
     "enforceOldHouseGates": false,
     "enforceZipTierAsHardFail": false,
+    "enforceUnitsKnownAsHardFail": false,
     "schoolRatingMinimum": 4,
     "schoolRatingYellowThreshold": 5,
     "schoolRatingGreenThreshold": 7,

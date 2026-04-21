@@ -90,7 +90,7 @@
     "expected_verdict": "red"
   },
   {
-    "name": "RED hardFailUnitsUnknown + multi path",
+    "name": "Sprint 16: hardFailUnitsUnknown + multi path — yellow by default (enforceUnitsKnownAsHardFail=false)",
     "ctx": {
       "price": 500000, "effectiveRehab": 30000, "cashToClose": 40000,
       "netPiti": 2400, "piti": 2400, "qualifyingIncome": 5714,
@@ -99,7 +99,7 @@
       "hasFlatRoof": false, "hasUnpermittedAdu": false,
       "isPre1978WithGalvanized": false, "hardFailUnitsUnknown": true
     },
-    "expected_verdict": "red"
+    "expected_verdict": "yellow"
   },
   {
     "name": "RED isExcludedByZipTier",
