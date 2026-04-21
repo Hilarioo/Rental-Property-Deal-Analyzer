@@ -3029,7 +3029,14 @@ async def batch_submit_async(request: Request):
 # URL validator, loopback-only profile. Must NOT echo profile PII
 # (income, cash, credit) in any response.
 # =====================================================================
-_SCAN_ZIPS_MAX_ZIPS = 20
+# Sprint 16.11: cap raised 20 → 100. Bundle 2's per-ZIP streaming
+# architecture means each ZIP is an independent background sub-batch, so
+# the old 20-cap's premise (one combined sync envelope) no longer
+# applies. At 100 ZIPs: Redfin-phase ~25 min under Semaphore(3) + 100
+# concurrent _run_sync_batch background tasks — still within typical
+# Anthropic per-minute rate limits. Above ~100 the concurrent LLM fan-
+# out risks tripping rate limits and needs server-side throttling.
+_SCAN_ZIPS_MAX_ZIPS = 100
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
 # Sprint 16.9: cap raised 50 → 1000. Redfin's own lazy-load still caps
 # rendered cards per ZIP around 150-250, and `top_n` is applied AFTER

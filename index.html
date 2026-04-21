@@ -7860,9 +7860,10 @@
     };
 
     // Stagger poller starts so we don't hit /api/batch-status with N
-    // simultaneous requests on t=0. At 300ms spacing, 20 ZIPs spread
-    // their initial polls across 6s — SQLite writer-lock contention
+    // simultaneous requests on t=0. At 300ms spacing, 100 ZIPs spread
+    // their initial polls across 30s — SQLite writer-lock contention
     // from the backend workers has time to ease between reads.
+    // (Sprint 16.11 bumped the ZIP cap 20 → 100 to match.)
     var pollerIndex = 0;
     entries.forEach(function (entry) {
       if (entry.batch_id && entry.clientState === 'pending') {
