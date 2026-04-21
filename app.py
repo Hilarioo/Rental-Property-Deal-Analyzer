@@ -1283,37 +1283,43 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
         # lots under a multi-family filter.
         if (not beds) and (not sqft) and (price < 200_000 or not l.get("address")):
             return False
-        # Property-type enforcement — strict per Sprint 15.5. Redfin's URL
-        # filter (`property-type=multifamily`) sometimes bypasses and
-        # returns SFR / condo / land rows anyway. The old check had two
-        # leaks:
-        #   1. `if ptype and ...` short-circuited false when propertyType
-        #      was null/missing, passing everything through.
-        #   2. A row with propertyType="home" (generic) contained none of
-        #      the rejection keywords AND none of the multi keywords, so
-        #      the `and`-chained check never triggered.
-        # New policy for `multi-family`: explicit allowlist — accept ONLY
-        # when propertyType contains a known multi-unit keyword. Reject
-        # everything else including null.
+        # Property-type enforcement — Sprint 16.2: relaxed post Sprint 15.5.
+        #
+        # History:
+        #   - Sprint 15.5 (PR #29) made this strict: allowlist-only for
+        #     multi-family, reject null.
+        #   - That broke Scan ZIPs for any ZIP Redfin returned >0 listings
+        #     for: the LIST-page scraper (_REDFIN_SEARCH_JS) never populates
+        #     propertyType — only the individual listing page does. So all
+        #     rows came through with propertyType=null and got rejected
+        #     wholesale. User reported 0 survivors on 95815 + 95205 even
+        #     though Redfin returned 38 multi-family listings.
+        #
+        # Current policy for `multi-family`:
+        #   1. REJECT when propertyType contains a known non-multi keyword
+        #      (SFR / condo / land / etc.) — defense against Redfin's URL
+        #      filter leaking. These rows only reach us if propertyType
+        #      was populated (single-URL analysis path, or future scraper
+        #      improvements); when set, trust the label.
+        #   2. ACCEPT when propertyType is null/empty/unknown-keyword AND
+        #      Redfin's URL filter was applied (we navigated to
+        #      /filter/property-type=multifamily). The individual listing
+        #      page scraper (batch/pipeline.py) re-populates propertyType
+        #      per URL and the verdict's SFR hard-fail will catch any real
+        #      SFRs that leaked through. The "likely lot" heuristic above
+        #      (beds=0 + sqft=0 + price<200k) already catches vacant lots.
         if filter_ptype:
             ptype = (l.get("propertyType") or "").lower()
             if filter_ptype == "multi-family":
-                MULTI_KEYWORDS = ("multi", "duplex", "triplex", "fourplex",
-                                  "2-4 unit", "2 unit", "3 unit", "4 unit")
                 SFR_LAND_KEYWORDS = ("single family", "single-family", "single_family",
                                      "sfr", "sfh", "land", "lot", "vacant",
                                      "condo", "townhouse", "townhome",
                                      "manufactured", "mobile", "mfh")
-                is_multi = any(k in ptype for k in MULTI_KEYWORDS)
-                is_reject = any(k in ptype for k in SFR_LAND_KEYWORDS)
+                is_reject = ptype and any(k in ptype for k in SFR_LAND_KEYWORDS)
                 if is_reject:
                     return False
-                if not is_multi:
-                    # Unknown or missing propertyType — reject rather than
-                    # silently admit. If the Redfin URL filter was doing
-                    # its job, this row shouldn't be here; if it wasn't,
-                    # we can't be sure it's multi without evidence.
-                    return False
+                # Null / unknown-keyword propertyType: accept. Downstream
+                # per-URL scrape will classify and the verdict will flag.
             elif filter_ptype == "house":
                 # Reject obvious non-houses (condos, townhomes, land).
                 if "land" in ptype or "lot" in ptype or "manufactured" in ptype:
