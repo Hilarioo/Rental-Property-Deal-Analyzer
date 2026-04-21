@@ -399,6 +399,121 @@ def _looks_excluded(address: str | None) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Sprint 17 Bundle 1: pre-LLM hard-fail skip
+# --------------------------------------------------------------------------
+# The LLM call is the single most expensive step per listing (~$0.021
+# steady-state cached). For scans with strict profile gates (price
+# ceiling, commute radius, excluded markets), ~30-50% of listings
+# RED-fail on structural grounds that can be determined from scraped
+# data alone — no LLM needed.
+#
+# The verdict engine (batch/verdict.py:compute_jose_verdict) already
+# evaluates these gates post-LLM. This helper moves the subset that
+# doesn't need LLM-derived fields upstream, so we can short-circuit
+# the LLM call when we know the answer will be RED regardless.
+#
+# Conservative design: only skip when the RED verdict is deterministic
+# given the scraper output + profile gates that are explicitly ENABLED
+# via their enforce*AsHardFail toggles. If a toggle is off, the user
+# opted into broader scanning, so we still run LLM (the YELLOW-vs-
+# RED nuance that would emerge from the LLM analysis matters).
+
+def _pre_llm_hard_fail(
+    *,
+    scrape: dict[str, Any],
+    enrichment_row: dict[str, Any] | None,
+    zip_code: str | None,
+) -> dict[str, Any] | None:
+    """Return ``{"reason": str, "gate": str}`` if the listing can be
+    RED-verdicted from scrape + profile alone; ``None`` otherwise.
+
+    Caller short-circuits the LLM call on non-None, uses
+    ``default_llm_analysis(failed=False)`` as a stub, and the
+    downstream verdict emits RED with the structural reason.
+    """
+    T = _spec.jose or {}
+
+    # 1. Excluded ZIP / city — always enforced; these are explicit
+    #    "never show me this market" entries in spec.zipTiers.
+    tier = classify_zip_tier(zip_code) if zip_code else None
+    if tier == "excluded":
+        return {
+            "reason": f"ZIP {zip_code} on excluded list",
+            "gate": "excluded_zip",
+        }
+    addr = scrape.get("address") or ""
+    if _looks_excluded(addr):
+        return {
+            "reason": f"Address in excluded city — {addr}",
+            "gate": "excluded_city",
+        }
+
+    # 2. Single-unit property — FHA 2-4 unit ineligible. Only hard-fail
+    #    when units is KNOWN to be 1 (not None-defaulted). units_source
+    #    indicates how the scraper determined it; a real signal (not a
+    #    fallback default) means we're confident.
+    units = scrape.get("units")
+    units_source = scrape.get("units_source") or ""
+    if units == 1 and units_source:
+        # Only hard-fail pre-LLM when the user has enabled strict
+        # enforcement OR we have a non-default source. The toggle
+        # guards against misclassifying an ambiguous listing.
+        if T.get("enforceUnitsKnownAsHardFail") or units_source not in ("", "default"):
+            return {
+                "reason": "Single-unit property — FHA 2-4 unit ineligible",
+                "gate": "single_unit",
+            }
+
+    # 3. Price ceiling (unit-adjusted). Need a concrete unit count to
+    #    pick the right ceiling — skip this gate when units is None
+    #    (duplex-assumed math would run downstream; let LLM speak).
+    price = scrape.get("price")
+    if isinstance(price, (int, float)) and price > 0 and isinstance(units, int):
+        if units >= 3:
+            ceiling = T.get("priceCeilingTriplex")
+        else:
+            ceiling = T.get("priceCeilingDuplex")
+        # Apply a 10% overage tolerance — the verdict uses a
+        # classify_overage band (green/yellow/red), so we should only
+        # skip the LLM when we're confidently above the RED threshold
+        # (not just over green). ceiling × 1.10 is the natural RED
+        # boundary per _classify_overage.
+        if isinstance(ceiling, (int, float)) and ceiling > 0 and price > ceiling * 1.10:
+            return {
+                "reason": (
+                    f"Price ${int(price):,} exceeds "
+                    f"{'triplex+' if (units or 0) >= 3 else 'duplex'} ceiling "
+                    f"${int(ceiling):,} by more than 10%"
+                ),
+                "gate": "price_ceiling",
+            }
+
+    # 4. Geospatial — only when enforce toggle is on AND we have
+    #    coordinates from enrichment.
+    enforce_geo = (_spec.profile_raw or {}).get("location", {}).get(
+        "enforceMaxMilesAsHardFail", True
+    )
+    if enforce_geo and enrichment_row:
+        lat = enrichment_row.get("lat")
+        lng = enrichment_row.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            # Reuse the verdict helper to stay in lockstep with the
+            # post-LLM path. `_geospatial_fail` returns a reason string
+            # when the listing exceeds maxMilesHard OR hits a
+            # conditional-city threshold.
+            from .verdict import _geospatial_fail as _geo_fail
+            geo_reason = _geo_fail({
+                "lat": lat,
+                "lng": lng,
+                "address": addr,
+            })
+            if geo_reason:
+                return {"reason": geo_reason, "gate": "geospatial"}
+
+    return None
+
+
+# --------------------------------------------------------------------------
 # Scrape wrapper (delegates to existing app._fetch_and_parse_redfin path)
 # --------------------------------------------------------------------------
 
@@ -1222,6 +1337,22 @@ async def process_url(
             db_path=db_path,
         )
 
+    # Sprint 17 Bundle 1: pre-LLM hard-fail skip.
+    # Run AFTER the cache check (fresh cache is always cheaper than
+    # skipping — cached data is real, skip data is stubbed defaults)
+    # but BEFORE committing to an LLM call. When the structural gate
+    # fires, we stub llm_analysis with defaults so the downstream
+    # verdict math runs cleanly and emits RED with the known reason.
+    # The `_skipped_pre_llm` metadata lets the UI show "LLM skipped
+    # — listing failed structural gate" instead of a silent gap.
+    pre_llm_skip = None
+    if not (not stale and cached and cached.get("llm_analysis")):
+        pre_llm_skip = _pre_llm_hard_fail(
+            scrape=scrape,
+            enrichment_row=enrichment_row,
+            zip_code=zip_code,
+        )
+
     # LLM extraction — cache hit branch.
     if not stale and cached and cached.get("llm_analysis"):
         try:
@@ -1232,6 +1363,21 @@ async def process_url(
         llm_ok = True
         final_stale_reason = None
         analyzed_at = cached.get("llm_analyzed_at")
+    elif pre_llm_skip is not None:
+        # Pre-LLM skip — structural gate fires RED regardless of LLM
+        # findings. Stub defaults (zero rehab, no risk flags); verdict
+        # will emit the structural reason.
+        llm_analysis = llm_mod.default_llm_analysis(failed=False)
+        llm_analysis["_skipped_pre_llm"] = pre_llm_skip["reason"]
+        llm_analysis["_skipped_gate"] = pre_llm_skip["gate"]
+        llm_tokens = {"input": 0, "cached_input_read": 0, "output": 0, "skipped": True}
+        llm_ok = True
+        final_stale_reason = None
+        analyzed_at = now_iso
+        logger.info(
+            "pre_llm_skip url=%s gate=%s reason=%s",
+            url, pre_llm_skip["gate"], pre_llm_skip["reason"][:80],
+        )
     else:
         llm_result = await llm_mod.extract_property(
             client=http_client,

@@ -455,3 +455,65 @@ def test_coerce_unitsInferred_none_value_preserved(coerce_analysis):
     out = coerce_analysis({"unitsInferred": {"value": None, "confidence": 0.3}})
     assert out["unitsInferred"]["value"] is None
     assert out["unitsInferred"]["confidence"] == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Sprint 17 Bundle 1 — vision output field removed from schema
+# ---------------------------------------------------------------------------
+# Contract: the LLM schema no longer requests vision.* fields. The LLM
+# still reads property photos (Anthropic Vision) to inform roofAgeYears,
+# rehabBand, and riskFlags, but we stop paying for the ~250 output
+# tokens of prose describing what it saw. Zero downstream consumers
+# existed for those fields (audit: no refs in verdict.py / ranking.py /
+# pipeline.py / index.html).
+
+
+def test_default_analysis_has_no_vision_field():
+    """Bundle 1: default_llm_analysis must not carry the vision object —
+    removed to cut output token cost."""
+    from batch import llm
+    d = llm.default_llm_analysis(failed=False)
+    assert "vision" not in d, (
+        "vision field should be removed from the schema; remove from "
+        "default_llm_analysis too so the coerce merge doesn't re-inject it"
+    )
+
+
+def test_default_analysis_preserves_other_fields():
+    """Bundle 1: removing vision must not break any sibling field."""
+    from batch import llm
+    d = llm.default_llm_analysis(failed=False)
+    # Core fields consumed downstream by verdict/ranking:
+    for key in (
+        "roofAgeYears", "rehabBand", "motivationSignals", "riskFlags",
+        "insuranceUplift", "aduPotential", "unitsInferred",
+        "narrativeForRanking",
+    ):
+        assert key in d, f"missing {key} after vision removal"
+    # rehabBand still has all 6 categories:
+    for cat in ("roof", "plumbing", "electrical", "cosmetic", "hvac", "other"):
+        assert cat in d["rehabBand"], f"rehabBand missing {cat}"
+    # riskFlags still has all 5 flags:
+    for flag in (
+        "foundationConcern", "galvanizedPlumbing", "knobAndTubeElectrical",
+        "flatRoof", "unpermittedAdu",
+    ):
+        assert flag in d["riskFlags"], f"riskFlags missing {flag}"
+
+
+def test_coerce_analysis_ignores_vision_if_llm_emits_it(coerce_analysis):
+    """Bundle 1: if a stale LLM response still contains a vision object
+    (maybe from an older cache), coerce should NOT crash — just leave
+    it alone or ignore it. The removed-from-schema prompt tells the
+    LLM not to emit it going forward, but defensive resilience matters
+    for in-flight/cached responses during the transition."""
+    out = coerce_analysis({
+        "vision": {"exteriorCondition": "stale data from old cache"},
+        "rehabBand": {"roof": {"low": 1000, "mid": 2000, "high": 3000}},
+    })
+    # Should not throw, should not add vision to the canonical schema:
+    assert "rehabBand" in out
+    # If vision is passed through as-is (belt-and-suspenders), that's
+    # fine — downstream code was already ignoring it. If filtered out,
+    # also fine. What we MUST NOT do is crash.
+    # (No assertion on vision presence/absence — either is acceptable.)

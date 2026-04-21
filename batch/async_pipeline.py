@@ -254,6 +254,53 @@ async def _prepare_url(
             cached_analysis = None
             cache_hit = False
 
+    # Sprint 17 Bundle 1: pre-LLM hard-fail skip (async path). Mirror
+    # of the sync check in pipeline.py:process_url — when structural
+    # gates (price ceiling / commute radius / excluded market / single-
+    # unit) deterministically RED-fail the listing, skip the LLM call
+    # and stub defaults. Runs AFTER the cache check so a cached real
+    # analysis always wins (more informative than stubbed zeros).
+    pre_llm_skip = None
+    if not cache_hit:
+        from .pipeline import _pre_llm_hard_fail
+        pre_llm_skip = _pre_llm_hard_fail(
+            scrape=scrape,
+            enrichment_row=enrichment_row,
+            zip_code=zip_code,
+        )
+
+    if pre_llm_skip is not None:
+        stub = llm_mod.default_llm_analysis(failed=False)
+        stub["_skipped_pre_llm"] = pre_llm_skip["reason"]
+        stub["_skipped_gate"] = pre_llm_skip["gate"]
+        logger.info(
+            "pre_llm_skip url=%s gate=%s reason=%s",
+            url, pre_llm_skip["gate"], pre_llm_skip["reason"][:80],
+        )
+        return {
+            "url": url,
+            "url_hash": uh,
+            "canonical_url": canonical,
+            "scrape_ok": True,
+            "scrape_error": None,
+            "scrape": scrape,
+            "zip_code": zip_code,
+            "address": scrape.get("address"),
+            "price": scrape.get("price"),
+            "enrichment": enrichment_row,
+            # Treat as cache_hit=False but ready_for_metrics=True: the
+            # downstream finalize path sees the stubbed analysis and
+            # runs compute_property_metrics normally. verdict emits RED
+            # with the structural reason. No Anthropic call made.
+            "cache_hit": False,
+            "cache_stale_reason": "pre_llm_skip",
+            "llm_analysis": stub,
+            "cached_analyzed_at": None,
+            "ready_for_metrics": True,
+            "prepared_at": now_iso,
+            "_llm_skipped": True,
+        }
+
     return {
         "url": url,
         "url_hash": uh,
@@ -665,8 +712,21 @@ async def submit_async_batch(
         prepared = await asyncio.gather(*(_worker(u) for u in deduped))
 
     cache_hits = [p for p in prepared if p.get("cache_hit")]
-    needs_llm = [p for p in prepared if p.get("scrape_ok") and not p.get("cache_hit")]
+    # Sprint 17 Bundle 1: exclude pre-LLM-skipped rows from needs_llm.
+    # Those have scrape_ok=True + cache_hit=False + _llm_skipped=True
+    # and carry a stubbed llm_analysis — the finalize path treats them
+    # the same as cache hits (ready_for_metrics=True, no provider call).
+    needs_llm = [
+        p for p in prepared
+        if p.get("scrape_ok") and not p.get("cache_hit") and not p.get("_llm_skipped")
+    ]
     skipped = [p for p in prepared if not p.get("scrape_ok")]
+    pre_llm_skipped = [p for p in prepared if p.get("_llm_skipped")]
+    if pre_llm_skipped:
+        logger.info(
+            "async batch: %d rows pre-LLM-skipped (structural gates), %d need LLM, %d cache hits",
+            len(pre_llm_skipped), len(needs_llm), len(cache_hits),
+        )
 
     # Insert the batches pending row up-front so the poll endpoint can
     # find it even if the provider call itself blows up. input_count is the

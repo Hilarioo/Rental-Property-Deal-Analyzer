@@ -116,7 +116,6 @@ Schema (emit exactly this shape; if undetermined, use default and lower confiden
   "insuranceUplift":     { "suggested": float, "reason": string },
   "aduPotential":        { "present": bool, "description": string },
   "unitsInferred":       { "value": int|null, "confidence": float, "reasoning": string },
-  "vision":              { "exteriorCondition": string, "roofCondition": string, "yardCondition": string, "observations": string, "hazards": [string] },
   "narrativeForRanking": string
 }
 
@@ -189,10 +188,13 @@ def default_llm_analysis(failed: bool = False) -> dict[str, Any]:
         # narrative. Populated only when the listing text provides evidence;
         # defaults to null so downstream code treats it as "no signal".
         "unitsInferred": {"value": None, "confidence": 0.0, "reasoning": ""},
-        "vision": {
-            "exteriorCondition": "unknown", "roofCondition": "unknown",
-            "yardCondition": "unknown", "observations": "", "hazards": [],
-        },
+        # Sprint 17 Bundle 1: `vision` object removed from schema. The
+        # LLM still reads photos (Anthropic Vision) to fill roofAgeYears,
+        # rehabBand.*, and riskFlags.* — we just stop asking it to emit
+        # 250+ output tokens of prose describing what it saw, because
+        # no downstream consumer ever read those fields. Audit found
+        # zero references in verdict.py / ranking.py / pipeline.py /
+        # index.html.
         "narrativeForRanking": "",
         "_failed": bool(failed),
     }
