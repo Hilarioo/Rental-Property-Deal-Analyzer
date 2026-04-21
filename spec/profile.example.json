@@ -19,6 +19,7 @@
     "maxDtiPct": 45,
     "roofAgeYellow": 15,
     "enforceOldHouseGates": false,
+    "enforceZipTierAsHardFail": false,
     "schoolRatingMinimum": 4,
     "schoolRatingYellowThreshold": 5,
     "schoolRatingGreenThreshold": 7,
