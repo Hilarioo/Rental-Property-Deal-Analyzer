@@ -299,6 +299,13 @@ async def _prepare_url(
             "ready_for_metrics": True,
             "prepared_at": now_iso,
             "_llm_skipped": True,
+            # Review-note P1 on PR #47: sync path sets llm_ok=True for
+            # pre-LLM-skipped rows (we successfully produced analysis;
+            # it's just stubbed). Async path must match — otherwise
+            # _finalize_row at line ~345 defaults it to False via the
+            # `bool(prepared.get("cache_hit"))` fallback, causing
+            # downstream sync/async divergence on "did analysis run?"
+            "llm_ok": True,
         }
 
     return {

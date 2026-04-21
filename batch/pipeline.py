@@ -435,6 +435,10 @@ def _pre_llm_hard_fail(
 
     # 1. Excluded ZIP / city — always enforced; these are explicit
     #    "never show me this market" entries in spec.zipTiers.
+    #    Note: `classify_zip_tier` covers ONLY the excludedZips list
+    #    (zip-code match); `_looks_excluded` covers the excludedCities
+    #    list (city-substring match on the address). They're
+    #    complementary, not duplicate work.
     tier = classify_zip_tier(zip_code) if zip_code else None
     if tier == "excluded":
         return {
@@ -448,21 +452,25 @@ def _pre_llm_hard_fail(
             "gate": "excluded_city",
         }
 
-    # 2. Single-unit property — FHA 2-4 unit ineligible. Only hard-fail
-    #    when units is KNOWN to be 1 (not None-defaulted). units_source
-    #    indicates how the scraper determined it; a real signal (not a
-    #    fallback default) means we're confident.
+    # 2. Single-unit property — FHA 2-4 unit ineligible. verdict.py
+    #    hard-fails unconditionally on `u <= 1` (it's a FHA program
+    #    eligibility gate, not a preference toggle). We mirror that
+    #    here: if the scraper confidently detected 1 unit (any non-empty
+    #    units_source, meaning a real signal not a None-defaulted
+    #    duplex guess), skip the LLM.
+    #    Review-note P1 on PR #47: the previous code had a tautological
+    #    toggle check that was effectively ignored — the gate always
+    #    fired when units_source was truthy. Simplified to match the
+    #    verdict's actual semantics. The `enforceUnitsKnownAsHardFail`
+    #    toggle governs the UNKNOWN-units case (units=None → default
+    #    duplex math), not the known-single case.
     units = scrape.get("units")
     units_source = scrape.get("units_source") or ""
     if units == 1 and units_source:
-        # Only hard-fail pre-LLM when the user has enabled strict
-        # enforcement OR we have a non-default source. The toggle
-        # guards against misclassifying an ambiguous listing.
-        if T.get("enforceUnitsKnownAsHardFail") or units_source not in ("", "default"):
-            return {
-                "reason": "Single-unit property — FHA 2-4 unit ineligible",
-                "gate": "single_unit",
-            }
+        return {
+            "reason": "Single-unit property — FHA 2-4 unit ineligible",
+            "gate": "single_unit",
+        }
 
     # 3. Price ceiling (unit-adjusted). Need a concrete unit count to
     #    pick the right ceiling — skip this gate when units is None
@@ -488,19 +496,18 @@ def _pre_llm_hard_fail(
                 "gate": "price_ceiling",
             }
 
-    # 4. Geospatial — only when enforce toggle is on AND we have
-    #    coordinates from enrichment.
-    enforce_geo = (_spec.profile_raw or {}).get("location", {}).get(
-        "enforceMaxMilesAsHardFail", True
-    )
-    if enforce_geo and enrichment_row:
+    # 4. Geospatial — reuse the verdict helper which ALREADY gates on
+    #    `enforceMaxMilesAsHardFail` internally (verdict.py:93-95) and
+    #    also runs the conditional-city threshold check. Passing coords
+    #    through lets the helper produce a human-readable reason like
+    #    "Outside commute radius — 42 mi from home base exceeds 35 mi
+    #    hard cap". When the toggle is off, the helper returns None and
+    #    we proceed to the LLM (correct — user opted into broader
+    #    scanning).
+    if enrichment_row:
         lat = enrichment_row.get("lat")
         lng = enrichment_row.get("lng")
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
-            # Reuse the verdict helper to stay in lockstep with the
-            # post-LLM path. `_geospatial_fail` returns a reason string
-            # when the listing exceeds maxMilesHard OR hits a
-            # conditional-city threshold.
             from .verdict import _geospatial_fail as _geo_fail
             geo_reason = _geo_fail({
                 "lat": lat,
