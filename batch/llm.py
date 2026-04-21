@@ -255,21 +255,27 @@ def _coerce_analysis(raw: Any) -> dict[str, Any]:
     # confidence ∈ [0, 1]. A hallucinated "value=50" or "confidence=99"
     # would otherwise flow straight into DTI math and silently upset the
     # rental-offset → qualifying-income → verdict chain.
-    ui = base.get("unitsInferred") or {}
-    if isinstance(ui, dict):
-        try:
-            v = ui.get("value")
-            if v is None:
-                ui["value"] = None
-            else:
-                ui["value"] = max(1, min(20, int(float(v))))
-        except (TypeError, ValueError):
+    #
+    # Explicit `isinstance(ui, dict)` guard: if the LLM returned
+    # unitsInferred as a string/list/number (malformed output), the
+    # `or {}` fallback at the top doesn't help — a truthy non-dict value
+    # would reach the `.get("value")` call and throw AttributeError.
+    ui = base.get("unitsInferred")
+    if not isinstance(ui, dict):
+        ui = {"value": None, "confidence": 0.0, "reasoning": ""}
+    try:
+        v = ui.get("value")
+        if v is None:
             ui["value"] = None
-        try:
-            c = float(ui.get("confidence") or 0.0)
-            ui["confidence"] = max(0.0, min(1.0, c))
-        except (TypeError, ValueError):
-            ui["confidence"] = 0.0
+        else:
+            ui["value"] = max(1, min(20, int(float(v))))
+    except (TypeError, ValueError):
+        ui["value"] = None
+    try:
+        c = float(ui.get("confidence") or 0.0)
+        ui["confidence"] = max(0.0, min(1.0, c))
+    except (TypeError, ValueError):
+        ui["confidence"] = 0.0
     base["unitsInferred"] = ui
 
     return base

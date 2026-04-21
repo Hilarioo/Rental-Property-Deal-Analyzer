@@ -562,15 +562,19 @@ async def _scrape_url(url: str) -> dict[str, Any]:
             "duplex", "du-plex", "2-plex", "two plex",
             "2 unit", "two unit", "2-unit", "two-unit",
             "2 family", "two family",
-            # Narrative signals — a listing that says "live in one, rent
-            # the other" or "main house + cottage" is almost always a
-            # duplex-equivalent configuration.
-            "live in one rent", "rent the other",
+            # Narrative signals — listings that explicitly describe a
+            # live-in + rent-out config. Phrasing chosen to minimize
+            # false positives: "rent out the other" (not "rent the
+            # other" which could match "than rent the other comparable
+            # unit"); "2 separate dwellings" (not "2 dwellings" which
+            # matched "within 2 dwellings of the park"); review feedback
+            # on PR #41 flagged both.
+            "live in one rent", "rent out the other",
             "front and back house", "front/back house",
             "main house and cottage", "main + cottage",
             "2 on a lot", "two on a lot",
             "2 on one lot", "two houses on one",
-            "two separate dwellings", "2 dwellings",
+            "2 separate dwellings", "two separate dwellings",
         )
         # Check highest-count keywords first so a "duplex + ADU" ($3-unit)
         # listing doesn't stop at "duplex".
@@ -1240,6 +1244,39 @@ async def process_url(
         final_stale_reason = stale_reason or "new_url"
         analyzed_at = now_iso
 
+    # Sprint 16.6 Bundle 1C: LLM-inferred unit count backfill. MUST run
+    # BEFORE insurance/rent-comps/compute_property_metrics because every
+    # one of those functions reads `scrape.get("units")` — placing it
+    # after those calls would leave them seeing None and the LLM inference
+    # would only affect the stored metric, not the verdict (code-review
+    # P0 on PR #41 caught this exact bug).
+    #
+    # Gates:
+    #   - only fire when scraper-side units is still None
+    #   - only accept confidence ≥ 0.7 (matches prompt's "explicit phrasing"
+    #     calibration band; below this keeps hardFailUnitsUnknown flagged)
+    #   - cap at 4 units (FHA 2-4 unit owner-occupied ceiling)
+    #   - sanity-check against beds: a unit count > beds is incoherent
+    #     (each unit needs ≥1 bed). Blocks prompt-injected hallucinations
+    #     like "value: 4, confidence: 1.0" on a 2-bed SFR.
+    #
+    # Mutate scrape in place so downstream readers (rent comps, per-unit
+    # profile, compute_property_metrics, verdict ctx) automatically pick
+    # up the backfilled value.
+    if scrape.get("units") is None:
+        _ui = (llm_analysis.get("unitsInferred") or {})
+        _ui_val = _ui.get("value")
+        _ui_conf = float(_ui.get("confidence") or 0.0)
+        _beds_n = _as_int(scrape.get("beds")) or 0
+        if (
+            isinstance(_ui_val, int)
+            and 1 <= _ui_val <= 4
+            and _ui_conf >= 0.7
+            and (_beds_n == 0 or _ui_val <= _beds_n)
+        ):
+            scrape["units"] = _ui_val
+            scrape["units_source"] = f"llm_inferred_{_ui_conf:.2f}"
+
     # Insurance heuristic.
     insurance = compute_insurance(
         price=scrape.get("price"),
@@ -1249,25 +1286,6 @@ async def process_url(
         llm_uplift=((llm_analysis.get("insuranceUplift") or {}).get("suggested")),
         enrichment_missing=bool((enrichment_row or {}).get("enrichment_missing")),
     )
-
-    # Sprint 16.6 Bundle 1C: LLM-inferred unit count backfill. When the
-    # scrape pipeline (ld+json → regex → description keywords → address
-    # suffix → propertyType) still couldn't determine units, trust a
-    # HIGH-confidence LLM inference from the listing narrative. We require
-    # confidence ≥ 0.7 so a weak description hint doesn't paper over a
-    # genuinely ambiguous property; below that threshold the verdict keeps
-    # flagging units as unknown via hardFailUnitsUnknown.
-    #
-    # Mutate scrape in place so every downstream reader (rent comps,
-    # per-unit profile, compute_property_metrics, verdict ctx) sees the
-    # backfilled value without plumbing a separate parameter.
-    if scrape.get("units") is None:
-        _ui = (llm_analysis.get("unitsInferred") or {})
-        _ui_val = _ui.get("value")
-        _ui_conf = float(_ui.get("confidence") or 0.0)
-        if isinstance(_ui_val, int) and 1 <= _ui_val <= 4 and _ui_conf >= 0.7:
-            scrape["units"] = _ui_val
-            scrape["units_source"] = f"llm_inferred_{_ui_conf:.2f}"
 
     # Rent comps — look up real Redfin medians from rent_comps_cache (§A.1/§F.1).
     # Cache-first; on miss we fetch via the app-level Redfin scraper, persist

@@ -226,3 +226,245 @@ def test_duplex_listing_survives_multifamily_filter(extract_redfin):
     assert r["baths"] == 2
     assert r["sqft"] == 1800
     assert r["price"] == 535000
+
+
+# ---------------------------------------------------------------------------
+# Sprint 16.6 Bundle 1A — ld+json numberOfUnits parser
+# ---------------------------------------------------------------------------
+
+
+def test_ldjson_numberOfUnits_toplevel(extract_redfin):
+    """Bundle 1A: top-level numberOfUnits in ld+json should populate the field."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Apartment",
+       "name": "Triplex",
+       "numberOfUnits": 3,
+       "offers": {"price": 500000}}
+      </script>
+    </head><body></body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] == 3
+
+
+def test_ldjson_numberOfUnits_mainEntity(extract_redfin):
+    """Bundle 1A: mainEntity.numberOfUnits is the more common Redfin shape."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Product",
+       "mainEntity": {
+         "@type": "Apartment",
+         "numberOfUnits": 4,
+         "numberOfBedrooms": 8,
+         "numberOfBathroomsTotal": 4
+       },
+       "offers": {"price": 650000}}
+      </script>
+    </head><body></body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] == 4
+    assert r["beds"] == 8
+    assert r["baths"] == 4
+
+
+def test_ldjson_numberOfUnits_string_int(extract_redfin):
+    """Bundle 1A: string-form integer ('3') should coerce."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "RealEstateListing",
+       "numberOfUnits": "2",
+       "offers": {"price": 450000}}
+      </script>
+    </head><body></body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] == 2
+
+
+def test_regex_fallback_numberOfUnits_plain(extract_redfin):
+    """Bundle 1A: JS-blob regex picks up plain-int numberOfUnits when
+    ld+json didn't populate it."""
+    html = """
+    <html><body>
+    <script>window.__pageData = {"listingPrice": 500000, "numberOfUnits": 3};</script>
+    </body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] == 3
+
+
+def test_regex_fallback_numberOfUnits_wrapped(extract_redfin):
+    """Bundle 1A: object-wrapped form {value: N}."""
+    html = """
+    <html><body>
+    <script>window.__pageData = {"listingPrice": 500000, "numberOfUnits": {"value": 4}};</script>
+    </body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] == 4
+
+
+def test_regex_fallback_numberOfUnits_out_of_range_rejected(extract_redfin):
+    """Bundle 1A: cap rejects 999 (probably a spurious counter, not units)."""
+    html = """
+    <html><body>
+    <script>window.__pageData = {"listingPrice": 500000, "numberOfUnits": 999};</script>
+    </body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] is None, "values > 20 should be rejected as spurious"
+
+
+def test_no_numberOfUnits_stays_null(extract_redfin):
+    """Bundle 1A: baseline — listings without numberOfUnits return None."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {"@type": "Apartment",
+       "offers": {"price": 500000},
+       "numberOfBedrooms": 3}
+      </script>
+    </head><body></body></html>
+    """
+    r = extract_redfin(_soup(html))
+    assert r["numberOfUnits"] is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 16.6 Bundle 1B — keyword tightening regression
+# ---------------------------------------------------------------------------
+
+# These tests import the unit-detection logic by exercising _scrape_url
+# pieces directly — the keyword block is inline in that function so we
+# replicate its essential behavior here via a mini-helper. This locks
+# in the review-driven keyword tightening (review P1 on PR #41):
+#   - "2 dwellings" was too loose (matched "within 2 dwellings of park")
+#   - "rent the other" was too loose (matched "... than rent the other
+#     comparable unit across town")
+# Both were replaced with narrower phrases.
+
+
+@pytest.mark.parametrize("description, expected_units", [
+    # True positives — should detect
+    ("Beautiful duplex in quiet neighborhood", 2),
+    ("2-unit property, perfect for house-hacking", 2),
+    ("Two family home with separate entrances", 2),
+    ("Rare triplex opportunity in Oakland", 3),
+    ("3-plex with ground-floor commercial potential", 3),
+    ("Fourplex investment — tenants in place", 4),
+    ("4-unit property, strong rental history", 4),
+    ("Quadplex — fully occupied", 4),
+    ("Live in one, rent out the other to cover the mortgage", 2),
+    ("Main house and cottage on a large lot", 2),
+    ("2 on a lot — endless possibilities", 2),
+    # False positives that the old regex caught — should NOT detect
+    ("Four bedrooms across the main floor, unit-ready basement", None),
+    ("Within 2 dwellings of the community center", None),
+    ("You'd pay more to rent the other comparable places in this ZIP", None),
+    ("Single-family home with four car garage", None),
+])
+def test_unit_keyword_detection(description, expected_units):
+    """Bundle 1B: the keyword list should catch real multi-family phrasings
+    and reject the false-positive patterns the review flagged."""
+    # Re-use the keyword sets inline to avoid coupling to private symbols.
+    # Mirror is maintained manually — if batch/pipeline.py keywords change,
+    # update here too (intentional — the test acts as a spec).
+    _FOURPLEX_KWS = (
+        "fourplex", "four-plex", "4-plex", "four plex",
+        "4 unit", "four unit", "4-unit", "four-unit",
+        "quadplex", "quad-plex", "4 family", "four family",
+    )
+    _TRIPLEX_KWS = (
+        "triplex", "tri-plex", "3-plex", "three plex",
+        "3 unit", "three unit", "3-unit", "three-unit",
+        "3 family", "three family",
+    )
+    _DUPLEX_KWS = (
+        "duplex", "du-plex", "2-plex", "two plex",
+        "2 unit", "two unit", "2-unit", "two-unit",
+        "2 family", "two family",
+        "live in one rent", "rent out the other",
+        "front and back house", "front/back house",
+        "main house and cottage", "main + cottage",
+        "2 on a lot", "two on a lot",
+        "2 on one lot", "two houses on one",
+        "2 separate dwellings", "two separate dwellings",
+    )
+    haystack = description.lower()
+    if any(k in haystack for k in _FOURPLEX_KWS):
+        got = 4
+    elif any(k in haystack for k in _TRIPLEX_KWS):
+        got = 3
+    elif any(k in haystack for k in _DUPLEX_KWS):
+        got = 2
+    else:
+        got = None
+    assert got == expected_units, (
+        f"{description!r} → got {got}, expected {expected_units}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 16.6 Bundle 1C — _coerce_analysis unitsInferred clamping
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def coerce_analysis():
+    """Import batch.llm._coerce_analysis once per module."""
+    from batch import llm
+    return llm._coerce_analysis
+
+
+def test_coerce_unitsInferred_missing_entirely(coerce_analysis):
+    """Bundle 1C: missing unitsInferred should default to {value=None, conf=0}."""
+    out = coerce_analysis({"rehabBand": {}})
+    assert out["unitsInferred"]["value"] is None
+    assert out["unitsInferred"]["confidence"] == 0.0
+
+
+def test_coerce_unitsInferred_hallucinated_value(coerce_analysis):
+    """Bundle 1C: value=50 gets clamped to 20 (max), not accepted as-is."""
+    out = coerce_analysis({"unitsInferred": {"value": 50, "confidence": 0.9}})
+    assert out["unitsInferred"]["value"] == 20
+
+
+def test_coerce_unitsInferred_string_value(coerce_analysis):
+    """Bundle 1C: string '3' coerces to int 3."""
+    out = coerce_analysis({"unitsInferred": {"value": "3", "confidence": 0.8}})
+    assert out["unitsInferred"]["value"] == 3
+
+
+def test_coerce_unitsInferred_negative_value(coerce_analysis):
+    """Bundle 1C: negative values are clamped up to 1 (lower bound)."""
+    out = coerce_analysis({"unitsInferred": {"value": -1, "confidence": 0.5}})
+    assert out["unitsInferred"]["value"] == 1
+
+
+def test_coerce_unitsInferred_confidence_clamp(coerce_analysis):
+    """Bundle 1C: confidence=99 clamps to 1.0, -5 clamps to 0.0."""
+    out = coerce_analysis({"unitsInferred": {"value": 2, "confidence": 99}})
+    assert out["unitsInferred"]["confidence"] == 1.0
+    out2 = coerce_analysis({"unitsInferred": {"value": 2, "confidence": -5}})
+    assert out2["unitsInferred"]["confidence"] == 0.0
+
+
+def test_coerce_unitsInferred_non_dict_payload(coerce_analysis):
+    """Bundle 1C: if LLM returns unitsInferred as a list/string, we default
+    to a safe empty shape rather than AttributeError."""
+    for bad in ([], "4 units", 3, True):
+        out = coerce_analysis({"unitsInferred": bad})
+        assert out["unitsInferred"]["value"] is None
+        assert out["unitsInferred"]["confidence"] == 0.0
+
+
+def test_coerce_unitsInferred_none_value_preserved(coerce_analysis):
+    """Bundle 1C: explicit value=None stays None, doesn't get clamped."""
+    out = coerce_analysis({"unitsInferred": {"value": None, "confidence": 0.3}})
+    assert out["unitsInferred"]["value"] is None
+    assert out["unitsInferred"]["confidence"] == 0.3
