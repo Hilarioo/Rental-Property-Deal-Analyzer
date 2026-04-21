@@ -3036,6 +3036,14 @@ async def batch_submit_async(request: Request):
 # under Semaphore(3) — Redfin, not the LLM, is now the wall. Proxy
 # pool is the follow-up for faster large scans.
 _SCAN_ZIPS_MAX_ZIPS = 2000
+# Sprint 17 Bundle 3: auto-routing threshold. Above this survivor
+# count, empty-mode (user didn't pick) falls through to Anthropic
+# Batches for the 50% discount. Below it, stays on per-ZIP streaming
+# so the user gets real-time incremental results. Tuned for a
+# typical 100 URL/min local-async throughput — scans above this
+# would take long enough that queue latency is acceptable vs the
+# cost savings.
+_AUTO_BATCH_THRESHOLD = 1000
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
 # Sprint 16.9: cap raised 50 → 1000. Redfin's own lazy-load still caps
 # rendered cards per ZIP around 150-250, and `top_n` is applied AFTER
@@ -3340,15 +3348,17 @@ async def scan_zips(request: Request):
         #                   huge scans where the user can walk away.
         #   mode=""       → auto: pick based on total URL count (see below).
         #
-        # Auto routing heuristic:
-        #   survivors ≤ 100 → "stream" (per-ZIP incremental UI, fast)
-        #   survivors > 1000 → "batch" (50% off, user walks away)
-        #   else            → "stream"
-        # (100-1000 is streaming-viable; forcing batch at 500 would
-        # cost the user real-time feedback for a small discount.)
+        # Auto routing heuristic (binary split at _AUTO_BATCH_THRESHOLD):
+        #   survivors ≤ _AUTO_BATCH_THRESHOLD → "stream"
+        #     (per-ZIP incremental UI, real-time feedback, full rate)
+        #   survivors >  _AUTO_BATCH_THRESHOLD → "batch"
+        #     (Anthropic Batches, 50% off, up to 24hr turnaround)
+        # Review P1 on PR #49: the prior comment implied a 3-way band
+        # but the code was always binary. Clarified + thresholded via
+        # named constant so tuning is a one-line edit.
         chosen_mode = mode
         if chosen_mode == "":
-            if len(survivors) > 1000:
+            if len(survivors) > _AUTO_BATCH_THRESHOLD:
                 chosen_mode = "batch"
             else:
                 chosen_mode = "stream"
@@ -3400,6 +3410,9 @@ async def scan_zips(request: Request):
                 )
             # Tag the batches row with scan_request_id so the new
             # /api/scan-status/{request_id} endpoint finds it.
+            # Review P2 on PR #49: upgraded warning→exception so a
+            # missing column (bad migration) is visible in logs with
+            # full traceback, not silently swallowed.
             try:
                 from batch.db import get_connection as _gc
                 conn = _gc(str(_BATCH_DB_PATH))
@@ -3412,14 +3425,19 @@ async def scan_zips(request: Request):
                 finally:
                     conn.close()
             except Exception:
-                logger.warning(
-                    "scan-zips batch: failed to tag scan_request_id on batches row"
+                logger.exception(
+                    "scan-zips batch: failed to tag scan_request_id on batches "
+                    "row (batch_id=%s request_id=%s)",
+                    sub_result.get("batch_id"), request_id,
                 )
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                "scan_zips zip_count=%d survivors=%d mode=batch batch_id=%s elapsed=%dms",
+                "scan_zips zip_count=%d survivors=%d mode=batch "
+                "batch_id=%s external_batch_id=%s elapsed=%dms",
                 len(scan_zips_in), len(survivors),
-                sub_result.get("batch_id"), elapsed_ms,
+                sub_result.get("batch_id"),
+                sub_result.get("external_batch_id"),
+                elapsed_ms,
             )
             response = {
                 "status": sub_result.get("status", "pending"),
