@@ -115,6 +115,7 @@ Schema (emit exactly this shape; if undetermined, use default and lower confiden
   },
   "insuranceUplift":     { "suggested": float, "reason": string },
   "aduPotential":        { "present": bool, "description": string },
+  "unitsInferred":       { "value": int|null, "confidence": float, "reasoning": string },
   "vision":              { "exteriorCondition": string, "roofCondition": string, "yardCondition": string, "observations": string, "hazards": [string] },
   "narrativeForRanking": string
 }
@@ -131,6 +132,7 @@ Per-category sanity rules (apply silently — don't describe them back):
 - `riskFlags.galvanizedPlumbing` and `riskFlags.knobAndTubeElectrical` must both be explicitly `false` for post-1978 builds unless the listing specifically mentions them (they're the pre-1978 combo hard-fail).
 - `riskFlags.flatRoof.present = true` only on visible photo evidence OR explicit "flat roof" / "torch-down" / "membrane" text. Commercial conversions are the hard-fail case — if you see "mixed-use" or "live/work" with a flat roof, flag it.
 - `aduPotential.present = true` requires a permitted, legal ADU — either "ADU" / "accessory dwelling unit" in the listing, a separate address on title, or a clearly separate entrance with utilities. Don't confuse it with the `riskFlags.unpermittedAdu` gate.
+- `unitsInferred` fills the unit count when the scrape couldn't detect it. Only populate `value` when the description provides evidence: "2-unit / 3-unit" language, a breakdown like "front unit: 2/1, back unit: 1/1", "duplex ready", "rent out the other side", "main house + cottage", "income property with 3 rentals", separate addresses/entrances/utilities. Set `confidence` ≥ 0.8 only when the phrasing is explicit (e.g. "three-unit Victorian"). Confidence 0.5-0.7 for narrative cues ("live in one, rent the other"). Confidence 0.2-0.4 for weaker inference. If no evidence at all, leave `value = null, confidence = 0.0` — DO NOT guess from beds/baths alone.
 
 Narrative guidance for `narrativeForRanking`:
 - Write 2-3 sentences in Jose's voice — plain English, contractor-first framing.
@@ -183,6 +185,10 @@ def default_llm_analysis(failed: bool = False) -> dict[str, Any]:
         },
         "insuranceUplift": {"suggested": 1.0, "reason": "default"},
         "aduPotential": {"present": False, "description": ""},
+        # Sprint 16.6 Bundle 1C: LLM-inferred unit count from description
+        # narrative. Populated only when the listing text provides evidence;
+        # defaults to null so downstream code treats it as "no signal".
+        "unitsInferred": {"value": None, "confidence": 0.0, "reasoning": ""},
         "vision": {
             "exteriorCondition": "unknown", "roofCondition": "unknown",
             "yardCondition": "unknown", "observations": "", "hazards": [],
@@ -244,6 +250,27 @@ def _coerce_analysis(raw: Any) -> dict[str, Any]:
         except (TypeError, ValueError):
             ra["value"] = None
     base["roofAgeYears"] = ra
+
+    # Sprint 16.6 Bundle 1C: clamp unitsInferred. value ∈ [1, 20] or None;
+    # confidence ∈ [0, 1]. A hallucinated "value=50" or "confidence=99"
+    # would otherwise flow straight into DTI math and silently upset the
+    # rental-offset → qualifying-income → verdict chain.
+    ui = base.get("unitsInferred") or {}
+    if isinstance(ui, dict):
+        try:
+            v = ui.get("value")
+            if v is None:
+                ui["value"] = None
+            else:
+                ui["value"] = max(1, min(20, int(float(v))))
+        except (TypeError, ValueError):
+            ui["value"] = None
+        try:
+            c = float(ui.get("confidence") or 0.0)
+            ui["confidence"] = max(0.0, min(1.0, c))
+        except (TypeError, ValueError):
+            ui["confidence"] = 0.0
+    base["unitsInferred"] = ui
 
     return base
 

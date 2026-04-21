@@ -522,26 +522,76 @@ async def _scrape_url(url: str) -> dict[str, Any]:
 
     units = None
     units_source: str | None = None
-    for m in re.finditer(r'"numberOfUnits"[^0-9]*(\d+)', html_text):
-        try:
-            units = int(m.group(1))
-            units_source = "json_numberOfUnits"
-            break
-        except ValueError:
-            continue
+    # Sprint 16.6 Bundle 1A: prefer structured numberOfUnits from ld+json
+    # (captured in _extract_redfin) over the looser regex below. ld+json is
+    # authoritative when Redfin tagged it; the regex is a defensive fallback.
+    _eu = extract.get("numberOfUnits")
+    if isinstance(_eu, int) and 1 <= _eu <= 20:
+        units = _eu
+        units_source = "ldjson_numberOfUnits"
+    if not units:
+        for m in re.finditer(r'"numberOfUnits"[^0-9]*(\d+)', html_text):
+            try:
+                units = int(m.group(1))
+                units_source = "json_numberOfUnits"
+                break
+            except ValueError:
+                continue
 
-    # Multifamily hints from description + propertyType (2+ units).
+    # Sprint 16.6 Bundle 1B: expanded multi-family keyword coverage. Previous
+    # list missed ~15 common multi-family phrasings ("2-plex", "multi-family",
+    # "income property", "2 on a lot", "live in one rent the other",
+    # "main house + cottage", etc.). Keyword order still matters — highest
+    # unit count wins because listings often describe a fourplex as "four
+    # apartments / four-unit / 4 unit income property". Also tightened the
+    # fourplex check which previously matched any listing containing "four"
+    # + "unit" separately (would hit "four bedrooms ... on unit-ready lot").
     if not units:
         haystack = (extract.get("description") or "").lower() + " " + (extract.get("propertyType") or "").lower()
-        if "duplex" in haystack or "2 unit" in haystack or "two unit" in haystack:
-            units = 2
-            units_source = "keyword_duplex"
-        elif "triplex" in haystack or "3 unit" in haystack:
-            units = 3
-            units_source = "keyword_triplex"
-        elif "fourplex" in haystack or "four" in haystack and "unit" in haystack:
+        _FOURPLEX_KWS = (
+            "fourplex", "four-plex", "4-plex", "four plex",
+            "4 unit", "four unit", "4-unit", "four-unit",
+            "quadplex", "quad-plex", "4 family", "four family",
+        )
+        _TRIPLEX_KWS = (
+            "triplex", "tri-plex", "3-plex", "three plex",
+            "3 unit", "three unit", "3-unit", "three-unit",
+            "3 family", "three family",
+        )
+        _DUPLEX_KWS = (
+            "duplex", "du-plex", "2-plex", "two plex",
+            "2 unit", "two unit", "2-unit", "two-unit",
+            "2 family", "two family",
+            # Narrative signals — a listing that says "live in one, rent
+            # the other" or "main house + cottage" is almost always a
+            # duplex-equivalent configuration.
+            "live in one rent", "rent the other",
+            "front and back house", "front/back house",
+            "main house and cottage", "main + cottage",
+            "2 on a lot", "two on a lot",
+            "2 on one lot", "two houses on one",
+            "two separate dwellings", "2 dwellings",
+        )
+        # Check highest-count keywords first so a "duplex + ADU" ($3-unit)
+        # listing doesn't stop at "duplex".
+        if any(k in haystack for k in _FOURPLEX_KWS):
             units = 4
             units_source = "keyword_fourplex"
+        elif any(k in haystack for k in _TRIPLEX_KWS):
+            units = 3
+            units_source = "keyword_triplex"
+        elif any(k in haystack for k in _DUPLEX_KWS):
+            units = 2
+            units_source = "keyword_duplex"
+        elif any(k in haystack for k in ("multi-family", "multifamily", "multi family", "income property")):
+            # Generic multi-family / income-property flag with no explicit
+            # count. We need corroborating evidence — beds >= 4 suggests
+            # at least a duplex (2 beds per unit is typical minimum). Be
+            # conservative and only set units=2 when beds support it.
+            _beds = _as_int(extract.get("beds")) or 0
+            if _beds >= 4:
+                units = 2
+                units_source = "keyword_multi_conservative"
 
     # Sprint 12 hotfix 2026-04-19: single-unit inference from address suffix
     # and property-type when the scraper couldn't find `numberOfUnits`.
@@ -1199,6 +1249,25 @@ async def process_url(
         llm_uplift=((llm_analysis.get("insuranceUplift") or {}).get("suggested")),
         enrichment_missing=bool((enrichment_row or {}).get("enrichment_missing")),
     )
+
+    # Sprint 16.6 Bundle 1C: LLM-inferred unit count backfill. When the
+    # scrape pipeline (ld+json → regex → description keywords → address
+    # suffix → propertyType) still couldn't determine units, trust a
+    # HIGH-confidence LLM inference from the listing narrative. We require
+    # confidence ≥ 0.7 so a weak description hint doesn't paper over a
+    # genuinely ambiguous property; below that threshold the verdict keeps
+    # flagging units as unknown via hardFailUnitsUnknown.
+    #
+    # Mutate scrape in place so every downstream reader (rent comps,
+    # per-unit profile, compute_property_metrics, verdict ctx) sees the
+    # backfilled value without plumbing a separate parameter.
+    if scrape.get("units") is None:
+        _ui = (llm_analysis.get("unitsInferred") or {})
+        _ui_val = _ui.get("value")
+        _ui_conf = float(_ui.get("confidence") or 0.0)
+        if isinstance(_ui_val, int) and 1 <= _ui_val <= 4 and _ui_conf >= 0.7:
+            scrape["units"] = _ui_val
+            scrape["units_source"] = f"llm_inferred_{_ui_conf:.2f}"
 
     # Rent comps — look up real Redfin medians from rent_comps_cache (§A.1/§F.1).
     # Cache-first; on miss we fetch via the app-level Redfin scraper, persist
