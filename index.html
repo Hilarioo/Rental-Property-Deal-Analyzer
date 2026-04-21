@@ -6310,6 +6310,264 @@
     return '<span title="' + escapeHtml(sources.join(', ')) + '" style="background:rgba(100,116,139,0.12);color:' + color + ';padding:1px 6px;border-radius:6px;font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.03em;margin-right:6px;">' + label + '</span>';
   }
 
+  // ============================================================
+  // Sprint 16.7 Bundle 2: verdict breakdown accordion.
+  //
+  // Each row in the unified table now has an expandable accordion that
+  // reveals the full computation behind the verdict — W-2 + rental
+  // offset, PITI breakdown, insurance derivation, rehab band, risk
+  // flags, rent comp provenance, and per-gate threshold comparison.
+  // All data already lives on the row (PR #39 promoted beds/baths/sqft;
+  // `r.metrics` ships rent_per_unit/rent_source/qualifying_income;
+  // `r.llm_analysis.riskFlags` ships evidence strings); this is a
+  // pure rendering pass, no backend changes.
+  // ============================================================
+  var EXPANDED_ROWS = new Set();
+  window.__toggleVerdictBreakdown = function (key) {
+    if (!key) return;
+    if (EXPANDED_ROWS.has(key)) {
+      EXPANDED_ROWS.delete(key);
+    } else {
+      EXPANDED_ROWS.add(key);
+    }
+    renderUnifiedResults();
+  };
+
+  function _fmt$(n) {
+    if (n == null || isNaN(n)) return '—';
+    var rounded = Math.round(Number(n));
+    return '$' + rounded.toLocaleString('en-US');
+  }
+  function _fmtPct(n, digits) {
+    if (n == null || isNaN(n)) return '—';
+    digits = digits == null ? 1 : digits;
+    return Number(n).toFixed(digits) + '%';
+  }
+
+  function _section(title, bodyHtml, color) {
+    // Single accordion section — grey header + indented body.
+    var headerColor = color || '#94a3b8';
+    return '<div style="margin-bottom:10px;">'
+      + '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:' + headerColor + ';margin-bottom:4px;padding-bottom:2px;border-bottom:1px solid var(--border);">' + escapeHtml(title) + '</div>'
+      + '<div style="font-size:0.8rem;line-height:1.5;">' + bodyHtml + '</div>'
+      + '</div>';
+  }
+
+  function _kv(label, value, hint) {
+    // Key/value line with optional muted hint.
+    var hintHtml = hint ? ' <span style="color:var(--text-muted);font-size:0.72rem;">' + escapeHtml(hint) + '</span>' : '';
+    return '<div style="display:flex;justify-content:space-between;padding:1px 0;"><span style="color:var(--text-muted);">' + escapeHtml(label) + '</span><span style="font-variant-numeric:tabular-nums;font-weight:500;">' + value + hintHtml + '</span></div>';
+  }
+
+  function _renderVerdictBreakdown(r) {
+    if (!r || !r.metrics) return '';
+    var m = r.metrics;
+    var T = (window.JOSE_THRESHOLDS) || {};
+    var D = (window.DEFAULTS) || {};
+    var w2Monthly = Number(D.buyerMonthlyIncomeW2 || 0);
+
+    // --- Section 1: Income & qualifying ---
+    // rental_offset derivation: metrics.qualifying_income - w2. If that's
+    // negative (shouldn't happen) fall back to 0. Note the 75% FHA rule is
+    // applied BEFORE this subtraction — offset is already the 75%-credited
+    // value.
+    var qualifyingIncome = Number(m.qualifying_income || 0);
+    var rentalOffset = Math.max(0, qualifyingIncome - w2Monthly);
+    var grossRentRented = rentalOffset > 0 ? rentalOffset / 0.75 : 0;
+    var incomeBody =
+        _kv('W-2 monthly gross', _fmt$(w2Monthly))
+      + _kv('Rental offset (75% FHA)', '+' + _fmt$(rentalOffset), grossRentRented > 0 ? 'from ' + _fmt$(grossRentRented) + '/mo rented gross' : '')
+      + _kv('Qualifying income', _fmt$(qualifyingIncome));
+
+    // --- Section 2: PITI breakdown ---
+    // We ship piti total + net_piti, but not the individual P+I / tax /
+    // insurance / MIP components. Derive from what's available: taxes and
+    // insurance are per-month; P+I + MIP = piti - taxes - insurance.
+    var piti = Number(m.piti || 0);
+    var insAnnual = r.insurance_breakdown ? Number(r.insurance_breakdown.annual_usd || 0) : 0;
+    var insMonthly = insAnnual / 12;
+    var taxRatePct = Number(m.applied_tax_pct || 0);
+    var price = Number(r.price || 0);
+    var taxMonthly = (price * (taxRatePct / 100)) / 12;
+    var mipMonthly = 0;
+    if (D.fhaAnnualMipPct && price > 0) {
+      // Rough reverse-estimate of MIP — base = price × (1 - downPaymentPct) ≈.
+      var dpPct = Number(D.downPaymentPct || 3.5);
+      var base = price * (1 - dpPct / 100);
+      mipMonthly = base * (Number(D.fhaAnnualMipPct || 0.55) / 100) / 12;
+    }
+    var piApprox = Math.max(0, piti - taxMonthly - insMonthly - mipMonthly);
+    var pitiBody =
+        _kv('Principal + interest', _fmt$(piApprox), 'approx')
+      + _kv('Property tax', _fmt$(taxMonthly), _fmtPct(taxRatePct, 2) + ' annual')
+      + _kv('Insurance', _fmt$(insMonthly), _fmt$(insAnnual) + '/yr')
+      + _kv('FHA MIP (annual)', _fmt$(mipMonthly))
+      + _kv('Total PITI', _fmt$(piti))
+      + _kv('Net PITI (after rental offset)', _fmt$(Number(m.net_piti || 0)));
+
+    // --- Section 3: Insurance derivation ---
+    var insHtml = '';
+    if (r.insurance_breakdown) {
+      var ib = r.insurance_breakdown;
+      insHtml =
+          _kv('Base', _fmt$(ib.base || 1800) + '/yr')
+        + (ib.age_reason ? _kv('Age multiplier', '×' + (ib.age_multiplier || 1), ib.age_reason) : '')
+        + (ib.flood_reason ? _kv('Flood multiplier', '×' + (ib.flood_multiplier || 1), ib.flood_reason) : '')
+        + (ib.fire_reason ? _kv('Fire multiplier', '×' + (ib.fire_multiplier || 1), ib.fire_reason) : '')
+        + (ib.llm_reason ? _kv('LLM uplift', '×' + (ib.llm_multiplier || 1), ib.llm_reason) : '')
+        + _kv('Annual total', _fmt$(ib.annual_usd || 0));
+    } else {
+      insHtml = '<em style="color:var(--text-muted);">Insurance breakdown not available.</em>';
+    }
+
+    // --- Section 4: Rehab band ---
+    var rehabHtml = '';
+    var rb = (r.llm_analysis && r.llm_analysis.rehabBand) || null;
+    if (rb && typeof rb === 'object') {
+      var cats = ['roof', 'plumbing', 'electrical', 'cosmetic', 'hvac', 'other'];
+      rehabHtml = cats.filter(function(c) {
+        var band = rb[c];
+        return band && (band.mid || band.high);
+      }).map(function(c) {
+        var b = rb[c];
+        return _kv(c.charAt(0).toUpperCase() + c.slice(1),
+          _fmt$(b.low || 0) + ' – ' + _fmt$(b.mid || 0) + ' – ' + _fmt$(b.high || 0),
+          'conf ' + Number(b.confidence || 0).toFixed(2));
+      }).join('');
+      rehabHtml += _kv('Effective (self-perform)', _fmt$(Number(m.effective_rehab || 0)))
+        + _kv('Contractor edge (C-39 saves)', _fmt$(Number(m.contractor_edge || 0)));
+      if (m.stretch_scenario) {
+        var s = m.stretch_scenario;
+        if (s.viable) {
+          rehabHtml += _kv('203(k) stretch', 'viable', 'self-perform share ' + Math.round((s.self_perform_share || 0) * 100) + '%');
+        } else if (s.block_reason) {
+          rehabHtml += _kv('203(k) stretch', 'blocked', s.block_reason);
+        }
+      }
+    } else {
+      rehabHtml = '<em style="color:var(--text-muted);">Rehab band not analyzed.</em>';
+    }
+
+    // --- Section 5: Risk flags ---
+    var riskHtml = '';
+    var rf = (r.llm_analysis && r.llm_analysis.riskFlags) || null;
+    if (rf) {
+      var flags = [
+        ['flatRoof', 'Flat roof / commercial conversion'],
+        ['unpermittedAdu', 'Unpermitted ADU'],
+        ['galvanizedPlumbing', 'Galvanized plumbing (pre-1978)'],
+        ['knobAndTubeElectrical', 'Knob & tube wiring'],
+        ['foundationConcern', 'Foundation concern'],
+      ];
+      riskHtml = flags.map(function(pair) {
+        var f = rf[pair[0]] || {};
+        var present = !!f.present;
+        var badge = present
+          ? '<span style="background:rgba(220,38,38,0.15);color:#dc2626;padding:1px 6px;border-radius:4px;font-size:0.7rem;font-weight:600;">present</span>'
+          : '<span style="background:rgba(22,163,74,0.12);color:#16a34a;padding:1px 6px;border-radius:4px;font-size:0.7rem;font-weight:600;">none</span>';
+        var evidence = present && f.evidence ? ' <span style="color:var(--text-muted);font-size:0.72rem;">' + escapeHtml(f.evidence) + '</span>' : '';
+        return '<div style="padding:2px 0;"><span style="color:var(--text-muted);">' + escapeHtml(pair[1]) + '</span> ' + badge + evidence + '</div>';
+      }).join('');
+    } else {
+      riskHtml = '<em style="color:var(--text-muted);">Risk flags not available.</em>';
+    }
+
+    // --- Section 6: Rent comp provenance ---
+    var rentHtml = '';
+    var rentPerUnit = Number(m.rent_per_unit || 0);
+    var rentSource = m.rent_source || '(unknown)';
+    var rentSamples = Number(m.rent_comps_sample_size || 0);
+    var units = Number(r.units || m.units || (m.units_assumed ? 2 : 0));
+    var beds = Number(r.beds || 0);
+    var baths = Number(r.baths || 0);
+    var perUnitBeds = units > 0 && beds > 0 ? Math.max(1, Math.round(beds / units)) : beds;
+    var perUnitBaths = units > 0 && baths > 0 ? (baths / units).toFixed(1) : baths;
+    rentHtml =
+        _kv('Source', rentSource, rentSource === 'fallback' ? 'tier default — no live comps' : '')
+      + _kv('Sample size', String(rentSamples), rentSamples < 5 && rentSource !== 'fallback' ? 'low — sanity check' : '')
+      + _kv('Per-unit profile', perUnitBeds + 'BR / ' + perUnitBaths + 'BA',
+            m.units_assumed ? 'units assumed duplex — may be wrong' : '')
+      + _kv('Rent per unit', _fmt$(rentPerUnit))
+      + _kv('Gross monthly (all units)', _fmt$(Number(m.gross_rent_monthly_all || 0)));
+
+    // --- Section 7: Per-gate threshold comparison ---
+    var gateHtml = '';
+    var gateRows = [];
+    // DTI gate
+    if (piti > 0 && qualifyingIncome > 0) {
+      var dtiPct = (piti / qualifyingIncome) * 100;
+      var dtiMax = Number(T.maxDtiPct || 50);
+      gateRows.push({
+        label: 'DTI (PITI / qualifying)',
+        actual: _fmtPct(dtiPct),
+        threshold: '≤ ' + _fmtPct(dtiMax, 0),
+        pass: dtiPct <= dtiMax,
+      });
+    }
+    if (T.netPitiGreen && m.net_piti != null) {
+      gateRows.push({
+        label: 'Net PITI',
+        actual: _fmt$(Number(m.net_piti)),
+        threshold: '≤ ' + _fmt$(T.netPitiGreen) + ' green / ' + _fmt$(T.netPitiRed) + ' red',
+        pass: Number(m.net_piti) <= T.netPitiGreen,
+      });
+    }
+    if (T.cashCloseGreen && m.cash_to_close != null) {
+      gateRows.push({
+        label: 'Cash to close',
+        actual: _fmt$(Number(m.cash_to_close)),
+        threshold: '≤ ' + _fmt$(T.cashCloseGreen) + ' green / ' + _fmt$(T.cashCloseRed) + ' red',
+        pass: Number(m.cash_to_close) <= T.cashCloseGreen,
+      });
+    }
+    if (T.rehabGreen && m.effective_rehab != null) {
+      gateRows.push({
+        label: 'Effective rehab',
+        actual: _fmt$(Number(m.effective_rehab)),
+        threshold: '≤ ' + _fmt$(T.rehabGreen) + ' green / ' + _fmt$(T.rehabRed) + ' red',
+        pass: Number(m.effective_rehab) <= T.rehabGreen,
+      });
+    }
+    if (T.roofAgeYellow && m.roof_age != null) {
+      gateRows.push({
+        label: 'Roof age',
+        actual: Number(m.roof_age).toFixed(0) + ' yrs',
+        threshold: '≤ ' + T.roofAgeYellow + ' yrs yellow',
+        pass: Number(m.roof_age) <= T.roofAgeYellow,
+      });
+    }
+    gateHtml = gateRows.map(function(g) {
+      var pillColor = g.pass
+        ? 'background:rgba(22,163,74,0.15);color:#16a34a;'
+        : 'background:rgba(220,38,38,0.15);color:#dc2626;';
+      var pillText = g.pass ? '✓ pass' : '✗ fail';
+      return '<div style="display:grid;grid-template-columns:1fr auto 1fr auto;gap:8px;padding:2px 0;align-items:center;">'
+        + '<span style="color:var(--text-muted);">' + escapeHtml(g.label) + '</span>'
+        + '<span style="font-variant-numeric:tabular-nums;font-weight:500;">' + g.actual + '</span>'
+        + '<span style="color:var(--text-muted);font-size:0.72rem;">' + escapeHtml(g.threshold) + '</span>'
+        + '<span style="' + pillColor + 'padding:1px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;white-space:nowrap;">' + pillText + '</span>'
+        + '</div>';
+    }).join('');
+
+    // Compose.
+    var html = '<div style="padding:12px 16px;background:rgba(100,116,139,0.04);border-left:3px solid var(--accent);font-size:0.78rem;">'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
+      +   '<div>'
+      +     _section('Income & qualifying', incomeBody, '#6366f1')
+      +     _section('PITI breakdown', pitiBody, '#6366f1')
+      +     _section('Insurance derivation', insHtml, '#6366f1')
+      +   '</div>'
+      +   '<div>'
+      +     _section('Rehab band', rehabHtml, '#ca8a04')
+      +     _section('Risk flags', riskHtml, '#dc2626')
+      +     _section('Rent comp provenance', rentHtml, '#16a34a')
+      +   '</div>'
+      + '</div>'
+      + _section('Gate comparison', gateHtml, '#0ea5e9')
+      + '</div>';
+    return html;
+  }
+
   function _quickScoreDetails(qs) {
     if (!qs || !qs.details || !qs.details.length) return '';
     return qs.details.map(function (d) {
@@ -6460,6 +6718,11 @@
       if (r.metrics && r.metrics.units_assumed) {
         reasonsHtml += '<div style="margin-top:4px;padding:2px 6px;background:rgba(234,179,8,0.15);color:#ca8a04;border-radius:3px;font-size:0.72rem;font-weight:600;display:inline-block;">assumes duplex math</div>';
       }
+      // Sprint 16.7 Bundle 2: chevron + click affordance on the Why cell
+      // so the user can expand the full verdict breakdown inline.
+      var isExpanded = EXPANDED_ROWS.has(r.key);
+      var chevron = '<span style="display:inline-block;width:14px;color:var(--text-muted);font-size:0.7rem;transition:transform 0.15s;transform:' + (isExpanded ? 'rotate(90deg)' : 'rotate(0deg)') + ';">▶</span>';
+      var whyKeyJson = JSON.stringify(r.key).replace(/"/g, '&quot;');
       html += '<tr style="border-bottom:1px solid var(--border);">';
       html += '<td style="padding:6px 8px;">' + _sourcePill(r.sources) + addrLink + paretoStar + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtDollar(r.price) + '</td>';
@@ -6468,7 +6731,7 @@
       html += '<td style="padding:6px 8px;letter-spacing:0.04em;">' + stars + '</td>';
       html += '<td style="padding:6px 8px;">' + _verdictPill(r.verdict) + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
-      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;word-break:break-word;max-width:40ch;">' + reasonsHtml + '</td>';
+      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;word-break:break-word;max-width:40ch;cursor:pointer;" onclick="window.__toggleVerdictBreakdown(' + whyKeyJson + ')" title="Click to ' + (isExpanded ? 'collapse' : 'expand') + ' verdict math">' + chevron + ' ' + reasonsHtml + '</td>';
       var openUrl = r.listingUrl ? JSON.stringify(r.listingUrl).replace(/"/g, '&quot;') : '""';
       html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + openUrl + ')">Analyze</button></td>';
       html += '<td style="padding:6px 4px;"><button type="button" title="Remove from list" aria-label="Remove" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="window.__unifiedDelete(' + JSON.stringify(r.key).replace(/"/g, '&quot;') + ')">×</button></td>';
@@ -6487,6 +6750,11 @@
           + ' · rehab ' + fmtDollar(stretch.effective_rehab) + ' financed'
           + ' · self-perform ' + sharePct + '%'
           + '</td></tr>';
+      }
+      // Sprint 16.7 Bundle 2: verdict-math accordion sub-row. Rendered only
+      // when the user clicked the Why cell (key added to EXPANDED_ROWS).
+      if (isExpanded) {
+        html += '<tr><td colspan="10" style="padding:0;">' + _renderVerdictBreakdown(r) + '</td></tr>';
       }
     });
     html += '</tbody></table></div>';
