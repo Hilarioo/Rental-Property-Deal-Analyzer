@@ -4252,9 +4252,14 @@
   // key so it doesn't co-mingle with the single-ZIP search filters (different
   // concepts, different defaults — the Property Type dropdown in Scan ZIPs
   // defaults to `multi-family` while the search form defaults to no filter).
+  //
+  // IMPORTANT: exposed on `window` because `runScanZips` (which calls
+  // `saveScanZipsFilters`) lives in a different IIFE (index.html is split
+  // into two sibling IIFEs at ~line 6069). The bare-name reference from the
+  // other IIFE would fail with ReferenceError.
   var SCAN_ZIPS_FILTERS_KEY = 'rpda_scan_zips_filters_v1';
 
-  function saveScanZipsFilters() {
+  window.saveScanZipsFilters = function () {
     try {
       var filters = {
         preset: ($('scan-zips-preset') || {}).value || '',
@@ -4266,9 +4271,9 @@
       };
       localStorage.setItem(SCAN_ZIPS_FILTERS_KEY, JSON.stringify(filters));
     } catch(e) { /* quota / private-mode — next save may succeed */ }
-  }
+  };
 
-  function loadScanZipsFilters() {
+  window.loadScanZipsFilters = function () {
     try {
       var raw = localStorage.getItem(SCAN_ZIPS_FILTERS_KEY);
       if (!raw) return;
@@ -4285,7 +4290,7 @@
       if (f.minPrice && $('scan-zips-min-price')) $('scan-zips-min-price').value = f.minPrice;
       if (f.maxPrice && $('scan-zips-max-price')) $('scan-zips-max-price').value = f.maxPrice;
     } catch(e) { /* corrupt storage — ignore */ }
-  }
+  };
 
   // ======================================================================
   // Mortgage Rate Auto-Fill
@@ -6018,7 +6023,10 @@
   refreshScenarioList();
   loadModels();
   loadSearchFilters();
-  loadScanZipsFilters();  // Sprint 16.1: restore last-used Scan ZIPs controls.
+  // Sprint 16.1: restore last-used Scan ZIPs controls. window-scoped helper
+  // (defined just above) so the sibling IIFE containing runScanZips can also
+  // reach saveScanZipsFilters when the user submits a scan.
+  if (typeof window.loadScanZipsFilters === 'function') window.loadScanZipsFilters();
   loadAlertPrefs();
 
   // ======================================================================
@@ -7343,7 +7351,9 @@
     }
     // Sprint 16.1: persist scan controls so the next page load restores the
     // user's last-used Preset / Property Type / Top N / Mode / price range.
-    saveScanZipsFilters();
+    // window-scoped because this IIFE is a sibling of the one that defines
+    // the helper (see note above SCAN_ZIPS_FILTERS_KEY).
+    if (typeof window.saveScanZipsFilters === 'function') window.saveScanZipsFilters();
 
     if (btn) btn.disabled = true;
     if (loadEl) loadEl.style.display = 'block';
