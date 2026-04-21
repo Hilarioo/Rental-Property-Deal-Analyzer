@@ -7858,14 +7858,18 @@
     if (ta) ta.addEventListener('input', updateCount);
     var scanTa = $('scan-zips-list');
     if (scanTa) scanTa.addEventListener('input', updateScanZipCount);
-    // Clamp Top-N on blur so a stray paste (e.g. "550000") snaps to 1-15
-    // before the user hits Scan. Matches the server-side cap.
+    // Clamp Top-N on blur so a stray paste (e.g. "550000") snaps to the
+    // valid range before the user hits Scan. Matches the server-side cap.
+    // Sprint 16.9 (PR #44 review P0): cap bumped 50 → 1000 in lockstep
+    // with the input max attr + runScanZips clamp; the old stale 50 here
+    // would silently re-impose the old ceiling on blur, defeating the
+    // whole feature.
     var scanTopN = $('scan-zips-top-n');
     if (scanTopN) {
       scanTopN.addEventListener('blur', function () {
         var v = parseInt(scanTopN.value, 10);
         if (!v || v < 1) v = 10;
-        if (v > 50) v = 50;
+        if (v > 1000) v = 1000;
         scanTopN.value = v;
       });
     }
