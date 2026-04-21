@@ -1250,17 +1250,88 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
             await page.wait_for_timeout(2000)
 
             # Scroll down to load more lazy-loaded listings
-            # More scrolls = more listings. Stop early if no new content loaded.
-            prev_count = 0
-            for _ in range(8):
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(1000)
-                cur_count = await page.evaluate(
-                    "document.querySelectorAll('.MapHomeCardReact, [class*=\"HomeCard\"]').length"
+            # Sprint 16.9: scroll until Redfin stops loading new cards, with
+            # safety cap + stability gate + overall timeout.
+            #
+            # Previous logic: hard range(8) ceiling stopped prematurely in
+            # large markets — a ZIP with 200 listings would silently truncate
+            # at ~80-120. The single-observation break (`cur_count == prev_count`)
+            # was also fragile: Redfin occasionally has a render cycle that
+            # reports no new cards but loads more on the next scroll.
+            #
+            # New behavior:
+            #   - MAX_SCROLLS=50 safety (~50s worst case per ZIP) — prevents
+            #     runaway if Redfin ever adopts an infinite pagination model
+            #   - Require STABLE_ROUNDS=2 consecutive no-new-card observations
+            #     before breaking — kills the false-done case
+            #   - Keep the cur_count >= 10 guard so we don't stop during
+            #     initial slow renders
+            #   - asyncio.wait_for 90s hard timeout wraps the whole loop
+            #     (review P1 on PR #44: without this, a stuck page.evaluate
+            #     could block the Semaphore(3) slot for minutes)
+            #   - Every 10 scrolls, sniff for a mid-scroll bot-wall (review
+            #     P1 on PR #44: goto's initial bot-wall check doesn't
+            #     protect against interstitials injected later)
+            MAX_SCROLLS = 50
+            STABLE_ROUNDS_NEEDED = 2
+            BOT_WALL_CHECK_EVERY = 10
+            SCROLL_PHASE_TIMEOUT_SEC = 90
+
+            async def _scroll_phase():
+                prev_count = 0
+                stable_rounds = 0
+                scrolls_done = 0
+                for i in range(MAX_SCROLLS):
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(1000)
+                    cur_count = await page.evaluate(
+                        "document.querySelectorAll('.MapHomeCardReact, [class*=\"HomeCard\"]').length"
+                    )
+                    scrolls_done = i + 1
+                    if cur_count == prev_count:
+                        stable_rounds += 1
+                        if stable_rounds >= STABLE_ROUNDS_NEEDED and cur_count >= 10:
+                            break
+                    else:
+                        stable_rounds = 0
+                    prev_count = cur_count
+                    # Mid-scroll bot-wall check: Redfin can inject a captcha
+                    # or "Attention Required" interstitial after aggressive
+                    # scrolls. Every 10 rounds, probe for it and bail early
+                    # with whatever we have.
+                    if (i + 1) % BOT_WALL_CHECK_EVERY == 0:
+                        try:
+                            wall = await page.locator(
+                                '[class*="captcha"], text=/Attention Required/i, [class*="AccessDenied"]'
+                            ).count()
+                            if wall > 0:
+                                logger.warning(
+                                    "scan: bot-wall detected mid-scroll for %s "
+                                    "after %d scrolls — stopping with %d cards",
+                                    location, scrolls_done, cur_count,
+                                )
+                                break
+                        except Exception:
+                            # Best-effort probe — never block the scroll loop
+                            # on the locator call itself.
+                            pass
+                return scrolls_done, prev_count
+
+            try:
+                scrolls_used, final_card_count = await asyncio.wait_for(
+                    _scroll_phase(), timeout=SCROLL_PHASE_TIMEOUT_SEC,
                 )
-                if cur_count == prev_count and cur_count >= 10:
-                    break  # no new listings loaded
-                prev_count = cur_count
+                logger.info(
+                    "scan: %s scroll phase used %d/%d rounds, %d cards",
+                    location, scrolls_used, MAX_SCROLLS, final_card_count,
+                )
+            except asyncio.TimeoutError:
+                # Timed out — whatever's already rendered in the DOM is
+                # what we work with. Log so we can tune later.
+                logger.warning(
+                    "scan: %s scroll phase hit %ds timeout — returning "
+                    "partial results", location, SCROLL_PHASE_TIMEOUT_SEC,
+                )
 
             # Extract total count from page (e.g., "47 homes" in the results header)
             page_total = await page.evaluate("""
@@ -2960,7 +3031,12 @@ async def batch_submit_async(request: Request):
 # =====================================================================
 _SCAN_ZIPS_MAX_ZIPS = 20
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
-_SCAN_ZIPS_MAX_TOP_N = 50
+# Sprint 16.9: cap raised 50 → 1000. Redfin's own lazy-load still caps
+# rendered cards per ZIP around 150-250, and `top_n` is applied AFTER
+# the multi-family post-filter, so this bump is aspirational — it stops
+# the silent truncation when Redfin actually has more, without changing
+# the practical maximum for most scans.
+_SCAN_ZIPS_MAX_TOP_N = 1000
 _SCAN_ZIPS_MAX_STRING_LEN = 64
 _ZIP_RE = re.compile(r"^\d{5}$")
 # Process-lifetime semaphore: Redfin searches are Playwright-heavy and a

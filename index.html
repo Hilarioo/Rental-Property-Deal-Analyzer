@@ -1451,7 +1451,7 @@
           </div>
           <div class="input-group" style="margin:0;">
             <label for="scan-zips-top-n" style="font-size:0.78rem;">Top N per ZIP</label>
-            <input type="number" id="scan-zips-top-n" min="1" max="50" step="1" value="10">
+            <input type="number" id="scan-zips-top-n" min="1" max="1000" step="1" value="10">
           </div>
           <div class="input-group" style="margin:0;">
             <label for="scan-zips-mode" style="font-size:0.78rem;">Mode</label>
@@ -7724,7 +7724,12 @@
     var topNEl = $('scan-zips-top-n');
     var topN = parseInt((topNEl || {}).value, 10);
     if (!topN || topN < 1) topN = 10;
-    if (topN > 50) topN = 50;
+    // Sprint 16.9: cap raised 50 → 1000 to let Jose pull deeper inventory
+    // slices per ZIP. Practical ceiling is still Redfin's own lazy-load
+    // (~150-250 rendered cards per ZIP); `top_n` is applied post-filter,
+    // so the bump just stops the UI from artificially truncating when
+    // Redfin has more.
+    if (topN > 1000) topN = 1000;
     // Reflect the clamped value back into the field so the UI matches what
     // the server will actually use — fixes the "I typed 550000 but got 15"
     // silent-clamp that looked like a bug in the Scan ZIPs screenshot.
@@ -7853,14 +7858,18 @@
     if (ta) ta.addEventListener('input', updateCount);
     var scanTa = $('scan-zips-list');
     if (scanTa) scanTa.addEventListener('input', updateScanZipCount);
-    // Clamp Top-N on blur so a stray paste (e.g. "550000") snaps to 1-15
-    // before the user hits Scan. Matches the server-side cap.
+    // Clamp Top-N on blur so a stray paste (e.g. "550000") snaps to the
+    // valid range before the user hits Scan. Matches the server-side cap.
+    // Sprint 16.9 (PR #44 review P0): cap bumped 50 → 1000 in lockstep
+    // with the input max attr + runScanZips clamp; the old stale 50 here
+    // would silently re-impose the old ceiling on blur, defeating the
+    // whole feature.
     var scanTopN = $('scan-zips-top-n');
     if (scanTopN) {
       scanTopN.addEventListener('blur', function () {
         var v = parseInt(scanTopN.value, 10);
         if (!v || v < 1) v = 10;
-        if (v > 50) v = 50;
+        if (v > 1000) v = 1000;
         scanTopN.value = v;
       });
     }
