@@ -8,7 +8,11 @@ venv/
 venv
 .venv
 CLAUDE.md
-.claude/
+# Share slash commands and hook config across worktrees; keep everything else
+# under .claude/ local (worktrees, lockfiles, agent state).
+.claude/*
+!.claude/commands/
+!.claude/settings.json
 docs/plans
 .pytest_cache/
 .coverage

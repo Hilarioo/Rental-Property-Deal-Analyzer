@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | { read -r cmd; if echo \"$cmd\" | grep -q 'gh pr create'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"⛔ PR CREATION DETECTED. MANDATORY PRE-PR REVIEW GATE: Before creating a PR, you MUST run /review first to deploy the 8-agent review panel, iterate on BLOCKER/HIGH findings, and run make test-py / make test-js / make test-parity.\"}}'; elif echo \"$cmd\" | grep -qE 'render deploy|docker push|docker build'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🚀 DEPLOY DETECTED. Consider running: Security Engineer (secrets/env), DevOps Automator (Dockerfile/render.yaml), Performance Benchmarker (cold-start + scan throughput).\"}}'; elif echo \"$cmd\" | grep -qE 'make test-parity'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"✅ Parity check ran. If it failed, STOP — Sprint 0 gate. Do not proceed with math/threshold changes until parity passes.\"}}'; else echo ''; fi; }",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // \"\"' | { read -r f; if echo \"$f\" | grep -qE 'spec/constants\\.json|handoff/USER_PROFILE'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"⚠️ Authoritative numbers file edited. This is USER_PROFILE / constants territory — any math or threshold change must pass make test-parity and should be reflected in an ADR. Consider: Backend Architect, Code Reviewer.\"}}'; elif echo \"$f\" | grep -qE '^app\\.py$|batch/'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🐍 Backend edit (app.py / batch/). Consider: Backend Architect, Security Engineer (input validation, scraper safety), Performance Benchmarker (batch scan cost).\"}}'; elif echo \"$f\" | grep -qE '^calc\\.js$|^index\\.html$'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🎨 Frontend edit (calc.js / index.html). Consider: Frontend Developer, Code Reviewer, Accessibility Auditor, UX Architect. Remember calc.js ↔ app.py parity — run make test-parity.\"}}'; elif echo \"$f\" | grep -qE 'tests/'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🧪 Test file edited. Sprint 0 gate: tests must pass before math changes land. Run make test.\"}}'; elif echo \"$f\" | grep -qE '^Dockerfile$|render\\.yaml|requirements.*\\.txt|Makefile'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🛠️ Build/deploy config edit. Consider: DevOps Automator, Security Engineer (dependency + secrets), Backend Architect.\"}}'; else echo ''; fi; }",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // \"\"' | { read -r f; if echo \"$f\" | grep -qE 'batch/.*\\.py$|scripts/.*\\.(py|mjs|js)$'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"📦 New batch/script file. Consider: Software Architect (cross-cutting fit), Backend Architect, Security Engineer (scraper/SSRF safety).\"}}'; elif echo \"$f\" | grep -qE 'handoff/ADR-'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"📝 New ADR drafted. Before committing: get explicit user approval, cross-link from CHANGELOG + SPRINT_PLAN if applicable.\"}}'; elif echo \"$f\" | grep -qE 'tests/.*\\.(py|mjs|js)$'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"🧪 New test file. Ensure it runs under make test and that Sprint 0 parity coverage is not weakened.\"}}'; else echo ''; fi; }",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\":\"Session ending. Before opening a PR, run /review. If math or thresholds changed, confirm make test-parity passes. If shipping, follow up with /ship-done after merge.\"}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
