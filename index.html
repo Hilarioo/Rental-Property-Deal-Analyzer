@@ -1456,9 +1456,10 @@
           <div class="input-group" style="margin:0;">
             <label for="scan-zips-mode" style="font-size:0.78rem;">Mode</label>
             <select id="scan-zips-mode">
-              <option value="">Auto (sync if ≤30, async otherwise)</option>
-              <option value="sync">Force sync</option>
-              <option value="async">Force async (overnight)</option>
+              <option value="">Auto (picks best for URL count)</option>
+              <option value="sync">Real-time sync (tiny scans only)</option>
+              <option value="stream">Real-time streaming (per-ZIP results as they finish)</option>
+              <option value="batch">Queue (Anthropic Batches, 50% off, up to 24hr)</option>
             </select>
           </div>
         </div>
@@ -8012,6 +8013,37 @@
         // stream into the table in the order ZIPs finish (fastest first).
         if (typeof window.__startScanZipsStreaming === 'function') {
           window.__startScanZipsStreaming(data.batches, data.summary);
+        }
+      } else if (data.mode === 'anthropic-batches' && data.batch) {
+        // Sprint 17 Bundle 3: queued via Anthropic Message Batches API.
+        // 50% discount, up to 24hr turnaround. Use the existing
+        // renderPending / startAutoPoll machinery — same shape as the
+        // old "mode=async" path from Sprint 12.
+        var pending = {
+          batchId: data.batch.batchId || data.batch.batch_id,
+          submittedAt: Date.now(),
+          urlCount: (data.summary && data.summary.survivors) || 0,
+          source: 'scan_zips',
+          scan_summary: data.summary || null,
+        };
+        if (pending.batchId) {
+          savePending(pending);
+          renderPending(pending);
+          if (typeof startAutoPoll === 'function') startAutoPoll();
+          if (typeof __ensureNotificationPermission__ === 'function') __ensureNotificationPermission__();
+          var pendingEl = $('batch-pending');
+          if (pendingEl && pendingEl.scrollIntoView) {
+            pendingEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          if (sumEl) {
+            var autoBadge = (data.summary && data.summary.auto_routed_from_empty_mode)
+              ? ' <span style="background:rgba(99,102,241,0.18);color:#6366f1;padding:1px 6px;border-radius:4px;font-size:0.72rem;font-weight:600;">auto-routed</span>'
+              : '';
+            sumEl.insertAdjacentHTML('beforeend',
+              '<div style="margin-top:8px;color:#f7b500;">' +
+              '⏳ Submitted to Anthropic Batches (50% off, up to 24hr)' + autoBadge +
+              ' — pending card in the Batch panel above; results replace it on completion.</div>');
+          }
         }
       }
     } catch (e) {
