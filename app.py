@@ -1243,16 +1243,45 @@ async def _search_redfin_page(location: str, filters: dict) -> dict:
         # lots under a multi-family filter.
         if (not beds) and (not sqft) and (price < 200_000 or not l.get("address")):
             return False
-        # Property-type enforcement — Redfin exposes multiple shapes; accept
-        # either the string we asked for or a close synonym.
+        # Property-type enforcement — strict per Sprint 15.5. Redfin's URL
+        # filter (`property-type=multifamily`) sometimes bypasses and
+        # returns SFR / condo / land rows anyway. The old check had two
+        # leaks:
+        #   1. `if ptype and ...` short-circuited false when propertyType
+        #      was null/missing, passing everything through.
+        #   2. A row with propertyType="home" (generic) contained none of
+        #      the rejection keywords AND none of the multi keywords, so
+        #      the `and`-chained check never triggered.
+        # New policy for `multi-family`: explicit allowlist — accept ONLY
+        # when propertyType contains a known multi-unit keyword. Reject
+        # everything else including null.
         if filter_ptype:
             ptype = (l.get("propertyType") or "").lower()
             if filter_ptype == "multi-family":
-                if ptype and "multi" not in ptype and "duplex" not in ptype and "triplex" not in ptype and "fourplex" not in ptype:
+                MULTI_KEYWORDS = ("multi", "duplex", "triplex", "fourplex",
+                                  "2-4 unit", "2 unit", "3 unit", "4 unit")
+                SFR_LAND_KEYWORDS = ("single family", "single-family", "single_family",
+                                     "sfr", "sfh", "land", "lot", "vacant",
+                                     "condo", "townhouse", "townhome",
+                                     "manufactured", "mobile", "mfh")
+                is_multi = any(k in ptype for k in MULTI_KEYWORDS)
+                is_reject = any(k in ptype for k in SFR_LAND_KEYWORDS)
+                if is_reject:
+                    return False
+                if not is_multi:
+                    # Unknown or missing propertyType — reject rather than
+                    # silently admit. If the Redfin URL filter was doing
+                    # its job, this row shouldn't be here; if it wasn't,
+                    # we can't be sure it's multi without evidence.
                     return False
             elif filter_ptype == "house":
                 # Reject obvious non-houses (condos, townhomes, land).
                 if "land" in ptype or "lot" in ptype or "manufactured" in ptype:
+                    return False
+                # Also reject explicit multi/condo/townhouse when house
+                # was requested — same consistency fix as multi-family.
+                if any(k in ptype for k in ("multi", "duplex", "triplex", "fourplex",
+                                            "condo", "townhouse", "townhome")):
                     return False
             elif filter_ptype == "condo":
                 if ptype and "condo" not in ptype and "town" not in ptype:
