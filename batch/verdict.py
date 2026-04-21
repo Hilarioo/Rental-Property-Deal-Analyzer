@@ -142,8 +142,14 @@ def _classify_overage(
     if value > red:
         return "red"
     # Layered: pass if either the explicit yellow band OR the 10% overage rule
-    # accepts the value.
-    ten_pct_ok = (value - green) / green <= 0.10
+    # accepts the value. Guard against misconfigured `green <= 0`: when the
+    # operator leaves a threshold blank in profile (zeros are the redacted-
+    # template default) we fall back to explicit-yellow-only semantics to
+    # avoid a ZeroDivisionError crashing the whole verdict pipeline.
+    if green > 0:
+        ten_pct_ok = (value - green) / green <= 0.10
+    else:
+        ten_pct_ok = False
     explicit_yellow_ok = yellow is not None and value <= yellow
     if explicit_yellow_ok or ten_pct_ok:
         return "yellow"

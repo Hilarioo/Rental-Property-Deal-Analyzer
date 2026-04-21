@@ -2451,7 +2451,9 @@
   function _classifyOverage(value, green, yellow, red) {
     if (value <= green) return 'green';
     if (value > red) return 'red';
-    var tenPctOk = (value - green) / green <= 0.10;
+    // Guard against misconfigured green<=0 (redacted-template zeros) — would
+    // otherwise divide by zero. Parity with batch/verdict.py + verdict_parity_check.mjs.
+    var tenPctOk = green > 0 ? ((value - green) / green <= 0.10) : false;
     var explicitYellowOk = (yellow !== null && yellow !== undefined) && value <= yellow;
     return (explicitYellowOk || tenPctOk) ? 'yellow' : 'red';
   }
@@ -6147,7 +6149,15 @@
       },
       clear: function () {
         rows.clear();
-        save();
+        // Prefer removeItem over save() of empty array: if localStorage is in
+        // a broken state (quota-full from another origin entry, Safari
+        // private-mode), save()'s JSON.stringify-of-[] may still throw and
+        // leave stale keys on disk — meaning a page reload rehydrates the
+        // cleared-in-memory store with old rows. removeItem is the more
+        // direct intent-match for "user asked to clear everything."
+        try {
+          localStorage.removeItem(UNIFIED_STORAGE_KEY);
+        } catch (e) { /* private mode / quota — best-effort */ }
       },
       size: function () { load(); return rows.size; },
       get: function (key) { load(); return rows.get(key) || null; },
@@ -6367,6 +6377,13 @@
               return '<li style="margin:0;padding:1px 0;">' + escapeHtml(rsn) + '</li>';
             }).join('')
           + '</ul>';
+      }
+      // Sprint 16.1: annotate rows where pipeline defaulted to duplex math
+      // because the scraper couldn't detect unit count. Without this badge
+      // the PITI / qualifying-income / rental-offset numbers look like
+      // ground truth even though they're a speculative 2-unit assumption.
+      if (r.metrics && r.metrics.units_assumed) {
+        reasonsHtml += '<div style="margin-top:4px;padding:2px 6px;background:rgba(234,179,8,0.15);color:#ca8a04;border-radius:3px;font-size:0.72rem;font-weight:600;display:inline-block;">assumes duplex math</div>';
       }
       html += '<tr style="border-bottom:1px solid var(--border);">';
       html += '<td style="padding:6px 8px;">' + _sourcePill(r.sources) + addrLink + paretoStar + '</td>';

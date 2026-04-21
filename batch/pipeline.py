@@ -632,7 +632,11 @@ def compute_property_metrics(
     """Compute the full set of metrics the ranker and verdict need."""
     p = float(price or 0)
     # When units is None, assume duplex (2) for numeric math but signal the
-    # unknown-units hard-fail via `hard_fail_units_unknown`.
+    # unknown-units hard-fail via `hard_fail_units_unknown`. The assumption
+    # is necessary because rental-offset / DTI math needs a concrete unit
+    # count — but we surface `units_assumed` to the UI so users see that
+    # numbers on YELLOW-unknown rows are speculative, not ground truth.
+    units_assumed = units is None
     u = int(units) if units else 2
     zip_tier = classify_zip_tier(zip_code)
 
@@ -735,6 +739,21 @@ def compute_property_metrics(
         rehab_red_threshold=float(rehab_red_threshold),
     )
 
+    # Sprint 16.1 fix: prefer the scraped propertyType keyword over the
+    # binary units→sfh/multi classifier. When units defaulted to 2 because
+    # the scraper couldn't detect a count, u>1 was painting condos and
+    # townhouses as "multi" — leading the verdict to skip the SFR hard-fail
+    # branch on what may well be a genuine single-unit listing.
+    _ptr = (property_type_raw or "").lower()
+    if any(k in _ptr for k in ("condo", "townhouse", "townhome",
+                               "single family", "single-family", "sfr",
+                               "sfh", "manufactured", "mobile")):
+        _property_type_classified = "sfh"
+    elif any(k in _ptr for k in ("multi", "duplex", "triplex", "fourplex")):
+        _property_type_classified = "multi"
+    else:
+        _property_type_classified = "multi" if u > 1 else "sfh"
+
     verdict_ctx = {
         "zip": zip_code,
         "zipTier": zip_tier if zip_tier != "excluded" else "outside",
@@ -744,7 +763,7 @@ def compute_property_metrics(
         "isPre1978WithGalvanized": is_pre1978_gal,
         "galvanizedEvidence": gal_evidence,
         "knobAndTubeEvidence": knob_evidence,
-        "propertyType": "multi" if u > 1 else "sfh",
+        "propertyType": _property_type_classified,
         "propertyTypeRaw": property_type_raw,
         "unitsSource": units_source,
         "units": u,
@@ -810,6 +829,9 @@ def compute_property_metrics(
         "qualifying_income": round(qualifying_income, 2),
         "gross_rent_monthly_all": round(gross_rent_monthly_all, 2),
         "stretch_scenario": stretch_scenario,  # Sprint 12-6: 203(k) parallel.
+        "units_assumed": bool(units_assumed),  # True when scraper returned
+        # no unit count and math defaulted to duplex. UI surfaces this so
+        # YELLOW unknown-units rows carry a visible "speculative math" badge.
     }
 
     return {
