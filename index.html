@@ -6596,8 +6596,37 @@
         + '</div>';
     }).join('');
 
-    // Compose.
-    var html = '<div style="padding:12px 16px;background:rgba(100,116,139,0.04);border-left:3px solid var(--accent);font-size:0.78rem;">'
+    // Sprint 16.8: "Why" reasons now live at the TOP of the drawer since
+    // the standalone Why column was removed. Bulleted list + optional
+    // "assumes duplex math" warning badge. Present only if the row has
+    // reasons — happy-GREEN rows may not.
+    var reasonsHeader = '';
+    if ((r.reasons && r.reasons.length) || (m.units_assumed)) {
+      var reasonsBody = '';
+      if (r.reasons && r.reasons.length) {
+        reasonsBody = '<ul style="margin:0 0 0 0;padding-left:18px;list-style:disc;">'
+          + r.reasons.map(function (rsn) {
+              return '<li style="margin:0;padding:2px 0;">' + escapeHtml(rsn) + '</li>';
+            }).join('')
+          + '</ul>';
+      }
+      if (m.units_assumed) {
+        reasonsBody += '<div style="margin-top:6px;padding:2px 8px;background:rgba(234,179,8,0.15);color:#ca8a04;border-radius:3px;font-size:0.72rem;font-weight:600;display:inline-block;">assumes duplex math — unit count not detected by scraper</div>';
+      }
+      // Verdict-colored border so the reasons block reads as the
+      // interpretive summary for a GREEN / YELLOW / RED row.
+      var headerColor = r.verdict === 'green' ? '#16a34a'
+        : r.verdict === 'yellow' ? '#ca8a04'
+        : r.verdict === 'red' ? '#dc2626'
+        : '#94a3b8';
+      reasonsHeader = _section('Why ' + (r.verdict || '').toUpperCase(), reasonsBody, headerColor);
+    }
+
+    // Compose. Reasons on top (what the Why column used to show), then
+    // the six formula sections in two columns, then the gate comparison
+    // as a full-width strip.
+    var html = '<div style="padding:14px 16px;background:rgba(100,116,139,0.04);border-left:3px solid var(--accent);font-size:0.78rem;">'
+      + reasonsHeader
       + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
       +   '<div>'
       +     _section('Income & qualifying', incomeBody, '#6366f1')
@@ -6724,7 +6753,12 @@
     html += '<div style="overflow-x:auto;">';
     html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
     html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
+    // Sprint 16.8: Why column removed. Reasons now live inside the expanded
+    // accordion drawer (first section, above the math breakdown), and the
+    // whole row is clickable to toggle expansion. One fewer column = more
+    // horizontal room for the remaining columns + cleaner row-level affordance.
     var headers = [
+      { key: null, label: '' },          // chevron indicator (width ~20px)
       { key: 'address', label: 'Address' },
       { key: 'price', label: 'Price' },
       { key: 'beds', label: 'Beds/Baths' },
@@ -6732,9 +6766,8 @@
       { key: 'stars', label: 'Quick Score' },
       { key: 'verdict', label: 'Verdict' },
       { key: 'topsis', label: 'TOPSIS' },
-      { key: null, label: 'Why' },
-      { key: null, label: '' },
-      { key: null, label: '' },
+      { key: null, label: '' },          // Analyze button
+      { key: null, label: '' },          // × delete button
     ];
     headers.forEach(function (h) {
       var cursor = h.key ? 'cursor:pointer;' : '';
@@ -6760,31 +6793,24 @@
       // "fix the why reasoning getting cut off show all info". Each
       // reason gets its own bullet line so long strings wrap cleanly
       // instead of being clipped with an ellipsis.
-      var reasonsHtml = '';
-      if (r.reasons && r.reasons.length) {
-        reasonsHtml = '<ul style="margin:0;padding-left:16px;list-style:disc;">'
-          + r.reasons.map(function (rsn) {
-              return '<li style="margin:0;padding:1px 0;">' + escapeHtml(rsn) + '</li>';
-            }).join('')
-          + '</ul>';
-      }
-      // Sprint 16.1: annotate rows where pipeline defaulted to duplex math
-      // because the scraper couldn't detect unit count. Without this badge
-      // the PITI / qualifying-income / rental-offset numbers look like
-      // ground truth even though they're a speculative 2-unit assumption.
-      if (r.metrics && r.metrics.units_assumed) {
-        reasonsHtml += '<div style="margin-top:4px;padding:2px 6px;background:rgba(234,179,8,0.15);color:#ca8a04;border-radius:3px;font-size:0.72rem;font-weight:600;display:inline-block;">assumes duplex math</div>';
-      }
-      // Sprint 16.7 Bundle 2: chevron + click affordance on the Why cell
-      // so the user can expand the full verdict breakdown inline.
-      // Review P2 on PR #42: added role/tabindex/aria-expanded for
-      // keyboard a11y, and wrapped the JSON.stringify in escapeHtml for
-      // belt-and-suspenders (even though keys are URLs, a pathological
-      // `<` or `>` would otherwise break the attribute).
+      // Sprint 16.8: Why column removed; whole row is clickable to expand
+      // the verdict-math accordion. Reasons move inside the accordion
+      // drawer as the first "section" (see _renderVerdictBreakdown).
+      // The chevron gets its own tiny leading column so users see the
+      // click affordance without the row looking busy.
       var isExpanded = EXPANDED_ROWS.has(r.key);
-      var chevron = '<span style="display:inline-block;width:14px;color:var(--text-muted);font-size:0.7rem;transition:transform 0.15s;transform:' + (isExpanded ? 'rotate(90deg)' : 'rotate(0deg)') + ';">▶</span>';
+      var chevron = '<span aria-hidden="true" style="display:inline-block;color:var(--text-muted);font-size:0.75rem;transition:transform 0.15s;transform:' + (isExpanded ? 'rotate(90deg)' : 'rotate(0deg)') + ';">▶</span>';
       var whyKeyJson = escapeHtml(JSON.stringify(r.key));
-      html += '<tr style="border-bottom:1px solid var(--border);">';
+      var rowBg = isExpanded ? 'background:rgba(99,102,241,0.04);' : '';
+      // Row-level click/keydown + a11y attrs. Individual action cells
+      // (Analyze button, × delete) stop event propagation so they don't
+      // toggle the row along with their primary action.
+      html += '<tr style="border-bottom:1px solid var(--border);cursor:pointer;' + rowBg + '"'
+        + ' role="button" tabindex="0" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
+        + ' onclick="window.__toggleVerdictBreakdown(' + whyKeyJson + ')"'
+        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();window.__toggleVerdictBreakdown(' + whyKeyJson + ');}"'
+        + ' title="Click (or Enter/Space) to ' + (isExpanded ? 'collapse' : 'expand') + ' verdict math">';
+      html += '<td style="padding:6px 4px 6px 8px;width:20px;">' + chevron + '</td>';
       html += '<td style="padding:6px 8px;">' + _sourcePill(r.sources) + addrLink + paretoStar + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtDollar(r.price) + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;">' + escapeHtml(String(beds)) + ' / ' + escapeHtml(String(baths)) + '</td>';
@@ -6792,15 +6818,9 @@
       html += '<td style="padding:6px 8px;letter-spacing:0.04em;">' + stars + '</td>';
       html += '<td style="padding:6px 8px;">' + _verdictPill(r.verdict) + '</td>';
       html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
-      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;word-break:break-word;max-width:40ch;cursor:pointer;"'
-        + ' role="button" tabindex="0" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
-        + ' onclick="window.__toggleVerdictBreakdown(' + whyKeyJson + ')"'
-        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();window.__toggleVerdictBreakdown(' + whyKeyJson + ');}"'
-        + ' title="Click (or Enter/Space) to ' + (isExpanded ? 'collapse' : 'expand') + ' verdict math">'
-        + chevron + ' ' + reasonsHtml + '</td>';
       var openUrl = r.listingUrl ? JSON.stringify(r.listingUrl).replace(/"/g, '&quot;') : '""';
-      html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + openUrl + ')">Analyze</button></td>';
-      html += '<td style="padding:6px 4px;"><button type="button" title="Remove from list" aria-label="Remove" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="window.__unifiedDelete(' + JSON.stringify(r.key).replace(/"/g, '&quot;') + ')">×</button></td>';
+      html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="event.stopPropagation();window.__openBatchRow(' + openUrl + ')">Analyze</button></td>';
+      html += '<td style="padding:6px 4px;"><button type="button" title="Remove from list" aria-label="Remove" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="event.stopPropagation();window.__unifiedDelete(' + whyKeyJson + ')">×</button></td>';
       html += '</tr>';
       // Quick-score details sub-row
       if (scoreDetails) {
@@ -6948,7 +6968,7 @@
     html += '<p style="margin:0 0 6px;"><strong style="color:var(--text);">Verdict colors:</strong> ';
     html += '<span style="color:#16a34a;font-weight:600;">Green = pursue</span>, ';
     html += '<span style="color:#ca8a04;font-weight:600;">Yellow = investigate</span>, ';
-    html += '<span style="color:#dc2626;font-weight:600;">Red = skip</span> (the Why column lists the triggering reasons).</p>';
+    html += '<span style="color:#dc2626;font-weight:600;">Red = skip</span> (click any row to expand the full verdict math — reasons, PITI breakdown, rent comps, gate comparison).</p>';
     html += '<p style="margin:0;font-size:0.78rem;">Note: failed URLs (unreachable listings, rate-limited scrapes, unsupported sites) appear in the Failed URLs section below with a one-click Retry.</p>';
     html += '</div></details>';
     return html;
