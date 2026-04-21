@@ -68,6 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_urlhash_time ON scrape_snapshots(url_ha
 CREATE INDEX IF NOT EXISTS idx_snapshots_zip_time ON scrape_snapshots(url_hash, scraped_at);
 
 -- 3) batches
+-- `scan_request_id` (Sprint 17 Bundle 2): nullable group key for per-ZIP
+-- sub-batches that belong to a single Scan ZIPs submission. Lets
+-- /api/scan-status/{request_id} aggregate progress across N ZIPs with
+-- one poll instead of N. Single-URL + paste-batch submissions leave it
+-- null (no grouping needed).
 CREATE TABLE IF NOT EXISTS batches (
     batch_id          TEXT PRIMARY KEY,
     created_at        TEXT NOT NULL,
@@ -77,10 +82,15 @@ CREATE TABLE IF NOT EXISTS batches (
     status            TEXT NOT NULL CHECK (status IN ('pending','running','complete','failed','partial')),
     external_batch_id TEXT,
     preset_name       TEXT,
-    error_reason      TEXT
+    error_reason      TEXT,
+    scan_request_id   TEXT
+    -- scraped_count is added via _ADDITIVE_MIGRATIONS below; keeping
+    -- the migration path working for existing DBs means not
+    -- declaring it inline here.
 );
 CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status);
+CREATE INDEX IF NOT EXISTS idx_batches_scan_req ON batches(scan_request_id) WHERE scan_request_id IS NOT NULL;
 
 -- 3a) batch_url_hashes — tracks which URLs were submitted in each batch so
 -- overlapping concurrent batches don't cross-contaminate each other's
@@ -208,6 +218,21 @@ TABLE_NAMES = (
 # duplicate-column ALTER, which is our idempotency signal.
 _ADDITIVE_MIGRATIONS = (
     ("batches", "scraped_count", "INTEGER"),
+    # Sprint 17 Bundle 2: scan_request_id groups per-ZIP sub-batches
+    # under one scan submission so /api/scan-status/{request_id} can
+    # roll up N batches into one poll.
+    ("batches", "scan_request_id", "TEXT"),
+)
+
+# Sprint 17 Bundle 2: explicit index creations run post-migration. The
+# CREATE INDEX IF NOT EXISTS statements in SCHEMA_SQL cover fresh DBs
+# but any index added ALONGSIDE a migrated column needs its own pass.
+_POST_MIGRATION_INDEXES = (
+    (
+        "idx_batches_scan_req",
+        "CREATE INDEX IF NOT EXISTS idx_batches_scan_req "
+        "ON batches(scan_request_id) WHERE scan_request_id IS NOT NULL",
+    ),
 )
 
 
@@ -217,6 +242,16 @@ def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
         except sqlite3.OperationalError:
             # Column already exists — idempotent no-op.
+            pass
+    for _name, sql in _POST_MIGRATION_INDEXES:
+        try:
+            conn.execute(sql)
+        except sqlite3.Error:
+            # Review P1 on PR #48: broadened from OperationalError to
+            # Error for symmetry with other handlers in this file and
+            # defense against DatabaseError on corrupt-DB edge cases.
+            # Index already exists / referenced column missing / DB
+            # malformed — all safe no-ops; the app keeps running.
             pass
 
 

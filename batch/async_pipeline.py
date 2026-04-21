@@ -1455,12 +1455,24 @@ def _load_rankings_for_response(db_path: str, batch_id: str) -> list[dict[str, A
 
 
 async def reconcile_pending_batches_on_startup(db_path: str) -> None:
-    """Fire-and-forget: poll any async batches we left pending on last boot."""
+    """Fire-and-forget: poll any async batches we left pending on last boot.
+
+    Sprint 17 Bundle 2: also reconcile orphaned sync-mode batches.
+    Scan-zips submits each ZIP's URLs as a mode='sync' background
+    task via asyncio.create_task; if the server restarts before
+    that task commits results, the batches row sits at status=
+    'pending' forever (the old reconcile only looked at mode=
+    'async'). We mark those as failed with a descriptive reason so
+    the UI can surface a retry affordance instead of spinning.
+    """
     try:
         conn = get_connection(db_path)
         try:
-            rows = conn.execute(
+            async_rows = conn.execute(
                 "SELECT batch_id FROM batches WHERE mode='async' AND status='pending'"
+            ).fetchall()
+            sync_rows = conn.execute(
+                "SELECT batch_id FROM batches WHERE mode='sync' AND status='pending'"
             ).fetchall()
         finally:
             conn.close()
@@ -1468,11 +1480,36 @@ async def reconcile_pending_batches_on_startup(db_path: str) -> None:
         logger.exception("reconcile: failed to read pending batches")
         return
 
-    if not rows:
+    # Mark orphaned sync batches as failed. The background
+    # asyncio.create_task that was supposed to advance them died with
+    # the previous process; nothing will move them forward, so leaving
+    # them pending means clients poll forever.
+    if sync_rows:
+        logger.info(
+            "reconcile: marking %d orphaned sync-pending batch(es) as failed",
+            len(sync_rows),
+        )
+        try:
+            conn = get_connection(db_path)
+            try:
+                def _mark_orphans(c: sqlite3.Connection) -> None:
+                    now = utc_now_iso()
+                    c.executemany(
+                        "UPDATE batches SET status='failed', completed_at=?, error_reason=? "
+                        "WHERE batch_id=? AND status='pending'",
+                        [(now, "server_restart_mid_batch", r["batch_id"]) for r in sync_rows],
+                    )
+                with_immediate_tx(conn, _mark_orphans)
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            logger.exception("reconcile: failed to mark sync orphans as failed")
+
+    if not async_rows:
         return
 
-    logger.info("reconcile: polling %d pending async batch(es) on startup", len(rows))
-    for r in rows:
+    logger.info("reconcile: polling %d pending async batch(es) on startup", len(async_rows))
+    for r in async_rows:
         bid = r["batch_id"]
         try:
             await poll_async_batch(bid, db_path=db_path)
