@@ -455,3 +455,206 @@ def test_coerce_unitsInferred_none_value_preserved(coerce_analysis):
     out = coerce_analysis({"unitsInferred": {"value": None, "confidence": 0.3}})
     assert out["unitsInferred"]["value"] is None
     assert out["unitsInferred"]["confidence"] == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Sprint 17 Bundle 1 — vision output field removed from schema
+# ---------------------------------------------------------------------------
+# Contract: the LLM schema no longer requests vision.* fields. The LLM
+# still reads property photos (Anthropic Vision) to inform roofAgeYears,
+# rehabBand, and riskFlags, but we stop paying for the ~250 output
+# tokens of prose describing what it saw. Zero downstream consumers
+# existed for those fields (audit: no refs in verdict.py / ranking.py /
+# pipeline.py / index.html).
+
+
+def test_default_analysis_has_no_vision_field():
+    """Bundle 1: default_llm_analysis must not carry the vision object —
+    removed to cut output token cost."""
+    from batch import llm
+    d = llm.default_llm_analysis(failed=False)
+    assert "vision" not in d, (
+        "vision field should be removed from the schema; remove from "
+        "default_llm_analysis too so the coerce merge doesn't re-inject it"
+    )
+
+
+def test_default_analysis_preserves_other_fields():
+    """Bundle 1: removing vision must not break any sibling field."""
+    from batch import llm
+    d = llm.default_llm_analysis(failed=False)
+    # Core fields consumed downstream by verdict/ranking:
+    for key in (
+        "roofAgeYears", "rehabBand", "motivationSignals", "riskFlags",
+        "insuranceUplift", "aduPotential", "unitsInferred",
+        "narrativeForRanking",
+    ):
+        assert key in d, f"missing {key} after vision removal"
+    # rehabBand still has all 6 categories:
+    for cat in ("roof", "plumbing", "electrical", "cosmetic", "hvac", "other"):
+        assert cat in d["rehabBand"], f"rehabBand missing {cat}"
+    # riskFlags still has all 5 flags:
+    for flag in (
+        "foundationConcern", "galvanizedPlumbing", "knobAndTubeElectrical",
+        "flatRoof", "unpermittedAdu",
+    ):
+        assert flag in d["riskFlags"], f"riskFlags missing {flag}"
+
+
+def test_coerce_analysis_ignores_vision_if_llm_emits_it(coerce_analysis):
+    """Bundle 1: if a stale LLM response still contains a vision object
+    (maybe from an older cache), coerce should NOT crash — just leave
+    it alone or ignore it. The removed-from-schema prompt tells the
+    LLM not to emit it going forward, but defensive resilience matters
+    for in-flight/cached responses during the transition."""
+    out = coerce_analysis({
+        "vision": {"exteriorCondition": "stale data from old cache"},
+        "rehabBand": {"roof": {"low": 1000, "mid": 2000, "high": 3000}},
+    })
+    # Should not throw, should not add vision to the canonical schema:
+    assert "rehabBand" in out
+    # If vision is passed through as-is (belt-and-suspenders), that's
+    # fine — downstream code was already ignoring it. If filtered out,
+    # also fine. What we MUST NOT do is crash.
+    # (No assertion on vision presence/absence — either is acceptable.)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 17 Bundle 1 — _pre_llm_hard_fail gate coverage
+# ---------------------------------------------------------------------------
+# Each gate must fire on its own deterministic structural failure AND
+# return None on the happy path. Tests exercise the four gate branches
+# plus a baseline pass-through. Fixtures use minimal scrape/enrichment
+# dicts so the tests don't depend on scrape internals.
+
+
+@pytest.fixture(scope="module")
+def pre_llm_hard_fail():
+    """Import batch.pipeline._pre_llm_hard_fail once per module.
+
+    Guard against the arm64 venv issue by importing only the helper,
+    not app.py — pipeline.py pulls llm.py + verdict.py which are all
+    pure-python and safe to import in the test venv.
+    """
+    from batch import pipeline
+    return pipeline._pre_llm_hard_fail
+
+
+def test_pre_llm_happy_path_returns_none(pre_llm_hard_fail):
+    """Baseline: a normal duplex under ceiling, within commute,
+    non-excluded ZIP — should NOT be skipped. LLM gets the call."""
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "123 Main St, Vallejo, CA 94590",
+            "price": 500000, "units": 2, "units_source": "keyword_duplex",
+            "beds": 4, "baths": 2,
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is None, f"happy path should pass LLM; got {result}"
+
+
+def test_pre_llm_excluded_zip(pre_llm_hard_fail):
+    """Gate 1a: excluded ZIP fires `excluded_zip` gate."""
+    # 94803 is in spec.zipTiers.excludedZips per the default profile.
+    result = pre_llm_hard_fail(
+        scrape={"address": "1 Fake St, Richmond, CA 94803", "price": 500000, "units": 2, "units_source": "ldjson_numberOfUnits"},
+        enrichment_row=None,
+        zip_code="94803",
+    )
+    assert result is not None
+    assert result["gate"] == "excluded_zip"
+    assert "94803" in result["reason"]
+
+
+def test_pre_llm_single_unit(pre_llm_hard_fail):
+    """Gate 2: confirmed single-unit property (real units_source
+    signal) fires `single_unit` gate regardless of toggles. Mirrors
+    verdict.py:u<=1 hard-fail which is unconditional."""
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "123 Condo Way UNIT 5, Vallejo, CA 94590",
+            "price": 400000, "units": 1, "units_source": "address_suffix",
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is not None
+    assert result["gate"] == "single_unit"
+
+
+def test_pre_llm_single_unit_no_source_passes(pre_llm_hard_fail):
+    """Gate 2 edge: units=1 but units_source is empty → not confident,
+    let LLM see it (maybe ADU candidate, maybe scraper misread).
+
+    Fix per PR #47 review: the old check was tautological; now we
+    correctly gate on units_source being a real signal."""
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "123 Main St, Vallejo, CA 94590",
+            "price": 400000, "units": 1, "units_source": "",
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is None, (
+        "units=1 with empty units_source is ambiguous — LLM should get "
+        "the call; pre-LLM skip should not fire"
+    )
+
+
+def test_pre_llm_price_ceiling_over(pre_llm_hard_fail):
+    """Gate 3: price > duplex ceiling by >10% fires `price_ceiling`
+    gate. Uses _classify_overage's RED boundary — YELLOW band still
+    reaches the LLM."""
+    # Jose's priceCeilingDuplex = $525K per profile. 10% overage
+    # boundary = $577.5K. $700K sits comfortably above the RED gate.
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "1 Main St, Vallejo, CA 94590",
+            "price": 700000, "units": 2, "units_source": "keyword_duplex",
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is not None
+    assert result["gate"] == "price_ceiling"
+    assert "700" in result["reason"]
+
+
+def test_pre_llm_price_yellow_band_passes(pre_llm_hard_fail):
+    """Gate 3 edge: price in the YELLOW band (≤10% over ceiling) must
+    NOT be skipped — yellow/red nuance needs LLM to land correctly."""
+    # priceCeilingDuplex = $525K; $550K is ~4.7% over (yellow band).
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "1 Main St, Vallejo, CA 94590",
+            "price": 550000, "units": 2, "units_source": "keyword_duplex",
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is None, (
+        "yellow-band price (within 10% over ceiling) should let LLM "
+        "run — the verdict nuance between GREEN/YELLOW matters"
+    )
+
+
+def test_pre_llm_unknown_units_no_skip(pre_llm_hard_fail):
+    """Gate 3 edge: units=None means the scraper couldn't determine it;
+    we can't pick the right ceiling, so skip the price gate entirely
+    and let the LLM + duplex-assumption math handle it downstream."""
+    # Price $700K would fail duplex ceiling, but units is unknown.
+    result = pre_llm_hard_fail(
+        scrape={
+            "address": "1 Main St, Vallejo, CA 94590",
+            "price": 700000, "units": None, "units_source": "",
+        },
+        enrichment_row={"lat": 38.1041, "lng": -122.2567},
+        zip_code="94590",
+    )
+    assert result is None, (
+        "units=None means we can't pick the unit-adjusted ceiling; "
+        "let LLM + downstream duplex-assumed math handle it"
+    )
