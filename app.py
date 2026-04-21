@@ -3036,6 +3036,14 @@ async def batch_submit_async(request: Request):
 # under Semaphore(3) — Redfin, not the LLM, is now the wall. Proxy
 # pool is the follow-up for faster large scans.
 _SCAN_ZIPS_MAX_ZIPS = 2000
+# Sprint 17 Bundle 3: auto-routing threshold. Above this survivor
+# count, empty-mode (user didn't pick) falls through to Anthropic
+# Batches for the 50% discount. Below it, stays on per-ZIP streaming
+# so the user gets real-time incremental results. Tuned for a
+# typical 100 URL/min local-async throughput — scans above this
+# would take long enough that queue latency is acceptable vs the
+# cost savings.
+_AUTO_BATCH_THRESHOLD = 1000
 _SCAN_ZIPS_DEFAULT_TOP_N = 10
 # Sprint 16.9: cap raised 50 → 1000. Redfin's own lazy-load still caps
 # rendered cards per ZIP around 150-250, and `top_n` is applied AFTER
@@ -3185,8 +3193,16 @@ async def scan_zips(request: Request):
     max_results_per_search = max(top_n, 20)
 
     mode = (_opt_str("mode") or "").lower()
-    if mode not in ("sync", "async", ""):
+    # Sprint 17 Bundle 3: accept four modes.
+    #   ""       auto — pick based on total URL count (see branch below)
+    #   "sync"   single combined sync batch, inline envelope (tiny scans)
+    #   "stream" per-ZIP background sub-batches (per-ZIP streaming)
+    #   "async"  backward-compat alias for "stream"
+    #   "batch"  Anthropic Batches API (50% off, up to 24hr turnaround)
+    if mode not in ("sync", "async", "stream", "batch", ""):
         mode = ""
+    if mode == "async":
+        mode = "stream"  # normalize legacy alias
 
     # --- Apply ZIP-level exclusion ---
     excluded_zips_set = set(_spec_constants.zip_tiers.get("excludedZips") or [])
@@ -3321,33 +3337,126 @@ async def scan_zips(request: Request):
             )
         survivors = clean_urls
 
-        # Sprint 16.10: scan mode semantics
-        #   mode="sync"          → one combined sync batch, inline envelope
-        #                          (old behavior — escape hatch for tiny scans)
-        #   mode="async" | ""    → NEW per-ZIP streaming: each ZIP's URLs
-        #                          become their own background batch, all
-        #                          polled in parallel by the client. User
-        #                          sees results surface per-ZIP as each
-        #                          finishes (fastest-to-slowest order).
+        # Sprint 17 Bundle 3: scan mode semantics — four paths.
+        #   mode="sync"   → one combined local sync batch, inline envelope.
+        #                   Tiny scans only; HTTP timeout risk above _BATCH_HARD_CAP.
+        #   mode="stream" → per-ZIP local background sub-batches. Fast
+        #                   incremental UI (rows stream in as each ZIP
+        #                   completes). Uses local LLM calls, pays full rate.
+        #   mode="batch"  → Anthropic Message Batches API. 50% off all
+        #                   tokens, up to 24hr turnaround. Best for
+        #                   huge scans where the user can walk away.
+        #   mode=""       → auto: pick based on total URL count (see below).
         #
-        # Force-sync guardrail preserved from Sprint 12: reject above the
-        # hard cap since a single sync envelope of that size would timeout
-        # HTTP.
-        if mode == "sync":
+        # Auto routing heuristic (binary split at _AUTO_BATCH_THRESHOLD):
+        #   survivors ≤ _AUTO_BATCH_THRESHOLD → "stream"
+        #     (per-ZIP incremental UI, real-time feedback, full rate)
+        #   survivors >  _AUTO_BATCH_THRESHOLD → "batch"
+        #     (Anthropic Batches, 50% off, up to 24hr turnaround)
+        # Review P1 on PR #49: the prior comment implied a 3-way band
+        # but the code was always binary. Clarified + thresholded via
+        # named constant so tuning is a one-line edit.
+        chosen_mode = mode
+        if chosen_mode == "":
+            if len(survivors) > _AUTO_BATCH_THRESHOLD:
+                chosen_mode = "batch"
+            else:
+                chosen_mode = "stream"
+
+        if chosen_mode == "sync":
             if len(survivors) > _BATCH_HARD_CAP:
                 return JSONResponse(
                     _error_envelope(
                         "VALIDATION_ERROR",
-                        f"Force sync rejected: {len(survivors)} URLs exceeds hard cap {_BATCH_HARD_CAP}. Reduce ZIPs/top-N or choose Async.",
+                        f"Force sync rejected: {len(survivors)} URLs exceeds hard cap {_BATCH_HARD_CAP}. Reduce ZIPs/top-N or choose Streaming / Queue.",
                         request_id,
                     ),
                     status_code=400,
                 )
             want_stream = False
+        elif chosen_mode == "batch":
+            want_stream = False  # Handled via its own branch below.
         else:
             want_stream = True
 
         api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        # Sprint 17 Bundle 3: "batch" mode — submit all survivors as one
+        # Anthropic Message Batches request, return the single batch_id
+        # for polling via /api/batch-status. Anthropic processes the
+        # batch at 50% discount; turnaround up to 24hr (usually 5-60min).
+        # Scan_request_id tagged so /api/scan-status can still aggregate
+        # even though there's only one downstream batch.
+        if chosen_mode == "batch":
+            try:
+                sub_result = await _submit_async_batch(
+                    survivors,
+                    db_path=str(_BATCH_DB_PATH),
+                    client_ip=client_ip,
+                    api_key=api_key,
+                    preset_name=preset_name,
+                )
+            except Exception:
+                logger.exception(
+                    "scan-zips batch submit failed (request_id=%s)", request_id
+                )
+                return JSONResponse(
+                    _error_envelope(
+                        "INTERNAL_ERROR",
+                        "Anthropic Batches submission failed.",
+                        request_id,
+                    ),
+                    status_code=500,
+                )
+            # Tag the batches row with scan_request_id so the new
+            # /api/scan-status/{request_id} endpoint finds it.
+            # Review P2 on PR #49: upgraded warning→exception so a
+            # missing column (bad migration) is visible in logs with
+            # full traceback, not silently swallowed.
+            try:
+                from batch.db import get_connection as _gc
+                conn = _gc(str(_BATCH_DB_PATH))
+                try:
+                    conn.execute(
+                        "UPDATE batches SET scan_request_id=? WHERE batch_id=?",
+                        (request_id, sub_result.get("batch_id")),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                logger.exception(
+                    "scan-zips batch: failed to tag scan_request_id on batches "
+                    "row (batch_id=%s request_id=%s)",
+                    sub_result.get("batch_id"), request_id,
+                )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "scan_zips zip_count=%d survivors=%d mode=batch "
+                "batch_id=%s external_batch_id=%s elapsed=%dms",
+                len(scan_zips_in), len(survivors),
+                sub_result.get("batch_id"),
+                sub_result.get("external_batch_id"),
+                elapsed_ms,
+            )
+            response = {
+                "status": sub_result.get("status", "pending"),
+                "mode": "anthropic-batches",
+                "request_id": request_id,
+                "batch": sub_result,
+                "summary": {
+                    "zip_count": len(zips),
+                    "zips_scanned": len(scan_zips_in),
+                    "survivors": len(survivors),
+                    "top_n_per_zip": top_n,
+                    "elapsed_ms": elapsed_ms,
+                    "auto_routed_from_empty_mode": (mode == ""),
+                },
+                "per_zip": per_zip_summary,
+                "rejected": rejected_block,
+            }
+            status_code = 202 if response["status"] == "pending" else 200
+            return JSONResponse(response, status_code=status_code)
 
         if want_stream:
             # Sprint 16.10: per-ZIP sub-batch fan-out. For each ZIP that
