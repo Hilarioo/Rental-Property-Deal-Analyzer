@@ -7845,7 +7845,49 @@
   // a single response. When a batch transitions to status=complete,
   // fires a one-off /api/batch-status/{id} fetch to pull the full
   // envelope and merge rankings into the unified store.
+  //
+  // Concurrency cap on the completion-edge fetches (review P1 on
+  // PR #51): without a bound, a cache-heavy scan could flip 500
+  // batches to done in one tick and spawn 500 simultaneous envelope
+  // fetches, reintroducing the fan-out problem we eliminated by
+  // switching to the aggregate endpoint.
+  var _ENVELOPE_FETCH_CHUNK_SIZE = 8;
+
+  async function _flushCompletionFetches(completedNow, generation) {
+    for (var i = 0; i < completedNow.length; i += _ENVELOPE_FETCH_CHUNK_SIZE) {
+      if (generation !== _scanZipsStreamGeneration) return;
+      var chunk = completedNow.slice(i, i + _ENVELOPE_FETCH_CHUNK_SIZE);
+      await Promise.all(chunk.map(async function (entry) {
+        try {
+          var r = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
+          if (generation !== _scanZipsStreamGeneration) return;
+          var env = await r.json();
+          if (env && env.status === 'complete' && env.rankings) {
+            env.source = 'scan_zips';
+            renderResults(env);
+          }
+        } catch (e) {
+          // Review P1 on PR #51: log so a silent envelope-fetch
+          // failure is at least visible in devtools. The card
+          // already shows "done" with rank_count from the
+          // aggregate response; the user can reload to pull the
+          // envelope on their next visit.
+          if (typeof console !== 'undefined') {
+            console.warn(
+              'scan-zips envelope fetch failed for batch',
+              entry.batch_id, e
+            );
+          }
+        }
+      }));
+    }
+  }
+
   async function _pollScanZipsAggregate(entries, onUpdate, generation, requestId) {
+    // Safe to lookup once — `entries` is fixed at __startScanZipsStreaming
+    // entry and does not grow. New batches for the same scan are not
+    // added mid-flight; each scan-zips invocation produces its own
+    // entries array.
     var entryByBatchId = {};
     entries.forEach(function (e) {
       if (e.batch_id) entryByBatchId[e.batch_id] = e;
@@ -7853,7 +7895,6 @@
     var startedAt = Date.now();
     while (Date.now() - startedAt < _scanZipsPollTimeoutMs) {
       if (generation !== _scanZipsStreamGeneration) return;
-      var allDone = true;
       try {
         var resp = await fetch('/api/scan-status/' + encodeURIComponent(requestId));
         if (generation !== _scanZipsStreamGeneration) return;
@@ -7874,29 +7915,24 @@
             } else if (b.status === 'failed') {
               entry.clientState = 'failed';
               entry.errorReason = b.error_reason || 'unknown';
-            } else {
-              allDone = false;
             }
           });
           onUpdate(entries);
-          // For each batch that just completed, fetch its full
-          // envelope and merge rankings. This is the one place we
-          // still hit /api/batch-status per-batch — but only on the
-          // completion edge, not every tick. Concurrent bursts are
-          // self-limiting to the completion rate.
-          for (var i = 0; i < completedNow.length; i++) {
-            (async function (entry) {
-              try {
-                var r = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
-                if (generation !== _scanZipsStreamGeneration) return;
-                var env = await r.json();
-                if (env && env.status === 'complete' && env.rankings) {
-                  env.source = 'scan_zips';
-                  renderResults(env);
-                }
-              } catch (_e) { /* best-effort envelope fetch */ }
-            })(completedNow[i]);
+          // Chunked concurrency cap replaces the prior per-batch
+          // IIFE fire-and-forget. Chunks of _ENVELOPE_FETCH_CHUNK_SIZE
+          // use Promise.all for parallelism within the chunk while
+          // preventing a 500-batch stampede.
+          if (completedNow.length > 0) {
+            await _flushCompletionFetches(completedNow, generation);
           }
+          if (generation !== _scanZipsStreamGeneration) return;
+          // Review P2 on PR #51: compute allDone from LOCAL entries,
+          // not the aggregate response. If the backend ever returns
+          // a superset (new batches tagged with same request_id), the
+          // prior logic would exit early with pending local cards.
+          var allDone = entries.every(function (e) {
+            return !e.batch_id || e.clientState !== 'pending';
+          });
           if (allDone) return;
         }
       } catch (_e) { /* transient — keep polling */ }
