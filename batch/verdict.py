@@ -328,8 +328,21 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
         yellow_reasons.append(f"Roof {int(roof_age)} yrs old — FHA appraisal risk")
 
     # Append units-unknown hard-fail LAST so existing dominant fails surface first.
+    # Sprint 16: `jose.enforceUnitsKnownAsHardFail` governs whether the
+    # scraper's inability to determine unit count is a hard-RED. Default
+    # false — unit detection is brittle (depends on Redfin JSON having
+    # `numberOfUnits` OR the listing mentioning "duplex" / "triplex" /
+    # "fourplex" OR the address having an APT-N suffix OR propertyType
+    # resolving to condo/sfr/multi). When any of those signals miss, the
+    # row used to hard-fail with a 0 TOPSIS score and get buried. Now:
+    #   false (new default): YELLOW warning, row stays rankable, downstream
+    #     math assumes duplex (2 units) — same assumption the pipeline
+    #     already uses for numeric computation.
+    #   true (opt-in, Sprint 4 behavior): RED hard-fail as before.
     if units_unknown_fail:
-        red_reasons.append("Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard")
+        enforce_units = JOSE_THRESHOLDS.get("enforceUnitsKnownAsHardFail")
+        msg = "Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard"
+        (red_reasons if enforce_units else yellow_reasons).append(msg)
 
     if red_reasons:
         verdict = "red"

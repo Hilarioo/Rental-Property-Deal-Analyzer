@@ -196,8 +196,11 @@ function computeJoseVerdict(ctx) {
     yellowReasons.push('Roof ' + c.roofAgeYears + ' yrs old — FHA appraisal risk');
   }
 
+  // Sprint 16 parity mirror: enforceUnitsKnownAsHardFail toggle.
   if (unitsUnknownFail) {
-    redReasons.push('Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard');
+    var msg = 'Unit count ambiguous — cannot confirm 2-4 unit eligibility; set units manually in the single-property wizard';
+    if (T.enforceUnitsKnownAsHardFail) redReasons.push(msg);
+    else yellowReasons.push(msg);
   }
 
   var verdict;
