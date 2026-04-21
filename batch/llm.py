@@ -109,7 +109,15 @@ def _get_llm_sem() -> asyncio.Semaphore:
     """Lazy accessor for the global LLM concurrency gate. Binds to
     the event loop that's running when first called — which is the
     request-handling loop, not whatever loop may have been current
-    at module import time."""
+    at module import time.
+
+    Thread-safety note: this function is NOT thread-safe, but that's
+    fine — it's only ever called from asyncio coroutines on a single
+    event loop. There's no `await` between the None-check and the
+    assignment, so two concurrent coroutines cannot both observe the
+    cache as None. If we ever introduce real threading (not asyncio
+    tasks), wrap the init with a threading.Lock.
+    """
     global _LLM_SEM_CACHED
     if _LLM_SEM_CACHED is None:
         _LLM_SEM_CACHED = asyncio.Semaphore(_LLM_CONCURRENCY)
