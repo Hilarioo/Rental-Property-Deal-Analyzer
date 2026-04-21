@@ -3083,11 +3083,17 @@ def _project_scan_cost(survivors_count: int) -> dict:
     # Batch mode: same calls via Anthropic Batches API → 50% off.
     cost_batch_usd = round(cost_stream_usd * (1.0 - _ESTIMATE_BATCHES_DISCOUNT), 2)
 
-    # Wall-clock. Stream mode: ~30-90s per per-ZIP sub-batch under
-    # the global LLM semaphore (5 concurrent). At 10 URLs/ZIP the
-    # single-sub-batch path is ~30s; at 100 URLs/ZIP it's ~3-4min.
-    # Rough estimate: survivors / 5 concurrent / 2 URL/s = seconds.
-    wall_stream_min = max(1, int(round(projected_llm_calls / 10.0)))  # ~6 URLs/min per slot
+    # Wall-clock. Stream mode throughput is bounded by the global
+    # LLM semaphore × avg per-call latency:
+    #   throughput_URLs_per_min ≈ BATCH_LLM_CONCURRENCY × 60 / avg_latency_s
+    #   default: 5 × 60 / 7 ≈ 43 URLs/min
+    # Review P0 on PR #50: prior formula divided by 10 (~6 URL/min),
+    # undersold throughput by ~4x and pushed users to batch mode
+    # unnecessarily. Matching reality at ~40 URL/min now. Note this
+    # ignores Redfin-phase wall clock — scan-zips already elapsed
+    # that before calling this helper.
+    _AVG_URLS_PER_MIN = 40
+    wall_stream_min = max(1, int(round(projected_llm_calls / _AVG_URLS_PER_MIN)))
 
     # Batch mode: Anthropic processes in 5-60min typical, up to 24hr.
     # Present as a range, not a point.
@@ -3155,21 +3161,12 @@ async def scan_zips(request: Request):
     """
     request_id = uuid.uuid4().hex
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"scan:{client_ip}", 10):  # Sprint 14.5: 2 → 10 submissions/min.
-        return JSONResponse(
-            _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
-            status_code=429,
-        )
-    if _scan_zips_sem.locked():
-        return JSONResponse(
-            _error_envelope(
-                "SCAN_BUSY",
-                "Another ZIP scan is already running. Wait for it to finish.",
-                request_id,
-            ),
-            status_code=429,
-        )
 
+    # Parse body FIRST so we know whether this is a cheap estimate
+    # request (separate rate bucket) vs a real scan (full `scan:`
+    # bucket). Review P0 on PR #50: estimate calls hitting the same
+    # bucket let a user burn through their scan budget tuning
+    # filters, locking out real scans for a minute.
     try:
         body = await request.json()
     except Exception:
@@ -3184,6 +3181,33 @@ async def scan_zips(request: Request):
     # calls, no DB writes beyond scrape_snapshots already written
     # by the search itself).
     estimate_only = bool(body.get("estimate_only"))
+
+    # Sprint 17 Bundle 4: split rate buckets. Estimates are cheap
+    # enough (Redfin phase only, no LLM) to allow more frequent
+    # usage — users will naturally tune filters and re-estimate.
+    # 30/min for estimates vs 10/min for real scans.
+    if estimate_only:
+        if not _check_rate_limit(f"estimate:{client_ip}", 30):
+            return JSONResponse(
+                _error_envelope("RATE_LIMIT_EXCEEDED", "Too many estimate requests.", request_id),
+                status_code=429,
+            )
+    else:
+        if not _check_rate_limit(f"scan:{client_ip}", 10):
+            return JSONResponse(
+                _error_envelope("RATE_LIMIT_EXCEEDED", "Too many scan requests.", request_id),
+                status_code=429,
+            )
+
+    if _scan_zips_sem.locked():
+        return JSONResponse(
+            _error_envelope(
+                "SCAN_BUSY",
+                "Another ZIP scan is already running. Wait for it to finish.",
+                request_id,
+            ),
+            status_code=429,
+        )
 
     # --- Validate zips ---
     raw_zips = body.get("zips") or []

@@ -821,7 +821,9 @@ def project_scan_cost():
         calls = max(1, int(round(n * (1.0 - SKIP))))
         cost_stream = round(calls * SONNET, 2)
         cost_batch = round(cost_stream * (1.0 - DISCOUNT), 2)
-        wall_min = max(1, int(round(calls / 10.0)))
+        # Review P0 on PR #50: wall-clock formula reflects the real
+        # LLM throughput (concurrency=5 × 60 / 7s avg ≈ 40 URL/min).
+        wall_min = max(1, int(round(calls / 40.0)))
         return {
             "total_urls": n,
             "projected_llm_calls": calls,
@@ -831,6 +833,18 @@ def project_scan_cost():
             "recommended_mode": "batch" if n > 1000 else "stream",
         }
     return _helper
+
+
+def test_project_scan_cost_wall_clock_realistic(project_scan_cost):
+    """Wall-clock should reflect realistic throughput.
+
+    At 2450 LLM calls (typical 500-ZIP scan after Bundle 1 skip),
+    expect ~60 min — not 4 hours as the old formula produced.
+    Review P0 on PR #50.
+    """
+    out = project_scan_cost(3500)
+    # 2450 calls / 40 URL/min ≈ 61 min. Allow some rounding wiggle.
+    assert 50 <= out["projected_wall_clock"]["stream_min"] <= 75
 
 
 def test_project_scan_cost_small_scan(project_scan_cost):
