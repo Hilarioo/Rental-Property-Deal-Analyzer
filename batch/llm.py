@@ -66,12 +66,54 @@ LLM_TIMEOUT_S = 60.0
 # sub-batches simultaneously firing LLM calls and blowing through
 # Anthropic's per-minute rate limits (Tier 2: 1000 RPM / 80K OTPM).
 #
-# This module-level semaphore caps CONCURRENT in-flight LLM POSTs
-# across all tasks in the process. Default 5 is conservative for
-# Tier 2; env-override via BATCH_LLM_CONCURRENCY for users on
-# higher tiers (Tier 4 can safely push 20+).
-_LLM_CONCURRENCY = int(os.getenv("BATCH_LLM_CONCURRENCY", "5"))
-_LLM_SEM = asyncio.Semaphore(_LLM_CONCURRENCY)
+# Review P0 on PR #48: lazily construct the semaphore inside an
+# accessor so it binds to whatever event loop is running when the
+# first LLM call is issued — NOT the loop that may be current at
+# module import time. Module-level `asyncio.Semaphore(...)` binds
+# immediately and would raise "attached to a different loop" if any
+# sync startup code (init_db, test collection) imports batch.llm
+# before FastAPI creates its loop.
+#
+# Also guard against BATCH_LLM_CONCURRENCY=0 / negative / malformed
+# env input — asyncio.Semaphore(0) deadlocks every LLM call forever.
+
+
+def _parse_concurrency() -> int:
+    """Parse BATCH_LLM_CONCURRENCY with safe fallbacks.
+
+    Default 5 is conservative for Tier 2 (1000 RPM / 80K OTPM);
+    higher tiers can push 20+. Guards against 0/negative/malformed
+    which would deadlock the semaphore.
+    """
+    raw = os.getenv("BATCH_LLM_CONCURRENCY", "5") or "5"
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "BATCH_LLM_CONCURRENCY=%r unparseable, defaulting to 5", raw
+        )
+        return 5
+    if val < 1:
+        logger.warning(
+            "BATCH_LLM_CONCURRENCY=%d below minimum, clamping to 1", val
+        )
+        return 1
+    return val
+
+
+_LLM_CONCURRENCY = _parse_concurrency()
+_LLM_SEM_CACHED: asyncio.Semaphore | None = None
+
+
+def _get_llm_sem() -> asyncio.Semaphore:
+    """Lazy accessor for the global LLM concurrency gate. Binds to
+    the event loop that's running when first called — which is the
+    request-handling loop, not whatever loop may have been current
+    at module import time."""
+    global _LLM_SEM_CACHED
+    if _LLM_SEM_CACHED is None:
+        _LLM_SEM_CACHED = asyncio.Semaphore(_LLM_CONCURRENCY)
+    return _LLM_SEM_CACHED
 
 # 429/529 retry policy. Exponential backoff capped at 60s; max 5
 # attempts. Honors the server's Retry-After header when present
@@ -534,7 +576,8 @@ async def extract_property(
     resp = None
     last_error = None
     for attempt in range(_LLM_MAX_RETRIES):
-        async with _LLM_SEM:
+        # Lazy accessor — see _get_llm_sem comment (review P0 fix).
+        async with _get_llm_sem():
             try:
                 resp = await client.post(
                     ANTHROPIC_MESSAGES_URL,

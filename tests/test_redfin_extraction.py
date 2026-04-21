@@ -720,12 +720,59 @@ def test_retry_after_whitespace_tolerant(parse_retry_after):
 
 
 def test_llm_concurrency_env_default():
-    """BATCH_LLM_CONCURRENCY defaults to 5 when unset."""
+    """BATCH_LLM_CONCURRENCY defaults to 5 when unset, and clamps
+    bad input to a safe fallback rather than deadlocking the
+    semaphore (review P0 fix on PR #48)."""
     from batch import llm
-    # Re-importing won't re-read env, but we can introspect the
-    # module-level value set at import time.
+    # Sanity on the parsed value — always >= 1 regardless of env
+    # input, never 0 or negative.
     assert llm._LLM_CONCURRENCY >= 1, "concurrency must be at least 1"
-    assert llm._LLM_SEM is not None
+
+
+def test_llm_parse_concurrency_safety():
+    """_parse_concurrency guards against 0/negative/malformed env."""
+    import os
+    from batch import llm
+    # Monkeypatch the env lookup at call time.
+    original = os.environ.get("BATCH_LLM_CONCURRENCY")
+    try:
+        for raw, expected_min in [
+            ("0", 1),        # zero would deadlock — clamp to 1
+            ("-5", 1),       # negative — clamp to 1
+            ("not_a_number", 5),  # garbage — fallback to default
+            ("", 5),         # empty string — fallback to default
+            ("3", 3),        # valid — return as-is
+            ("12", 12),      # valid high value — no upper clamp
+        ]:
+            os.environ["BATCH_LLM_CONCURRENCY"] = raw
+            assert llm._parse_concurrency() == expected_min, (
+                f"_parse_concurrency({raw!r}) should return {expected_min}"
+            )
+    finally:
+        if original is None:
+            os.environ.pop("BATCH_LLM_CONCURRENCY", None)
+        else:
+            os.environ["BATCH_LLM_CONCURRENCY"] = original
+
+
+def test_llm_sem_lazy_binding():
+    """_get_llm_sem defers construction until first call, so the
+    semaphore binds to the request-handling loop rather than
+    whatever loop may have been current at module import time
+    (review P0 fix)."""
+    import asyncio
+    from batch import llm
+    # Reset the cached instance so we can observe first-creation.
+    llm._LLM_SEM_CACHED = None
+    # Inside a running event loop, _get_llm_sem should create and
+    # return the semaphore.
+    async def _probe():
+        sem = llm._get_llm_sem()
+        assert sem is not None
+        assert isinstance(sem, asyncio.Semaphore)
+        # Second call returns the SAME instance.
+        assert llm._get_llm_sem() is sem
+    asyncio.run(_probe())
 
 
 def test_llm_extended_cache_beta_header_constant():

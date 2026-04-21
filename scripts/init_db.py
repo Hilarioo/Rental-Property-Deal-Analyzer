@@ -246,8 +246,12 @@ def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
     for _name, sql in _POST_MIGRATION_INDEXES:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            # Index already exists or referenced column missing — safe noop.
+        except sqlite3.Error:
+            # Review P1 on PR #48: broadened from OperationalError to
+            # Error for symmetry with other handlers in this file and
+            # defense against DatabaseError on corrupt-DB edge cases.
+            # Index already exists / referenced column missing / DB
+            # malformed — all safe no-ops; the app keeps running.
             pass
 
 

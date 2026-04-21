@@ -3471,12 +3471,26 @@ async def scan_zips(request: Request):
                 })
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
+            live_batch_count = sum(1 for b in per_zip_batches if b.get("batch_id"))
             logger.info(
                 "scan_zips zip_count=%d survivors=%d mode=stream batches=%d elapsed=%dms",
-                len(scan_zips_in), len(survivors),
-                sum(1 for b in per_zip_batches if b.get("batch_id")),
-                elapsed_ms,
+                len(scan_zips_in), len(survivors), live_batch_count, elapsed_ms,
             )
+            # Review P2 on PR #48: the current per-ZIP polling client
+            # spins up one poller per batch_id. Above ~500 live batches
+            # that's too many concurrent fetches — the aggregate
+            # /api/scan-status/{request_id} endpoint is the better
+            # polling target at that scale. Bundle 3 wires the UI to
+            # switch strategies automatically; until then, log when
+            # we're in the risky range so the Redfin scan logs carry
+            # the signal.
+            if live_batch_count > 500:
+                logger.warning(
+                    "scan_zips request_id=%s spawned %d per-ZIP batches — "
+                    "client should poll /api/scan-status/%s (aggregate) "
+                    "instead of N per-batch endpoints; Bundle 3 adds the UI switch",
+                    request_id, live_batch_count, request_id,
+                )
             return JSONResponse({
                 "status": "streaming",
                 "mode": "async-per-zip",
@@ -3641,8 +3655,12 @@ async def scan_status(request_id: str):
         )
 
     if not rows:
+        # Review P1 on PR #48: mint a fresh UUID for the 404 envelope
+        # so we don't echo the (valid-format but unknown) caller input
+        # back as the diagnostic token. Matches the 400/500 pattern.
+        req = uuid.uuid4().hex
         return JSONResponse(
-            _error_envelope("NOT_FOUND", "Unknown scan request_id.", request_id),
+            _error_envelope("NOT_FOUND", "Unknown scan request_id.", req),
             status_code=404,
         )
 
