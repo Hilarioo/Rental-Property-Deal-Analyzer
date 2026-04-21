@@ -7735,6 +7735,12 @@
   var _scanZipsPollTimeoutMs = 15 * 60 * 1000;
   var _scanZipsPollStaggerMs = 300;     // stagger poller starts (see below)
   var _scanZipsStreamGeneration = 0;    // invalidates in-flight pollers on reset
+  // Sprint 17 Bundle 5: above this batch count, switch from N parallel
+  // per-batch pollers to ONE aggregate poller hitting
+  // /api/scan-status/{request_id}. Back-end scales to 2000 ZIPs; UI
+  // shouldn't fan out 2000 fetches every 3s to track them.
+  var _scanZipsAggregateThreshold = 500;
+  var _scanZipsAggregateCadenceMs = 5000;  // 5s per aggregate tick
 
   function _renderScanZipsCard(zipEntry) {
     // Returns HTML for one ZIP's status card. Idempotent — same input
@@ -7833,7 +7839,82 @@
     }
   }
 
-  window.__startScanZipsStreaming = function (batches, summary) {
+  // Sprint 17 Bundle 5: aggregate poller. Used when batch count
+  // exceeds _scanZipsAggregateThreshold. Hits /api/scan-status/{rid}
+  // every _scanZipsAggregateCadenceMs and updates per-ZIP cards from
+  // a single response. When a batch transitions to status=complete,
+  // fires a one-off /api/batch-status/{id} fetch to pull the full
+  // envelope and merge rankings into the unified store.
+  async function _pollScanZipsAggregate(entries, onUpdate, generation, requestId) {
+    var entryByBatchId = {};
+    entries.forEach(function (e) {
+      if (e.batch_id) entryByBatchId[e.batch_id] = e;
+    });
+    var startedAt = Date.now();
+    while (Date.now() - startedAt < _scanZipsPollTimeoutMs) {
+      if (generation !== _scanZipsStreamGeneration) return;
+      var allDone = true;
+      try {
+        var resp = await fetch('/api/scan-status/' + encodeURIComponent(requestId));
+        if (generation !== _scanZipsStreamGeneration) return;
+        if (resp.ok) {
+          var data = await resp.json();
+          if (generation !== _scanZipsStreamGeneration) return;
+          var completedNow = [];
+          (data.batches || []).forEach(function (b) {
+            var entry = entryByBatchId[b.batch_id];
+            if (!entry) return;
+            var prevState = entry.clientState;
+            if (b.status === 'complete') {
+              if (prevState !== 'done') {
+                entry.clientState = 'done';
+                entry.rankingsCount = b.rank_count || 0;
+                completedNow.push(entry);
+              }
+            } else if (b.status === 'failed') {
+              entry.clientState = 'failed';
+              entry.errorReason = b.error_reason || 'unknown';
+            } else {
+              allDone = false;
+            }
+          });
+          onUpdate(entries);
+          // For each batch that just completed, fetch its full
+          // envelope and merge rankings. This is the one place we
+          // still hit /api/batch-status per-batch — but only on the
+          // completion edge, not every tick. Concurrent bursts are
+          // self-limiting to the completion rate.
+          for (var i = 0; i < completedNow.length; i++) {
+            (async function (entry) {
+              try {
+                var r = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
+                if (generation !== _scanZipsStreamGeneration) return;
+                var env = await r.json();
+                if (env && env.status === 'complete' && env.rankings) {
+                  env.source = 'scan_zips';
+                  renderResults(env);
+                }
+              } catch (_e) { /* best-effort envelope fetch */ }
+            })(completedNow[i]);
+          }
+          if (allDone) return;
+        }
+      } catch (_e) { /* transient — keep polling */ }
+      await new Promise(function (r) { setTimeout(r, _scanZipsAggregateCadenceMs); });
+    }
+    // Client timeout on aggregate — mark non-done entries as timed-out.
+    if (generation === _scanZipsStreamGeneration) {
+      entries.forEach(function (e) {
+        if (e.batch_id && e.clientState === 'pending') {
+          e.clientState = 'failed';
+          e.errorReason = 'client timeout — batch may still finish, reload to pick up';
+        }
+      });
+      onUpdate(entries);
+    }
+  }
+
+  window.__startScanZipsStreaming = function (batches, summary, requestId) {
     // Sprint 16.10 (PR #45 review P2): bump the generation counter so
     // any pollers still running from a previous scan exit cleanly
     // before new ones start. Without this, re-running Scan ZIPs
@@ -7867,33 +7948,47 @@
       if (generation === _scanZipsStreamGeneration) _renderScanZipsStreamCards(entries);
     };
 
-    // Stagger poller starts so we don't hit /api/batch-status with N
-    // simultaneous requests on t=0. At 300ms spacing, 100 ZIPs spread
-    // their initial polls across 30s — SQLite writer-lock contention
-    // from the backend workers has time to ease between reads.
-    // Sprint 17 Bundle 2 raised the ZIP cap 20 → 2000; above ~500 ZIPs
-    // the per-ZIP polling approach should be replaced with the
-    // aggregate /api/scan-status/{request_id} endpoint (Bundle 3
-    // wires that up).
-    var pollerIndex = 0;
-    entries.forEach(function (entry) {
-      if (entry.batch_id && entry.clientState === 'pending') {
-        var delay = pollerIndex * _scanZipsPollStaggerMs;
-        pollerIndex += 1;
-        setTimeout(function () {
-          _pollScanZipBatch(entry, entries, onUpdate, generation);
-        }, delay);
-      }
-    });
+    var liveCount = entries.filter(function (e) { return !!e.batch_id; }).length;
+
+    // Sprint 17 Bundle 5: aggregate-poller switchover. Above 500
+    // live batches, one aggregate fetch per tick beats N parallel
+    // per-batch fetches. Only fires when we have a request_id to
+    // aggregate against — older callers without the plumbing fall
+    // back to the per-batch path automatically.
+    var useAggregate = (
+      liveCount > _scanZipsAggregateThreshold
+      && typeof requestId === 'string'
+      && requestId.length > 0
+    );
+
+    if (useAggregate) {
+      _pollScanZipsAggregate(entries, onUpdate, generation, requestId);
+    } else {
+      // Per-batch path — original behavior preserved.
+      // Stagger poller starts so we don't hit /api/batch-status with N
+      // simultaneous requests on t=0. At 300ms spacing, 100 ZIPs spread
+      // their initial polls across 30s — SQLite writer-lock contention
+      // from the backend workers has time to ease between reads.
+      var pollerIndex = 0;
+      entries.forEach(function (entry) {
+        if (entry.batch_id && entry.clientState === 'pending') {
+          var delay = pollerIndex * _scanZipsPollStaggerMs;
+          pollerIndex += 1;
+          setTimeout(function () {
+            _pollScanZipBatch(entry, entries, onUpdate, generation);
+          }, delay);
+        }
+      });
+    }
 
     // Summary line. Use a stable ID so re-invocations overwrite in
     // place instead of appending a second line.
     var sumEl = document.getElementById('scan-zips-summary');
     if (sumEl) {
-      var liveCount = entries.filter(function (e) { return !!e.batch_id; }).length;
-      var msgHtml = 'Streaming ' + liveCount + ' ZIP-level batch'
-        + (liveCount === 1 ? '' : 'es')
-        + ' — rows appear in the unified table as each completes.';
+      var msgHtml = (useAggregate
+        ? 'Polling ' + liveCount + ' batches via aggregate endpoint (one request per ' + (_scanZipsAggregateCadenceMs / 1000) + 's tick).'
+        : 'Streaming ' + liveCount + ' ZIP-level batch' + (liveCount === 1 ? '' : 'es')
+          + ' — rows appear in the unified table as each completes.');
       var existing = document.getElementById('scan-zips-streaming-hint');
       if (existing) {
         existing.innerHTML = msgHtml;
@@ -8131,7 +8226,11 @@
         // envelope into the unifiedStore as its batch completes. Results
         // stream into the table in the order ZIPs finish (fastest first).
         if (typeof window.__startScanZipsStreaming === 'function') {
-          window.__startScanZipsStreaming(data.batches, data.summary);
+          // Sprint 17 Bundle 5: pass request_id so the streaming
+          // orchestrator can route huge scans through the aggregate
+          // /api/scan-status/{request_id} poller instead of N
+          // parallel per-batch pollers.
+          window.__startScanZipsStreaming(data.batches, data.summary, data.request_id);
         }
       } else if (data.mode === 'anthropic-batches' && data.batch) {
         // Sprint 17 Bundle 3: queued via Anthropic Message Batches API.
