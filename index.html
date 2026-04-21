@@ -6203,8 +6203,18 @@
         // leave stale keys on disk — meaning a page reload rehydrates the
         // cleared-in-memory store with old rows. removeItem is the more
         // direct intent-match for "user asked to clear everything."
+        //
+        // Sprint 16.3 fix: ALSO remove BATCH_STORAGE_KEY. Without this, the
+        // legacy "one-time migration" block at the bottom of this file
+        // (~line 7502) re-injects cleared rows on every page reload because
+        // the batch envelope key was never part of the clear operation.
+        // User reported Clear All + Clear Red both being undone by refresh.
         try {
           localStorage.removeItem(UNIFIED_STORAGE_KEY);
+          localStorage.removeItem(BATCH_STORAGE_KEY);
+          // PENDING_STORAGE_KEY deliberately NOT removed — any in-flight
+          // batch should be allowed to complete and re-populate. The Clear
+          // operation is about the visible results, not cancelling work.
         } catch (e) { /* private mode / quota — best-effort */ }
       },
       size: function () { load(); return rows.size; },
@@ -7497,19 +7507,35 @@
       }
     } catch (_) {}
     // One-time migration: if the legacy BATCH_STORAGE_KEY still holds an
-    // envelope, merge it into the unified store once, then leave the key
-    // alone (unifiedStore writes don't touch BATCH_STORAGE_KEY).
+    // envelope, merge it into the unified store once, then set a flag so
+    // we never re-migrate on subsequent loads.
+    //
+    // Sprint 16.3 fix: this block previously ran on EVERY page load
+    // because BATCH_STORAGE_KEY is also written by current batch code
+    // paths (lines 7014/7163/7401). That turned "clear all" into a
+    // temporary visual state: cleared in memory, wiped UNIFIED_STORAGE_KEY,
+    // but BATCH_STORAGE_KEY still held the envelope, so the next reload
+    // re-injected every cleared row. The `MIGRATED_FLAG_KEY` sentinel
+    // makes this truly one-time.
+    var MIGRATED_FLAG_KEY = 'rpda.batchMigrated.v1';
     try {
-      var raw = localStorage.getItem(BATCH_STORAGE_KEY);
-      if (raw) {
-        var env = JSON.parse(raw);
-        if (env && env.rankings && window.RPDA && window.RPDA.unifiedStore) {
-          var migrated = env.rankings.map(function (r) {
-            return Object.assign({}, r, { listingUrl: r.canonical_url || r.listingUrl || null });
-          });
-          window.RPDA.unifiedStore.add(migrated, env.source || 'batch_paste');
-          if (window.RPDA.renderUnifiedResults) window.RPDA.renderUnifiedResults();
+      var alreadyMigrated = localStorage.getItem(MIGRATED_FLAG_KEY) === '1';
+      if (!alreadyMigrated) {
+        var raw = localStorage.getItem(BATCH_STORAGE_KEY);
+        if (raw) {
+          var env = JSON.parse(raw);
+          if (env && env.rankings && window.RPDA && window.RPDA.unifiedStore) {
+            var migrated = env.rankings.map(function (r) {
+              return Object.assign({}, r, { listingUrl: r.canonical_url || r.listingUrl || null });
+            });
+            window.RPDA.unifiedStore.add(migrated, env.source || 'batch_paste');
+            if (window.RPDA.renderUnifiedResults) window.RPDA.renderUnifiedResults();
+          }
         }
+        // Set the flag even if the key was empty — marks the migration as
+        // processed for this user/browser so future legacy-shaped writes
+        // won't accidentally re-migrate.
+        localStorage.setItem(MIGRATED_FLAG_KEY, '1');
       }
     } catch (_) {}
     var pending = loadPending();
