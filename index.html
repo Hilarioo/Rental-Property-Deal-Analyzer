@@ -6421,15 +6421,20 @@
       + _kv('Net PITI (after rental offset)', _fmt$(Number(m.net_piti || 0)));
 
     // --- Section 3: Insurance derivation ---
+    // Review P2 on PR #42 iteration 2: Number-coerce the multipliers
+    // before interpolation. Today backend always sends floats but if
+    // that contract ever drifts to a string we'd be back to a latent
+    // XSS. toFixed(2) is both a Number cast AND prettier display.
     var insHtml = '';
     if (r.insurance_breakdown) {
       var ib = r.insurance_breakdown;
+      function _mult(v) { return '×' + (Number(v || 1)).toFixed(2); }
       insHtml =
           _kv('Base', _fmt$(ib.base || 1800) + '/yr')
-        + (ib.age_reason ? _kv('Age multiplier', '×' + (ib.age_multiplier || 1), ib.age_reason) : '')
-        + (ib.flood_reason ? _kv('Flood multiplier', '×' + (ib.flood_multiplier || 1), ib.flood_reason) : '')
-        + (ib.fire_reason ? _kv('Fire multiplier', '×' + (ib.fire_multiplier || 1), ib.fire_reason) : '')
-        + (ib.llm_reason ? _kv('LLM uplift', '×' + (ib.llm_multiplier || 1), ib.llm_reason) : '')
+        + (ib.age_reason ? _kv('Age multiplier', _mult(ib.age_multiplier), ib.age_reason) : '')
+        + (ib.flood_reason ? _kv('Flood multiplier', _mult(ib.flood_multiplier), ib.flood_reason) : '')
+        + (ib.fire_reason ? _kv('Fire multiplier', _mult(ib.fire_multiplier), ib.fire_reason) : '')
+        + (ib.llm_reason ? _kv('LLM uplift', _mult(ib.llm_multiplier), ib.llm_reason) : '')
         + _kv('Annual total', _fmt$(ib.annual_usd || 0));
     } else {
       insHtml = '<em style="color:var(--text-muted);">Insurance breakdown not available.</em>';
@@ -6657,6 +6662,16 @@
         r.quickScore = _computeQuickScore(r);
       }
     });
+    // Sprint 16.7 Bundle 2: prune stale EXPANDED_ROWS keys that no longer
+    // match any row in the store. Without this, after a "Clear all" + new
+    // scan, an old key whose listing re-appeared (same URL on a rescan)
+    // would silently auto-expand. Also a small memory win.
+    if (EXPANDED_ROWS.size > 0) {
+      var liveKeys = new Set(rows.map(function (r) { return r.key; }));
+      EXPANDED_ROWS.forEach(function (k) {
+        if (!liveKeys.has(k)) EXPANDED_ROWS.delete(k);
+      });
+    }
     if (!rows.length) {
       root.style.display = 'none';
       root.innerHTML = '';
