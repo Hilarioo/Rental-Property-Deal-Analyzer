@@ -706,6 +706,11 @@ def compute_property_metrics(
     gal = risk_flags.get("galvanizedPlumbing", {}).get("present")
     knob = risk_flags.get("knobAndTubeElectrical", {}).get("present")
     is_pre1978_gal = bool(gal and knob and (year_built or 9999) < 1978)
+    # Sprint 14.5: expose the LLM evidence strings so the verdict reason
+    # can surface the basis for the inference (user toggle governs whether
+    # this fires as RED or YELLOW).
+    gal_evidence = (risk_flags.get("galvanizedPlumbing", {}) or {}).get("evidence") or ""
+    knob_evidence = (risk_flags.get("knobAndTubeElectrical", {}) or {}).get("evidence") or ""
     is_excluded = zip_tier == "excluded" or _looks_excluded(address)
 
     # Sprint 12-2: plumb lat/lng/address into the verdict context so the
@@ -737,6 +742,8 @@ def compute_property_metrics(
         "hasFlatRoof": has_flat_roof,
         "hasUnpermittedAdu": has_unpermitted_adu,
         "isPre1978WithGalvanized": is_pre1978_gal,
+        "galvanizedEvidence": gal_evidence,
+        "knobAndTubeEvidence": knob_evidence,
         "propertyType": "multi" if u > 1 else "sfh",
         "propertyTypeRaw": property_type_raw,
         "unitsSource": units_source,
@@ -763,8 +770,14 @@ def compute_property_metrics(
     geospatial_hard_fail = _geo_fail_fn(verdict_ctx) is not None
 
     # Hard fail = verdict is red due to hard-fail gates (excluded/flat/adu/pre78/dti/geo).
+    # Sprint 14.5: pre-78-gal-and-K&T is now behind `jose.enforceOldHouseGates`
+    # (default false). When off, the combo shows as YELLOW and does not
+    # short-circuit TOPSIS ranking — the row remains eligible for batch
+    # rank alongside cleaner listings.
+    enforce_old_gates = bool((_spec.jose or {}).get("enforceOldHouseGates"))
     hard_fail_reasons = [
-        is_excluded, has_flat_roof, has_unpermitted_adu, is_pre1978_gal,
+        is_excluded, has_flat_roof, has_unpermitted_adu,
+        (is_pre1978_gal and enforce_old_gates),
         u <= 1,  # SFR without legal ADU
         (qualifying_income > 0 and (piti / qualifying_income) > 0.55),
         bool(hard_fail_units_unknown),

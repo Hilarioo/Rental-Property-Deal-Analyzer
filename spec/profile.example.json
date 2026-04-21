@@ -18,6 +18,7 @@
     "priceCeilingTriplex": 0,
     "maxDtiPct": 45,
     "roofAgeYellow": 15,
+    "enforceOldHouseGates": false,
     "schoolRatingMinimum": 4,
     "schoolRatingYellowThreshold": 5,
     "schoolRatingGreenThreshold": 7,

@@ -170,7 +170,31 @@ def compute_jose_verdict(ctx: dict[str, Any]) -> dict[str, Any]:
     if c.get("hasUnpermittedAdu"):
         red_reasons.append("Unpermitted ADU / garage conversion — FHA disqualifier")
     if c.get("isPre1978WithGalvanized"):
-        red_reasons.append("Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier")
+        # Sprint 14.5: the LLM infers this flag from absence — e.g. "1952
+        # build, no plumbing update mentioned" fires even when the house
+        # may have been replumbed/rewired without the listing bragging
+        # about it. Without a confidence field on these two specific risk
+        # flags, we can't tier the evidence. New profile toggle
+        # `jose.enforceOldHouseGates` (default false) lets the user decide
+        # whether this inference-from-absence should kill the deal:
+        #   - false (default, new): YELLOW hint; user eyeballs in person.
+        #   - true (opt-in, preserves Sprint 4 behavior): hard-RED.
+        # Evidence strings from the LLM surface in both cases so Jose
+        # can see the basis.
+        enforce_old = JOSE_THRESHOLDS.get("enforceOldHouseGates")
+        gal_ev = (c.get("galvanizedEvidence") or "").strip()
+        knob_ev = (c.get("knobAndTubeEvidence") or "").strip()
+        evidence_parts = [e for e in [gal_ev, knob_ev] if e]
+        evidence_tail = (" — " + "; ".join(evidence_parts)) if evidence_parts else ""
+        if enforce_old:
+            red_reasons.append(
+                "Pre-1978 w/ galvanized + knob-and-tube — FHA disqualifier" + evidence_tail
+            )
+        else:
+            yellow_reasons.append(
+                "LLM inferred pre-1978 galvanized + K&T — verify in inspection"
+                + evidence_tail
+            )
     units = c.get("units") or 1
     if c.get("propertyType") == "sfh" and units <= 1:
         # Sprint 12 hotfix 2026-04-19: differentiate condo / townhouse /
