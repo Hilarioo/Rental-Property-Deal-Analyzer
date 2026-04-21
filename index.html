@@ -4248,6 +4248,45 @@
     } catch(e) {}
   }
 
+  // Sprint 16.1: Scan ZIPs controls persistence. Lives in its own localStorage
+  // key so it doesn't co-mingle with the single-ZIP search filters (different
+  // concepts, different defaults — the Property Type dropdown in Scan ZIPs
+  // defaults to `multi-family` while the search form defaults to no filter).
+  var SCAN_ZIPS_FILTERS_KEY = 'rpda_scan_zips_filters_v1';
+
+  function saveScanZipsFilters() {
+    try {
+      var filters = {
+        preset: ($('scan-zips-preset') || {}).value || '',
+        propertyType: ($('scan-zips-property-type') || {}).value || '',
+        topN: ($('scan-zips-top-n') || {}).value || '',
+        mode: ($('scan-zips-mode') || {}).value || '',
+        minPrice: ($('scan-zips-min-price') || {}).value || '',
+        maxPrice: ($('scan-zips-max-price') || {}).value || '',
+      };
+      localStorage.setItem(SCAN_ZIPS_FILTERS_KEY, JSON.stringify(filters));
+    } catch(e) { /* quota / private-mode — next save may succeed */ }
+  }
+
+  function loadScanZipsFilters() {
+    try {
+      var raw = localStorage.getItem(SCAN_ZIPS_FILTERS_KEY);
+      if (!raw) return;
+      var f = JSON.parse(raw);
+      if (!f || typeof f !== 'object') return;
+      // Only set when the stored value is non-empty — preserves the HTML
+      // defaults for first-time users and for any field the user cleared
+      // intentionally in a prior session (empty string will still override
+      // an empty pre-existing value, which is correct).
+      if (f.preset !== undefined && $('scan-zips-preset')) $('scan-zips-preset').value = f.preset;
+      if (f.propertyType !== undefined && $('scan-zips-property-type')) $('scan-zips-property-type').value = f.propertyType;
+      if (f.topN && $('scan-zips-top-n')) $('scan-zips-top-n').value = f.topN;
+      if (f.mode && $('scan-zips-mode')) $('scan-zips-mode').value = f.mode;
+      if (f.minPrice && $('scan-zips-min-price')) $('scan-zips-min-price').value = f.minPrice;
+      if (f.maxPrice && $('scan-zips-max-price')) $('scan-zips-max-price').value = f.maxPrice;
+    } catch(e) { /* corrupt storage — ignore */ }
+  }
+
   // ======================================================================
   // Mortgage Rate Auto-Fill
   // ======================================================================
@@ -5979,6 +6018,7 @@
   refreshScenarioList();
   loadModels();
   loadSearchFilters();
+  loadScanZipsFilters();  // Sprint 16.1: restore last-used Scan ZIPs controls.
   loadAlertPrefs();
 
   // ======================================================================
@@ -7301,6 +7341,9 @@
     if (maxPrice === undefined && !preset && JOSE_THRESHOLDS && JOSE_THRESHOLDS.priceCeilingDuplex) {
       maxPrice = JOSE_THRESHOLDS.priceCeilingDuplex;
     }
+    // Sprint 16.1: persist scan controls so the next page load restores the
+    // user's last-used Preset / Property Type / Top N / Mode / price range.
+    saveScanZipsFilters();
 
     if (btn) btn.disabled = true;
     if (loadEl) loadEl.style.display = 'block';
