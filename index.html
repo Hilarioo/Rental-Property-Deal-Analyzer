@@ -3533,6 +3533,12 @@
     el.style.display = '';
   }
 
+  // Sprint 16.5: also exposed on window below the function body so the
+  // sibling IIFE (~line 6074+) containing renderUnifiedResults / _computeQuickScore
+  // can actually reach it. Without the window bridge, the `typeof
+  // computeQuickScore !== 'function'` guard at line ~6325 returns null for
+  // every batch row and the stars column renders "—" — exactly what the
+  // user was seeing alongside the beds/baths regression.
   function computeQuickScore(listing, userRent, mortgageRate) {
     var price = listing.price;
     var rent = userRent;
@@ -3694,6 +3700,11 @@
     var cssClass = 'score-' + Math.min(stars, 6);
     return { stars: stars, numericScore: numericScore, details: details, cssClass: cssClass };
   }
+  // Sprint 16.5: bridge to IIFE #2. _computeQuickScore in the unified-store
+  // block does `typeof computeQuickScore !== 'function'` — that check fails
+  // from the sibling IIFE without this explicit window attachment, returning
+  // null quickScore and rendering "—" stars for every batch row.
+  window.computeQuickScore = computeQuickScore;
 
   function sortAndRenderSearch() {
     searchResults.sort(function(a, b) {
@@ -6318,15 +6329,20 @@
   }
 
   // Delegates to the existing `computeQuickScore` function defined in the
-  // main <script> block above this one. Use optional-chain guard in case
-  // scripts load in an unexpected order.
+  // main <script> block above this one. Sprint 16.5: the function is
+  // declared in a sibling IIFE (lines 2168–6069), so we MUST go through
+  // `window.computeQuickScore` — a bare reference here resolves at the
+  // module-IIFE scope and was silently always undefined, which is why
+  // every batch row's stars column was rendering "—". The previous
+  // `typeof computeQuickScore !== 'function'` guard caught the error but
+  // hid the bug behind a null-return.
   function _computeQuickScore(listing) {
     try {
-      if (typeof computeQuickScore !== 'function') return null;
+      if (typeof window.computeQuickScore !== 'function') return null;
       var targetRent = (window.DEFAULTS && window.DEFAULTS.targetMonthlyRent) || 0;
       var rateInput = $('interestRate');
       var rate = rateInput && rateInput.value ? parseFloat(rateInput.value) / 100 : null;
-      return computeQuickScore(listing, targetRent, rate);
+      return window.computeQuickScore(listing, targetRent, rate);
     } catch (e) { return null; }
   }
 
