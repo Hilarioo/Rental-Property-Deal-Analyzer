@@ -7720,8 +7720,13 @@
   // All pollers are independent: a slow ZIP doesn't block fast ones.
   // ============================================================
   var _scanZipsStreamContainerId = 'scan-zips-stream-cards';
-  var _scanZipsPollCadenceMs = 3000;    // 3s between polls
-  var _scanZipsPollTimeoutMs = 10 * 60 * 1000;  // abandon after 10min
+  var _scanZipsPollCadenceMs = 3000;    // 3s between polls per ZIP
+  // Sprint 16.10 (PR #45 review P2): bumped 10 → 15 min so legit
+  // batches that run a bit long get collected properly. Backend worker
+  // keeps going regardless — this is the CLIENT-side abandon point.
+  var _scanZipsPollTimeoutMs = 15 * 60 * 1000;
+  var _scanZipsPollStaggerMs = 300;     // stagger poller starts (see below)
+  var _scanZipsStreamGeneration = 0;    // invalidates in-flight pollers on reset
 
   function _renderScanZipsCard(zipEntry) {
     // Returns HTML for one ZIP's status card. Idempotent — same input
@@ -7767,13 +7772,17 @@
     container.innerHTML = entries.map(_renderScanZipsCard).join('');
   }
 
-  async function _pollScanZipBatch(entry, entries, onUpdate) {
+  async function _pollScanZipBatch(entry, entries, onUpdate, generation) {
     // Poll /api/batch-status until the per-ZIP batch finishes. On
     // success merge its rankings into the unified store + mark the
     // card as done; on failure mark it red. Times out after the
     // global ceiling to avoid orphan pollers if something wedges.
+    // `generation` invalidates pollers left over from a prior
+    // __startScanZipsStreaming call — on generation mismatch we exit
+    // silently so a stale poller doesn't write stale state.
     var startedAt = Date.now();
     while (Date.now() - startedAt < _scanZipsPollTimeoutMs) {
+      if (generation !== _scanZipsStreamGeneration) return;
       try {
         var resp = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
         var data = await resp.json();
@@ -7801,13 +7810,24 @@
       }
       await new Promise(function (r) { setTimeout(r, _scanZipsPollCadenceMs); });
     }
-    // Hit the timeout.
-    entry.clientState = 'failed';
-    entry.errorReason = 'client_poll_timeout';
-    onUpdate(entries);
+    // Hit the client-side timeout. The backend worker may still be
+    // running — surface that so the user doesn't assume data loss.
+    if (generation === _scanZipsStreamGeneration) {
+      entry.clientState = 'failed';
+      entry.errorReason = 'client timeout — batch may still finish, reload to pick up';
+      onUpdate(entries);
+    }
   }
 
   window.__startScanZipsStreaming = function (batches, summary) {
+    // Sprint 16.10 (PR #45 review P2): bump the generation counter so
+    // any pollers still running from a previous scan exit cleanly
+    // before new ones start. Without this, re-running Scan ZIPs
+    // quickly could leave zombie fetches racing with the new batch
+    // (and a stray stale update could overwrite a fresh card).
+    _scanZipsStreamGeneration += 1;
+    var generation = _scanZipsStreamGeneration;
+
     // Normalize entries so _renderScanZipsCard's branches all have data
     // and the poller can mutate freely.
     var entries = (batches || []).map(function (b) {
@@ -7827,24 +7847,43 @@
     var batchPanel = document.getElementById('batch-panel');
     if (batchPanel && !batchPanel.open) batchPanel.open = true;
 
-    var onUpdate = function () { _renderScanZipsStreamCards(entries); };
+    var onUpdate = function () {
+      // Gate on generation so a late-arriving response from a prior
+      // scan can't repaint the current scan's cards.
+      if (generation === _scanZipsStreamGeneration) _renderScanZipsStreamCards(entries);
+    };
 
-    // Spawn pollers for entries that have a batch_id.
+    // Stagger poller starts so we don't hit /api/batch-status with N
+    // simultaneous requests on t=0. At 300ms spacing, 20 ZIPs spread
+    // their initial polls across 6s — SQLite writer-lock contention
+    // from the backend workers has time to ease between reads.
+    var pollerIndex = 0;
     entries.forEach(function (entry) {
       if (entry.batch_id && entry.clientState === 'pending') {
-        _pollScanZipBatch(entry, entries, onUpdate);
+        var delay = pollerIndex * _scanZipsPollStaggerMs;
+        pollerIndex += 1;
+        setTimeout(function () {
+          _pollScanZipBatch(entry, entries, onUpdate, generation);
+        }, delay);
       }
     });
 
-    // Summary line.
+    // Summary line. Use a stable ID so re-invocations overwrite in
+    // place instead of appending a second line.
     var sumEl = document.getElementById('scan-zips-summary');
     if (sumEl) {
       var liveCount = entries.filter(function (e) { return !!e.batch_id; }).length;
-      sumEl.insertAdjacentHTML('beforeend',
-        '<div style="margin-top:8px;color:var(--text-muted);font-size:0.82rem;">'
-        + 'Streaming ' + liveCount + ' ZIP-level batch' + (liveCount === 1 ? '' : 'es')
-        + ' — rows appear in the unified table as each completes.'
-        + '</div>');
+      var msgHtml = 'Streaming ' + liveCount + ' ZIP-level batch'
+        + (liveCount === 1 ? '' : 'es')
+        + ' — rows appear in the unified table as each completes.';
+      var existing = document.getElementById('scan-zips-streaming-hint');
+      if (existing) {
+        existing.innerHTML = msgHtml;
+      } else {
+        sumEl.insertAdjacentHTML('beforeend',
+          '<div id="scan-zips-streaming-hint" style="margin-top:8px;color:var(--text-muted);font-size:0.82rem;">'
+          + msgHtml + '</div>');
+      }
     }
   };
 
