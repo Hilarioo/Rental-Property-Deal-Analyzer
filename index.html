@@ -7786,6 +7786,12 @@
       try {
         var resp = await fetch('/api/batch-status/' + encodeURIComponent(entry.batch_id));
         var data = await resp.json();
+        // Sprint 16.10 (PR #45 iter 2 review): re-check generation
+        // AFTER the await returns — otherwise a fetch kicked off
+        // before the generation bump can still land a stale
+        // renderResults() + overwrite fresh state. The loop-top
+        // check only catches stale pollers between iterations.
+        if (generation !== _scanZipsStreamGeneration) return;
         // /api/batch-status returns the envelope at the TOP level (not
         // nested under `envelope`) — batch_id, status, rankings, failures
         // are direct properties of `data`. See _build_poll_response in
