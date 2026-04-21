@@ -1319,8 +1319,18 @@ async def run_sync_batch(
     preset_name: str | None = None,
     include_narrative: bool = True,
     client_ip: str | None = None,
+    batch_id: str | None = None,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
-    """End-to-end sync batch. Returns the full response envelope (§B.1)."""
+    """End-to-end sync batch. Returns the full response envelope (§B.1).
+
+    Sprint 15.5: `batch_id` + `created_at` now optional. When provided,
+    reuses an existing pre-written `batches` row (status='pending') so
+    the orchestrator can return the batch_id to the client *before* the
+    work completes, enabling a polling UX for big batches. When omitted,
+    generates them inline (backward-compat for tests + small batches
+    that never needed polling).
+    """
     # Dedupe while preserving order.
     seen = set()
     deduped: list[str] = []
@@ -1331,8 +1341,8 @@ async def run_sync_batch(
         seen.add(u)
         deduped.append(u)
 
-    batch_id = new_uuid_hex()
-    created_at = utc_now_iso()
+    batch_id = batch_id or new_uuid_hex()
+    created_at = created_at or utc_now_iso()
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
         # Cap concurrency at 4 workers per §N.2.
@@ -1379,11 +1389,21 @@ async def run_sync_batch(
     conn = get_connection(db_path)
     try:
         def _write(c: sqlite3.Connection) -> None:
+            # Sprint 15.5: UPSERT so a pre-written pending row (from the
+            # polling-backed submit path) transitions to complete instead
+            # of conflicting on PRIMARY KEY. When no prior row exists,
+            # this acts identically to the original INSERT.
             c.execute(
                 """INSERT INTO batches
                    (batch_id, created_at, completed_at, mode, input_count,
                     status, preset_name, error_reason)
-                   VALUES (?, ?, ?, 'sync', ?, 'complete', ?, NULL)""",
+                   VALUES (?, ?, ?, 'sync', ?, 'complete', ?, NULL)
+                   ON CONFLICT(batch_id) DO UPDATE SET
+                     completed_at = excluded.completed_at,
+                     input_count  = excluded.input_count,
+                     status       = 'complete',
+                     preset_name  = excluded.preset_name,
+                     error_reason = NULL""",
                 (batch_id, created_at, now_iso, len(deduped), preset_name),
             )
 

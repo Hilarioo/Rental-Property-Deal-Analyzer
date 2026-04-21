@@ -1400,7 +1400,7 @@
         <textarea id="batch-urls" rows="6" placeholder="https://www.redfin.com/CA/Vallejo/..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.85rem;"></textarea>
         <fieldset id="batch-mode-fieldset" style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
           <legend style="padding:0 6px;">Mode</legend>
-          <label style="margin-right:14px;"><input type="radio" name="batch-mode" value="sync" checked> Quick sync (&le;100 URLs)</label>
+          <label style="margin-right:14px;"><input type="radio" name="batch-mode" value="sync" checked> Quick sync (&le;1000 URLs, polled)</label>
           <label><input type="radio" name="batch-mode" value="async"> Overnight batch (unlimited, 50% cost, up to 24h)</label>
           <div id="batch-mode-note" style="display:none;margin-top:4px;color:var(--text);"></div>
         </fieldset>
@@ -6018,7 +6018,7 @@
   'use strict';
   var BATCH_STORAGE_KEY = 'batchanalyzer.lastBatch';
   var PENDING_STORAGE_KEY = 'batchanalyzer.pendingBatchId';
-  var SYNC_MAX = 100;
+  var SYNC_MAX = 1000;  // Sprint 15.5: bumped from 100; backed by polling now.
   // Sprint 15: one unified results store keyed by listing URL. Every
   // source (single-ZIP search, Scan ZIPs, paste-batch, single-URL analyze)
   // merges into this table; nothing removes a row except explicit user
@@ -7104,26 +7104,37 @@
     var btn = $('batch-submit'); if (btn) btn.disabled = true;
     var load = $('batch-loading'); if (load) load.style.display = 'block';
     var err = $('batch-error'); if (err) err.style.display = 'none';
-    var out = $('batch-results'); if (out) out.style.display = 'none';
 
     try {
+      // Sprint 15.5: /api/batch-analyze now returns 202 + batch_id
+      // immediately and runs the work in a background task. The client
+      // polls /api/batch-status the same way it polls async batches. The
+      // existing pending-card + autopoll machinery handles the UX; when
+      // the batch completes, renderResults merges into the unified store.
       var resp = await fetch('/api/batch-analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ urls: urls, include_narrative: true }),
       });
-      var envelope = await resp.json();
-      if (!resp.ok) {
-        var msg = (envelope.error && envelope.error.message) || 'Batch failed.';
-        var rid = (envelope.error && envelope.error.request_id) ? ' (request ' + envelope.error.request_id.slice(0, 8) + ')' : '';
+      var data = await resp.json();
+      if (!resp.ok && resp.status !== 202) {
+        var msg = (data.error && data.error.message) || 'Batch failed.';
+        var rid = (data.error && data.error.request_id) ? ' (request ' + data.error.request_id.slice(0, 8) + ')' : '';
         if (err) { err.textContent = msg + rid; err.style.display = 'block'; }
         return;
       }
-      // Sprint 12 hotfix: tag source for the batch-results card pill.
-      envelope.source = 'batch_paste';
-      try { localStorage.setItem(BATCH_STORAGE_KEY, JSON.stringify(envelope)); } catch (_) {}
-      renderResults(envelope);
-      __notifyCompletion__(envelope); // Sprint 14-4: sync path cue too.
+      if (data.batch_id) {
+        var pending = {
+          batchId: data.batch_id,
+          submittedAt: data.created_at || new Date().toISOString(),
+          urlCount: data.input_count || urls.length,
+          source: 'batch_paste',
+        };
+        savePending(pending);
+        renderPending(pending);
+        if (typeof startAutoPoll === 'function') startAutoPoll();
+        __ensureNotificationPermission__(); // Sprint 14-4: ask up front.
+      }
     } catch (e) {
       if (err) { err.textContent = 'Network error. Try again.'; err.style.display = 'block'; }
     } finally {
