@@ -1524,7 +1524,11 @@
       </details>
 
       <div id="searchStatus" class="search-status" style="display:none"></div>
-      <div id="searchResultsContainer" style="display:none;margin-top:20px;">
+      <!-- Sprint 15: legacy container kept hidden; all results now render
+           into #unifiedResults below. Kept in the DOM so any residual
+           handlers that query its IDs (sortSearchResults, applyDealAlerts)
+           don't null-ref during the transition. -->
+      <div id="searchResultsContainer" style="display:none !important;margin-top:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <div class="section-title" style="margin-bottom:0;border-bottom:none;padding-bottom:0;" id="searchResultsTitle">Results</div>
           <div class="search-toolbar">
@@ -1573,12 +1577,18 @@
         </div>
       </div>
 
-      <!-- Sprint 14.5: unified results region — pending card + ranked table
-           for both Scan ZIPs and paste-batch flows. Moved out of the Batch
-           Analyze <details> so the output lives at the bottom of the mode,
-           below the single-ZIP search-results table. -->
+      <!-- Sprint 14.5: pending card for in-flight async batches. -->
       <div id="batch-pending" style="display:none;margin-top:18px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(99,102,241,0.06);font-size:0.85rem;"></div>
-      <div id="batch-results" style="display:none;margin-top:18px;"></div>
+
+      <!-- Sprint 15: unified tracked-listings table. Every flow (single-ZIP
+           search, Scan ZIPs, paste-batch, single-URL analyze) merges into
+           this one persistent list. Only user action (× per row / Clear
+           all) removes rows. -->
+      <div id="unifiedResults" style="display:none;margin-top:18px;"></div>
+
+      <!-- Legacy #batch-results kept as dead anchor for any stale handler
+           refs; renderResults is now a no-op that forwards to unified. -->
+      <div id="batch-results" style="display:none;"></div>
     </div>
 
     <!-- ===== Smart Deal Finder Mode ===== -->
@@ -3457,11 +3467,35 @@
         l._score = computeQuickScore(l, targetRent, searchRate);
         return l;
       });
+      // Sprint 15: merge into the unified store instead of rendering to the
+      // legacy top table. quickScore is normalized onto each row so the
+      // unified renderer can show stars without recomputing.
+      try {
+        if (window.RPDA && window.RPDA.unifiedStore) {
+          var rowsForStore = searchResults.map(function (l) {
+            return {
+              listingUrl: l.listingUrl || null,
+              address: l.address,
+              zip_code: l.zip || l.zip_code || null,
+              price: l.price,
+              beds: l.beds,
+              baths: l.baths,
+              sqft: l.sqft,
+              year_built: l.yearBuilt || l.year_built || null,
+              imageUrl: l.imageUrl || l.image_url || null,
+              quickScore: l._score,
+            };
+          });
+          window.RPDA.unifiedStore.add(rowsForStore, 'search');
+          if (window.RPDA.renderUnifiedResults) window.RPDA.renderUnifiedResults();
+          var unifiedEl = document.getElementById('unifiedResults');
+          if (unifiedEl && unifiedEl.scrollIntoView) unifiedEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } catch (e) { console.warn('unified merge from search failed', e); }
+      // Legacy bookkeeping kept so saveSearchFilters / alert-config code
+      // that reads `searchResults` doesn't break.
       searchSortCol = 'score';
       searchSortAsc = false;
-      sortAndRenderSearch();
-      $('searchResultsTitle').textContent = data.total + ' listings in ' + (data.location_label || location);
-      $('searchResultsContainer').style.display = '';
     } catch (err) {
       showSearchStatus('Could not connect to the server. Make sure the app is running.', true);
     } finally {
@@ -5981,8 +6015,379 @@
   var BATCH_STORAGE_KEY = 'batchanalyzer.lastBatch';
   var PENDING_STORAGE_KEY = 'batchanalyzer.pendingBatchId';
   var SYNC_MAX = 100;
+  // Sprint 15: one unified results store keyed by listing URL. Every
+  // source (single-ZIP search, Scan ZIPs, paste-batch, single-URL analyze)
+  // merges into this table; nothing removes a row except explicit user
+  // action (× button / Clear all). Persists across page loads.
+  var UNIFIED_STORAGE_KEY = 'rpda.unifiedResults.v1';
+  var UNIFIED_MAX_ROWS = 1000;
 
   function $(id) { return document.getElementById(id); }
+
+  // ============================================================
+  // Unified Results Store
+  // ============================================================
+  // Shape per row:
+  //   {
+  //     key: string (canonical listing URL, the dedup key),
+  //     listingUrl: string,
+  //     sources: string[] (union of 'search'|'scan_zips'|'batch_paste'|'manual'),
+  //     firstSeenAt: ISO ts, lastUpdatedAt: ISO ts,
+  //     // Fields that may come from scrape OR batch:
+  //     address, zip_code, price, beds, baths, sqft, year_built, units, dom,
+  //     imageUrl,
+  //     // Fields from computeQuickScore (always computed client-side):
+  //     quickScore: { stars, numericScore, details, cssClass },
+  //     // Fields from batch pipeline (may be absent for search-only rows):
+  //     url_hash, verdict, topsis_score, reasons, metrics, pareto_efficient,
+  //     hard_fail, analyzed_at, claude_narrative, llm_analysis,
+  //     stretch_scenario, cache_stale_reason,
+  //   }
+  var unifiedStore = (function () {
+    var rows = new Map();  // key → row object (insertion order preserved)
+    var loaded = false;
+
+    function load() {
+      if (loaded) return;
+      try {
+        var raw = localStorage.getItem(UNIFIED_STORAGE_KEY);
+        if (raw) {
+          var parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(function (r) { if (r && r.key) rows.set(r.key, r); });
+          }
+        }
+      } catch (e) { /* corrupt storage — ignore */ }
+      loaded = true;
+    }
+    function save() {
+      try {
+        localStorage.setItem(UNIFIED_STORAGE_KEY, JSON.stringify(Array.from(rows.values())));
+      } catch (e) { /* quota — ignore; next save may succeed after evict */ }
+    }
+    function keyFor(listing) {
+      // Prefer listingUrl / canonical_url; fall back to url_hash.
+      return listing.listingUrl || listing.canonical_url || listing.url_hash || null;
+    }
+    function mergeRow(existing, incoming, source) {
+      var merged = Object.assign({}, existing || {});
+      // Union sources without duplicates.
+      var sourceSet = {};
+      (existing && existing.sources || []).forEach(function (s) { sourceSet[s] = 1; });
+      if (source) sourceSet[source] = 1;
+      // Merge field-by-field: incoming wins when non-null; preserve existing
+      // otherwise. Never lose a field that a prior source populated.
+      Object.keys(incoming).forEach(function (k) {
+        if (k === 'sources' || k === 'firstSeenAt' || k === 'lastUpdatedAt') return;
+        var v = incoming[k];
+        if (v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) {
+          merged[k] = v;
+        } else if (!(k in merged)) {
+          merged[k] = v;
+        }
+      });
+      merged.sources = Object.keys(sourceSet);
+      merged.firstSeenAt = (existing && existing.firstSeenAt) || new Date().toISOString();
+      merged.lastUpdatedAt = new Date().toISOString();
+      return merged;
+    }
+    function evictIfOverCap() {
+      if (rows.size <= UNIFIED_MAX_ROWS) return;
+      // Evict oldest by firstSeenAt until under cap.
+      var arr = Array.from(rows.values()).sort(function (a, b) {
+        return (a.firstSeenAt || '').localeCompare(b.firstSeenAt || '');
+      });
+      var toRemove = rows.size - UNIFIED_MAX_ROWS;
+      for (var i = 0; i < toRemove; i++) rows.delete(arr[i].key);
+    }
+    return {
+      load: load,
+      all: function () { load(); return Array.from(rows.values()); },
+      add: function (listings, source) {
+        load();
+        var added = 0;
+        (listings || []).forEach(function (l) {
+          if (!l) return;
+          var key = keyFor(l);
+          if (!key) return;
+          var existing = rows.get(key);
+          var incoming = Object.assign({}, l, { key: key });
+          var merged = mergeRow(existing, incoming, source);
+          rows.set(key, merged);
+          added++;
+        });
+        evictIfOverCap();
+        save();
+        return added;
+      },
+      remove: function (key) {
+        load();
+        var ok = rows.delete(key);
+        save();
+        return ok;
+      },
+      clear: function () {
+        rows.clear();
+        save();
+      },
+      size: function () { load(); return rows.size; },
+      get: function (key) { load(); return rows.get(key) || null; },
+    };
+  })();
+  window.RPDA = window.RPDA || {};
+  window.RPDA.unifiedStore = unifiedStore;
+
+  // ============================================================
+  // Unified renderer
+  // ============================================================
+  var UNIFIED_SORT_COL = 'lastUpdatedAt';
+  var UNIFIED_SORT_DESC = true;
+
+  function _unifiedSortValue(row, col) {
+    switch (col) {
+      case 'address': return (row.address || '').toLowerCase();
+      case 'price': return Number(row.price || 0);
+      case 'beds': return Number(row.beds || 0);
+      case 'sqft': return Number(row.sqft || 0);
+      case 'stars': return row.quickScore ? Number(row.quickScore.numericScore || 0) : -1;
+      case 'verdict':
+        // green < yellow < red for ascending; sort order maps to quality
+        var o = { green: 0, yellow: 1, red: 2 };
+        return row.verdict in o ? o[row.verdict] : 3;
+      case 'topsis': return Number(row.topsis_score == null ? -1 : row.topsis_score);
+      case 'lastUpdatedAt': return row.lastUpdatedAt || '';
+      default: return '';
+    }
+  }
+  window.__unifiedSort = function (col) {
+    if (UNIFIED_SORT_COL === col) UNIFIED_SORT_DESC = !UNIFIED_SORT_DESC;
+    else { UNIFIED_SORT_COL = col; UNIFIED_SORT_DESC = true; }
+    renderUnifiedResults();
+  };
+
+  window.__unifiedDelete = function (key) {
+    unifiedStore.remove(key);
+    renderUnifiedResults();
+  };
+  window.__unifiedClearAll = function () {
+    if (!window.confirm('Clear all ' + unifiedStore.size() + ' tracked listings? This cannot be undone.')) return;
+    unifiedStore.clear();
+    renderUnifiedResults();
+  };
+  window.__unifiedClearFailed = function () {
+    var kept = [];
+    unifiedStore.all().forEach(function (r) {
+      // Hard-fail or rate-limited rows get cleared. "Likely land only"
+      // quickScore=0 rows also go (user said "only user deletes" but those
+      // are already filtered in renderUnifiedResults when present).
+      if (r.hard_fail) return;
+      kept.push(r);
+    });
+    // Rebuild the store: clear + re-add kept.
+    unifiedStore.clear();
+    unifiedStore.add(kept, null);
+    renderUnifiedResults();
+  };
+
+  function _verdictPill(verdict) {
+    if (!verdict) return '';
+    var bg = verdict === 'green' ? 'rgba(22,163,74,0.18);color:#16a34a;border:1px solid rgba(22,163,74,0.4)'
+      : verdict === 'yellow' ? 'rgba(202,138,4,0.18);color:#ca8a04;border:1px solid rgba(202,138,4,0.4)'
+      : 'rgba(220,38,38,0.18);color:#dc2626;border:1px solid rgba(220,38,38,0.4)';
+    return '<span style="background:' + bg + ';padding:2px 10px;border-radius:10px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">' + escapeHtml(verdict) + '</span>';
+  }
+
+  function _sourcePill(sources) {
+    if (!sources || !sources.length) return '';
+    // Pick the "richest" source (scan > batch > search) for a single pill.
+    var label = sources.indexOf('scan_zips') !== -1 ? 'scan'
+      : sources.indexOf('batch_paste') !== -1 ? 'batch'
+      : sources.indexOf('manual') !== -1 ? 'manual'
+      : 'search';
+    var color = label === 'scan' ? '#16a34a'
+      : label === 'batch' ? '#6366f1'
+      : label === 'manual' ? '#ca8a04'
+      : '#64748b';
+    return '<span title="' + escapeHtml(sources.join(', ')) + '" style="background:rgba(100,116,139,0.12);color:' + color + ';padding:1px 6px;border-radius:6px;font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.03em;margin-right:6px;">' + label + '</span>';
+  }
+
+  function _quickScoreDetails(qs) {
+    if (!qs || !qs.details || !qs.details.length) return '';
+    return qs.details.map(function (d) {
+      var cls = d.cls || '';
+      var style = cls === 'good' ? 'color:#16a34a'
+        : cls === 'bad' ? 'color:#dc2626'
+        : cls === 'warn' ? 'color:#ca8a04'
+        : 'color:var(--text-muted)';
+      return '<span style="' + style + ';margin-right:8px;">' + escapeHtml(d.text) + '</span>';
+    }).join('·');
+  }
+
+  function _starsGlyph(stars) {
+    if (typeof stars !== 'number') return '—';
+    var clamped = Math.max(0, Math.min(5, Math.round(stars)));
+    return ['☆☆☆☆☆', '★☆☆☆☆', '★★☆☆☆', '★★★☆☆', '★★★★☆', '★★★★★'][clamped];
+  }
+
+  // Delegates to the existing `computeQuickScore` function defined in the
+  // main <script> block above this one. Use optional-chain guard in case
+  // scripts load in an unexpected order.
+  function _computeQuickScore(listing) {
+    try {
+      if (typeof computeQuickScore !== 'function') return null;
+      var targetRent = (window.DEFAULTS && window.DEFAULTS.targetMonthlyRent) || 0;
+      var rateInput = $('interestRate');
+      var rate = rateInput && rateInput.value ? parseFloat(rateInput.value) / 100 : null;
+      return computeQuickScore(listing, targetRent, rate);
+    } catch (e) { return null; }
+  }
+
+  function renderUnifiedResults() {
+    var root = $('unifiedResults');
+    if (!root) return;
+    var rows = unifiedStore.all();
+    // Re-compute quickScore for any row missing one (e.g. batch-only rows
+    // that never went through the search path).
+    rows.forEach(function (r) {
+      if (!r.quickScore) {
+        r.quickScore = _computeQuickScore(r);
+      }
+    });
+    if (!rows.length) {
+      root.style.display = 'none';
+      root.innerHTML = '';
+      return;
+    }
+    // Sort
+    var sortCol = UNIFIED_SORT_COL;
+    var desc = UNIFIED_SORT_DESC;
+    rows.sort(function (a, b) {
+      var va = _unifiedSortValue(a, sortCol);
+      var vb = _unifiedSortValue(b, sortCol);
+      if (va < vb) return desc ? 1 : -1;
+      if (va > vb) return desc ? -1 : 1;
+      return 0;
+    });
+
+    // Header summary
+    var counts = { search: 0, scan: 0, batch: 0, manual: 0, green: 0, yellow: 0, red: 0 };
+    rows.forEach(function (r) {
+      (r.sources || []).forEach(function (s) {
+        if (s === 'scan_zips') counts.scan++;
+        else if (s === 'batch_paste') counts.batch++;
+        else if (s === 'manual') counts.manual++;
+        else if (s === 'search') counts.search++;
+      });
+      if (r.verdict === 'green') counts.green++;
+      else if (r.verdict === 'yellow') counts.yellow++;
+      else if (r.verdict === 'red') counts.red++;
+    });
+    var hardFailCount = rows.filter(function (r) { return r.hard_fail; }).length;
+
+    var html = '';
+    html += '<div class="section-title" style="margin-bottom:8px;">Tracked Listings <span style="font-weight:normal;color:var(--text-muted);font-size:0.82rem;">(' + rows.length + ')</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;font-size:0.82rem;color:var(--text-muted);">';
+    html += '<div>';
+    if (counts.search) html += 'search: ' + counts.search + ' · ';
+    if (counts.scan)   html += 'scan: ' + counts.scan + ' · ';
+    if (counts.batch)  html += 'batch: ' + counts.batch + ' · ';
+    if (counts.manual) html += 'manual: ' + counts.manual + ' · ';
+    if (counts.green)  html += '<span style="color:#16a34a;">green: ' + counts.green + '</span> · ';
+    if (counts.yellow) html += '<span style="color:#ca8a04;">yellow: ' + counts.yellow + '</span> · ';
+    if (counts.red)    html += '<span style="color:#dc2626;">red: ' + counts.red + '</span>';
+    html += '</div>';
+    html += '<div>';
+    if (hardFailCount > 0) html += '<button class="btn btn-small btn-secondary" type="button" onclick="window.__unifiedClearFailed()">Clear ' + hardFailCount + ' hard-fail row' + (hardFailCount === 1 ? '' : 's') + '</button> ';
+    html += '<button class="btn btn-small btn-secondary" type="button" onclick="window.__unifiedClearAll()">Clear all</button>';
+    html += '</div>';
+    html += '</div>';
+
+    html += '<div style="overflow-x:auto;">';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
+    html += '<thead><tr style="text-align:left;color:var(--text-muted);">';
+    var headers = [
+      { key: 'address', label: 'Address' },
+      { key: 'price', label: 'Price' },
+      { key: 'beds', label: 'Beds/Baths' },
+      { key: 'sqft', label: 'Sqft' },
+      { key: 'stars', label: 'Quick Score' },
+      { key: 'verdict', label: 'Verdict' },
+      { key: 'topsis', label: 'TOPSIS' },
+      { key: null, label: 'Why' },
+      { key: null, label: '' },
+      { key: null, label: '' },
+    ];
+    headers.forEach(function (h) {
+      var cursor = h.key ? 'cursor:pointer;' : '';
+      var onclick = h.key ? ' onclick="window.__unifiedSort(\'' + h.key + '\')"' : '';
+      var arrow = (h.key && h.key === UNIFIED_SORT_COL) ? (UNIFIED_SORT_DESC ? ' ▼' : ' ▲') : '';
+      html += '<th' + onclick + ' style="padding:6px 8px;border-bottom:1px solid var(--border);' + cursor + '">' + escapeHtml(h.label) + arrow + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+
+    rows.forEach(function (r, idx) {
+      var addr = r.address || '(no address)';
+      var addrShort = addr.length > 48 ? addr.slice(0, 46) + '…' : addr;
+      var addrLink = r.listingUrl
+        ? '<a href="' + escapeHtml(r.listingUrl) + '" target="_blank" rel="noopener" style="color:var(--accent);">' + escapeHtml(addrShort) + '</a>'
+        : escapeHtml(addrShort);
+      var beds = (r.beds != null && r.beds !== '') ? r.beds : '—';
+      var baths = (r.baths != null && r.baths !== '') ? r.baths : '—';
+      var sqftTxt = (r.sqft && r.sqft > 0) ? fmtInt(r.sqft) : '—';
+      var stars = (r.quickScore && typeof r.quickScore.stars === 'number') ? _starsGlyph(r.quickScore.stars) : '—';
+      var scoreDetails = _quickScoreDetails(r.quickScore);
+      var paretoStar = r.pareto_efficient ? ' <span title="Pareto-efficient">★</span>' : '';
+      var reasons = (r.reasons || []).slice(0, 2).join(' · ');
+      if (reasons.length > 120) reasons = reasons.slice(0, 118) + '…';
+      html += '<tr style="border-bottom:1px solid var(--border);">';
+      html += '<td style="padding:6px 8px;">' + _sourcePill(r.sources) + addrLink + paretoStar + '</td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;">' + fmtDollar(r.price) + '</td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;">' + escapeHtml(String(beds)) + ' / ' + escapeHtml(String(baths)) + '</td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + escapeHtml(String(sqftTxt)) + '</td>';
+      html += '<td style="padding:6px 8px;letter-spacing:0.04em;">' + stars + '</td>';
+      html += '<td style="padding:6px 8px;">' + _verdictPill(r.verdict) + '</td>';
+      html += '<td style="padding:6px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;">' + (r.topsis_score != null ? r.topsis_score.toFixed(3) : '—') + '</td>';
+      html += '<td style="padding:6px 8px;color:var(--text-muted);font-size:0.8rem;">' + escapeHtml(reasons) + '</td>';
+      var openUrl = r.listingUrl ? JSON.stringify(r.listingUrl).replace(/"/g, '&quot;') : '""';
+      html += '<td style="padding:6px 8px;"><button class="btn btn-small btn-secondary" type="button" onclick="window.__openBatchRow(' + openUrl + ')">Analyze</button></td>';
+      html += '<td style="padding:6px 4px;"><button type="button" title="Remove from list" aria-label="Remove" style="background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:2px 8px;cursor:pointer;font-size:0.85rem;line-height:1;" onclick="window.__unifiedDelete(' + JSON.stringify(r.key).replace(/"/g, '&quot;') + ')">×</button></td>';
+      html += '</tr>';
+      // Quick-score details sub-row
+      if (scoreDetails) {
+        html += '<tr><td colspan="10" style="padding:0 8px 6px;font-size:0.75rem;">' + scoreDetails + '</td></tr>';
+      }
+      // 203(k) stretch sub-row
+      var stretch = r.metrics && r.metrics.stretch_scenario;
+      if (stretch && stretch.viable) {
+        var sharePct = Math.round((stretch.self_perform_share || 0) * 100);
+        html += '<tr><td colspan="10" style="padding:0 8px 8px;font-size:0.75rem;">'
+          + '<span style="background:rgba(234,179,8,0.15);color:#ca8a04;padding:2px 8px;border-radius:10px;font-weight:600;margin-right:8px;">203(k) stretch</span>'
+          + 'PITI ' + fmtDollar(stretch.piti) + ' · cash-to-close ' + fmtDollar(stretch.cash_to_close)
+          + ' · rehab ' + fmtDollar(stretch.effective_rehab) + ' financed'
+          + ' · self-perform ' + sharePct + '%'
+          + '</td></tr>';
+      }
+    });
+    html += '</tbody></table></div>';
+    root.innerHTML = html;
+    root.style.display = '';
+  }
+  window.RPDA.renderUnifiedResults = renderUnifiedResults;
+
+  // Shim minimal helpers the renderer needs (if not already in scope).
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function fmtInt(n) {
+    if (n == null || isNaN(n)) return '—';
+    return Math.round(Number(n)).toLocaleString();
+  }
+  function fmtDollar(n) {
+    if (n == null || isNaN(n)) return '—';
+    return '$' + Math.round(Number(n)).toLocaleString();
+  }
 
   function urlLines(text) {
     return (text || '').split(/\n+/).map(function (s) { return s.trim(); })
@@ -6253,7 +6658,34 @@
     if (document.visibilityState === 'visible') __resetTabTitle__();
   });
 
+  // Sprint 15: renderResults is now a thin adapter that merges batch
+  // rankings into the unified store and delegates rendering. The original
+  // in-line table body (below, now unreachable) is kept for reference but
+  // never runs.
   function renderResults(envelope) {
+    try {
+      var source = (envelope && envelope.source === 'scan_zips') ? 'scan_zips' : 'batch_paste';
+      var rankings = (envelope && envelope.rankings) || [];
+      if (window.RPDA && window.RPDA.unifiedStore && rankings.length) {
+        var rowsForStore = rankings.map(function (r) {
+          return Object.assign({}, r, {
+            listingUrl: r.canonical_url || r.listingUrl || null,
+            // Prefer the just-computed verdict/topsis fields; fall back to
+            // whatever already existed on the row from a prior search.
+          });
+        });
+        window.RPDA.unifiedStore.add(rowsForStore, source);
+      }
+      if (window.RPDA && window.RPDA.renderUnifiedResults) {
+        window.RPDA.renderUnifiedResults();
+      }
+      var pendingEl = document.getElementById('batch-pending');
+      if (pendingEl) pendingEl.style.display = 'none';
+    } catch (e) { console.warn('unified merge from batch failed', e); }
+    return; // Skip the legacy inline render below.
+    // eslint-disable-next-line no-unreachable
+  }
+  function _legacyRenderResultsUnused(envelope) {
     var root = $('batch-results');
     if (!root) return;
     var rows = envelope.rankings || [];
@@ -6940,11 +7372,26 @@
         if (note) { note.style.display = 'none'; note.textContent = ''; }
       });
     }
+    // Sprint 15: hydrate unified table on load (persists across reloads).
+    try {
+      if (window.RPDA && window.RPDA.renderUnifiedResults) {
+        window.RPDA.renderUnifiedResults();
+      }
+    } catch (_) {}
+    // One-time migration: if the legacy BATCH_STORAGE_KEY still holds an
+    // envelope, merge it into the unified store once, then leave the key
+    // alone (unifiedStore writes don't touch BATCH_STORAGE_KEY).
     try {
       var raw = localStorage.getItem(BATCH_STORAGE_KEY);
       if (raw) {
         var env = JSON.parse(raw);
-        if (env && env.rankings) renderResults(env);
+        if (env && env.rankings && window.RPDA && window.RPDA.unifiedStore) {
+          var migrated = env.rankings.map(function (r) {
+            return Object.assign({}, r, { listingUrl: r.canonical_url || r.listingUrl || null });
+          });
+          window.RPDA.unifiedStore.add(migrated, env.source || 'batch_paste');
+          if (window.RPDA.renderUnifiedResults) window.RPDA.renderUnifiedResults();
+        }
       }
     } catch (_) {}
     var pending = loadPending();
